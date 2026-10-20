@@ -1,0 +1,25 @@
+# /etc/systemd/system/qms.service
+[Unit]
+Description=QualiSuite eQMS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qms
+Group=qms
+WorkingDirectory=/opt/qms
+EnvironmentFile=/opt/qms/.env
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning server.js
+Restart=on-failure
+RestartSec=5
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/qms/data
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

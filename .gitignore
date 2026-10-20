@@ -1,0 +1,9 @@
+# secrets and data never go into Git
+.env
+data/
+*.db
+*.db-wal
+*.db-shm
+backups/
+node_modules/
+.DS_Store

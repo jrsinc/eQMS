@@ -1,0 +1,12 @@
+services:
+  qms:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      DATA_DIR: /data
+    ports:
+      - "127.0.0.1:8080:8080"   # only Nginx on the same host can reach it
+    volumes:
+      - ./data:/data
