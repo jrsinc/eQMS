@@ -29,9 +29,11 @@ name: Build and deploy a container to an Azure Web App
 env:
   AZURE_WEBAPP_NAME: your-app-name  # set this to the name of your Azure Web App
 
+# Manual runs only (Actions tab → "Run workflow") until the Azure web app, AZURE_WEBAPP_NAME and the
+# AZURE_WEBAPP_PUBLISH_PROFILE secret are set up. To deploy on every push again, add back:
+#   push:
+#     branches: [ "main" ]
 on:
-  push:
-    branches: [ "main" ]
   workflow_dispatch:
 
 permissions:
