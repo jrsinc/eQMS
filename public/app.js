@@ -8,6 +8,8 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const today = () => new Date().toISOString().slice(0, 10);
+const addWorkingDaysIso = (d, n) => { const x = new Date(String(d).slice(0, 10) + 'T00:00:00Z'); while (n > 0) { x.setUTCDate(x.getUTCDate() + 1); if (x.getUTCDay() % 6) n--; } return x.toISOString().slice(0, 10); };
+const addDaysIso = (d, n) => { const x = new Date(String(d).slice(0, 10) + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function dmy(v) { if (!v) return ''; const d = new Date(v.length === 10 ? v + 'T00:00:00' : v); if (isNaN(d)) return esc(v); return `${String(d.getDate()).padStart(2, '0')}-${MON[d.getMonth()]}-${d.getFullYear()}`; }
 function dmyt(v) { if (!v) return ''; const d = new Date(v); return `${dmy(v)} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`; }
@@ -19,13 +21,38 @@ function download(name, content, type = 'text/csv') { const a = document.createE
 const csvCell = (v) => { const s = Array.isArray(v) ? v.join('; ') : String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
 const toCsv = (rows) => rows.map(r => r.map(csvCell).join(',')).join('\n');
 
-const DONE = new Set(['Effective', 'Superseded', 'Obsolete', 'Completed', 'Closed', 'Cancelled', 'Approved', 'Released', 'Rejected', 'QP Certified', 'Released to IRT', 'Withdrawn', 'Retired', 'Disqualified', 'Qualified', 'Blocked', 'Failed']);
-const GOOD = new Set(['Effective', 'Completed', 'Closed', 'Approved', 'Released', 'QP Certified', 'Qualified', 'Released to IRT']);
+const DONE = new Set(['Effective', 'Superseded', 'Obsolete', 'Completed', 'Closed', 'Cancelled', 'Approved', 'Released', 'Rejected', 'QP Certified', 'Released to IRT', 'Withdrawn', 'Retired', 'Disqualified', 'Qualified', 'Blocked', 'Authorized', 'Certified', 'Archived', 'Destroyed']);
+const GOOD = new Set(['Effective', 'Completed', 'Closed', 'Approved', 'Released', 'QP Certified', 'Qualified', 'Released to IRT', 'Authorized', 'Certified', 'Archived']);
 const BAD = new Set(['Rejected', 'Failed', 'Blocked', 'Disqualified', 'Suspended']);
 const GREY = new Set(['Superseded', 'Obsolete', 'Cancelled', 'Withdrawn', 'Retired', 'Draft']);
 const pill = (s) => `<span class="pill ${GOOD.has(s) ? 'done' : BAD.has(s) ? 'bad' : GREY.has(s) ? 'grey' : ''}">${esc(s)}</span>`;
-const DUE = { deviations: 'dueDate', capa: 'dueDate', training: 'dueDate', changes: 'targetDate', comparators: 'neededBy', audits: 'responseDue', risks: 'reviewDate' };
-const isOverdue = (r) => { const k = DUE[r.type]; return k && !DONE.has(r.status) && r.data[k] && r.data[k] < today(); };
+const EC_STATES = new Set(['Effectiveness Check', 'Closed – EC Pending']);
+// The date a record is due by in its current status (approved extensions replace the original due date)
+function dueOf(r) {
+  const d = r.data;
+  if (EC_STATES.has(r.status)) return d.ecDueDate;
+  if (r.type === 'investigations' && r.status === 'Customer Approval') return '';
+  if (['investigations', 'capa', 'changes'].includes(r.type)) return d.extendedDue || d.dueDate;
+  if (r.type === 'selfinspections') return ['Planned', 'Notified'].includes(r.status) ? d.plannedDate : r.status === 'Report Issued' ? d.extendedDue || d.dueDate : '';
+  if (r.type === 'extaudits') return ['Report Received', 'Response Prepared'].includes(r.status) ? d.responseDue : '';
+  if (r.type === 'documents') return r.status === 'Approved – Training' ? d.effectiveDate : r.status === 'Effective' ? d.nextReview : '';
+  if (r.type === 'archives' && r.status === 'Retrieved') { const x = (d.retrievals || []).slice(-1)[0]; return x && x.date ? addWorkingDaysIso(x.date, 7) : ''; }
+  return { training: d.dueDate, comparators: d.neededBy, risks: d.reviewDate }[r.type];
+}
+const isOverdue = (r) => { const v = dueOf(r); return !!v && !DONE.has(r.status) && v < today(); };
+const dataFields = (m) => m.fields.filter(f => f.k);
+const singular = (m) => m.single || m.name.toLowerCase().replace(/s$/, '');
+// Fields on the new-record form: only the request section(s) when the module has them, otherwise all fields
+function createFields(m) {
+  if (!m.fields.some(f => f.type === 'section' && f.create)) return m.fields;
+  let on = false; return m.fields.filter(f => { if (f.type === 'section') on = !!f.create; return on; });
+}
+// Plain-text value for print and CSV
+function plain(f, v) {
+  if (f.type === 'checklist') return f.rows.map(row => { const x = (v || {})[row] || {}; return `${row}: ${x.v || '–'}${x.r ? ' (' + x.r + ')' : ''}`; }).join('\n');
+  if (f.type === 'table') return (v || []).map(row => f.cols.map(c => `${c.label}: ${row[c.k] || '–'}`).join(' | ')).join('\n');
+  return Array.isArray(v) ? v.join(', ') : v === true ? 'Yes' : v === false ? 'No' : v ?? '';
+}
 
 // ---------- API ----------
 async function api(method, url, body) {
@@ -86,11 +113,14 @@ async function stepDialog({ title, meaning, reason, extra = '', perform }) {
   });
 }
 
+// environment banner (APP_ENV_LABEL), e.g. on the shared test system
+const envBanner = () => HEALTH.envLabel ? `<div class="env-banner" role="note">${esc(HEALTH.envLabel)}</div>` : '';
+
 // ---------- auth screens ----------
 function renderLogin(msg = '') {
   clearInterval(idleTimer);
-  $('#app').innerHTML = `<div class="login"><div class="side"><h1>Quality records you can stand behind in an inspection.</h1>
-    <p>Documents, training, deviations, CAPA, change control, complaints, audits, suppliers and clinical supply — one validated system with a full audit trail and electronic signatures.</p></div>
+  $('#app').innerHTML = `${envBanner()}<div class="login"><div class="side"><h1>Quality records you can stand behind in an inspection.</h1>
+    <p>Documents, training, deviations and complaints, CAPA, change control, audits, suppliers and clinical supply — one validated system with a full audit trail and electronic signatures.</p></div>
     <form id="lf"><div class="brand" style="color:var(--ink);padding:0">${logo()}<div>QualiSuite eQMS<small class="muted">${esc(HEALTH.org || '')}</small></div></div>
     <h2>Sign in</h2><div><label class="f" for="u">User ID</label><input id="u" type="text" autocomplete="username" required></div>
     <div><label class="f" for="p">Password</label><input id="p" type="password" autocomplete="current-password" required></div>
@@ -146,8 +176,8 @@ function shell(active, html) {
     <div class="brand">${logo()}<div>QualiSuite eQMS<small>${esc(HEALTH.org || '')}</small></div></div>
     ${link('dashboard', 'Dashboard', 'dashboard')}${link('tasks', 'My tasks', 'tasks')}${link('readiness', 'Inspection readiness', 'readiness')}
     ${Object.entries(groups).map(([g, list]) => `<h4>${esc(g)}</h4>${list.map(([k, m]) => link('m/' + k, m.name, k, openCount(k))).join('')}${g === 'Documents & training' ? link('matrix', 'Training matrix', 'matrix') : ''}`).join('')}
-    <h4>System</h4>${link('audit', 'Audit trail', 'audit')}${link('sharepoint', 'SharePoint', 'sharepoint')}${isAdmin ? link('users', 'Users and roles', 'users') : ''}${link('password', 'Change password', 'password')}
-    </nav><div class="main"><header class="topbar"><button class="btn menu-btn" id="menu" aria-label="Menu">Menu</button>
+    <h4>System</h4>${link('audit', 'Audit trail', 'audit')}${link('signatures', 'Signature register', 'signatures')}${link('sharepoint', 'SharePoint', 'sharepoint')}${isAdmin ? link('users', 'Users and roles', 'users') : ''}${link('password', 'Change password', 'password')}
+    </nav><div class="main">${envBanner()}<header class="topbar"><button class="btn menu-btn" id="menu" aria-label="Menu">Menu</button>
     <form id="gs" role="search" style="flex:1;max-width:420px"><input type="search" name="q" placeholder="Search records by number or title"></form>
     <div class="who"><span title="Automatic lock after inactivity">Lock in <span id="idle" class="mono">${Math.floor(idleLeft / 60)}:${String(idleLeft % 60).padStart(2, '0')}</span></span>
     <span><b>${esc(ME.fullname)}</b><br><span class="small muted">${esc(ME.roles.map(r => CFG.ROLES[r]).join(', '))}</span></span>
@@ -164,7 +194,7 @@ async function route() {
   const [view, a] = location.hash.slice(2).split('/').map(decodeURIComponent);
   try {
     ALL = await api('GET', '/api/records');
-    const views = { dashboard, tasks, readiness, matrix, audit: auditView, users: usersView, sharepoint: spView, password: () => renderPasswordChange(false), m: listView, new: newView, r: detailView, search: searchView, verify: verifyView };
+    const views = { dashboard, tasks, readiness, matrix, audit: auditView, signatures: signatureRegister, users: usersView, sharepoint: spView, password: () => renderPasswordChange(false), m: listView, new: newView, r: detailView, search: searchView, verify: verifyView };
     await (views[view] || dashboard)(a);
     window.scrollTo(0, 0);
   } catch (x) { if (ME) { shell('', `<div class="panel"><h2>Something went wrong</h2><p>${esc(x.message)}</p></div>`); } }
@@ -178,15 +208,26 @@ function recRow(r, cols) {
     if (c === 'status') return `<td>${pill(r.status)}${isOverdue(r) ? ' <span class="pill bad">Overdue</span>' : ''}</td>`;
     if (c === 'module') return `<td>${esc(m.name)}</td>`;
     const f = m.fields.find(x => x.k === c); const v = r.data[c];
-    return `<td>${f && f.type === 'date' ? dmy(v) : f && f.type === 'user' ? esc(userName(v)) : esc(Array.isArray(v) ? v.join(', ') : v)}</td>`;
+    return `<td>${f && (f.type === 'date' || f.fmt === 'date') ? dmy(v) : f && f.type === 'user' ? esc(userName(v)) : esc(Array.isArray(v) ? v.join(', ') : v)}</td>`;
   }).join('')}</tr>`;
 }
 function bindRows(root = document) { $$('[data-go]', root).forEach(el => el.addEventListener('click', () => { location.hash = el.dataset.go; })); }
 function myTasks() {
   return ALL.filter(r => {
     if (DONE.has(r.status)) return false;
-    if (r.type === 'training') return r.data.trainee === ME.username;
-    if (r.type === 'capa' && r.data.owner === ME.username) return true;
+    if (r.type === 'training') return ['Trainer Evaluation', 'Failed'].includes(r.status) ? r.data.trainer === ME.username : r.data.trainee === ME.username;
+    if (r.type === 'documents' && r.status === 'In Review' && r.data.reviewer === ME.username) return true;
+    if (r.type === 'documents' && r.status === 'Draft' && r.created_by === ME.username) return true;
+    if (r.type === 'capa' && r.status === 'Implementation' && r.data.respPerson === ME.username) return true;
+    if (r.type === 'investigations' && r.status === 'Initiation' && r.created_by === ME.username) return true;
+    if (r.type === 'changes' && r.status === 'Initiation' && r.created_by === ME.username) return true;
+    if (r.type === 'changes' && r.status === 'Implementation' && [r.created_by, r.data.respPerson].includes(ME.username)) return true;
+    if (r.type === 'changes' && r.status === 'Optional Approvals' && hasRole(['hod'])) return (r.data.optionalDepts || []).some(x => !(r.data.deptApprovals || []).some(a => a.dept === x));
+    if (r.type === 'selfinspections') {
+      const d = r.data, auditor = [d.leadAuditor, d.coAuditor].includes(ME.username);
+      if (r.status === 'Report Issued' && d.auditee === ME.username) return true;
+      if (['Notified', 'In Progress', 'Auditor Review'].includes(r.status) && auditor) return true;
+    }
     return MODS[r.type].transitions.some(t => t.from === r.status && !t.roles.includes('any') && hasRole(t.roles));
   });
 }
@@ -196,9 +237,10 @@ function dashboard() {
   const cnt = (t, f = () => true) => ALL.filter(r => r.type === t && !DONE.has(r.status) && f(r)).length;
   shell('dashboard', `<div class="spread"><div><h1>Dashboard</h1><p class="muted">Live status across all quality processes · ${dmy(today())}</p></div></div>
    <div class="kpis">${k('My open tasks', mine.length, '#/tasks', mine.length ? 'warn' : 'ok')}${k('Overdue records', over.length, '#/readiness', over.length ? 'alert' : 'ok')}
-   ${k('Open deviations', cnt('deviations'), '#/m/deviations', '')}${k('Critical deviations open', cnt('deviations', r => r.data.classification === 'Critical'), '#/m/deviations', cnt('deviations', r => r.data.classification === 'Critical') ? 'alert' : 'ok')}
+   ${k('Open deviations', cnt('investigations', r => r.data.invType === 'Deviation'), '#/m/investigations', '')}${k('Open complaints', cnt('investigations', r => r.data.invType === 'Complaint'), '#/m/investigations', '')}
+   ${k('Critical events open', cnt('investigations', r => r.data.criticality === 'Critical'), '#/m/investigations', cnt('investigations', r => r.data.criticality === 'Critical') ? 'alert' : 'ok')}
    ${k('Open CAPA', cnt('capa'), '#/m/capa', '')}${k('Change controls in progress', cnt('changes'), '#/m/changes', '')}
-   ${k('Open complaints', cnt('complaints'), '#/m/complaints', '')}${k('Documents in workflow', cnt('documents'), '#/m/documents', '')}</div>
+   ${k('Extension requests pending', cnt('extensions', r => r.status !== 'Draft'), '#/m/extensions', '')}${k('Documents in workflow', cnt('documents'), '#/m/documents', '')}</div>
    <div class="two"><div><h2>My tasks</h2>${table(mine.slice(0, 12), ['number', 'module', 'title', 'status'])}</div>
    <div><h2>Overdue</h2>${table(over.slice(0, 12), ['number', 'module', 'title', 'status'])}</div></div>`);
   bindRows();
@@ -218,9 +260,9 @@ function searchView(q = '') {
 function listView(type) {
   const m = MODS[type]; if (!m) return dashboard();
   const rows = ALL.filter(r => r.type === type);
-  const canCreate = type !== 'randomization' || hasRole(['unblinded']);
+  const canCreate = (type !== 'randomization' || hasRole(['unblinded'])) && !ME.roles.every(r => r === 'extaud');
   shell(type, `<div class="spread"><div><h1>${esc(m.name)}</h1><p class="muted">${esc(m.intro)}</p></div>
-    <div class="row">${canCreate ? `<a class="btn primary" href="#/new/${type}">New ${esc(m.name.toLowerCase().replace(/s$/, ''))}</a>` : ''}<button class="btn" id="exp">Export CSV</button></div></div>
+    <div class="row">${canCreate ? `<a class="btn primary" href="#/new/${type}">New ${esc(singular(m))}</a>` : ''}<button class="btn" id="exp">Export CSV</button></div></div>
     <div class="row no-print" style="margin-bottom:.8rem"><input type="search" id="flt" placeholder="Filter" style="max-width:280px">
     <select id="st" style="max-width:220px"><option value="">All statuses</option>${m.states.map(s => `<option>${esc(s)}</option>`).join('')}</select>
     <label class="small"><input type="checkbox" id="od"> Overdue only</label></div><div id="lt"></div>`);
@@ -231,8 +273,8 @@ function listView(type) {
   };
   ['input', 'change'].forEach(ev => ['#flt', '#st', '#od'].forEach(s => $(s).addEventListener(ev, draw))); draw();
   $('#exp').addEventListener('click', () => {
-    const cols = m.fields.map(f => f.k);
-    download(`${type}_${today()}.csv`, toCsv([['Number', 'Status', 'Created by', 'Created', ...m.fields.map(f => f.label)], ...rows.map(r => [r.number, r.status, r.created_by, r.created_at, ...cols.map(c => r.data[c])])]));
+    const fs = dataFields(m);
+    download(`${type}_${today()}.csv`, toCsv([['Number', 'Status', 'Created by', 'Created', ...fs.map(f => f.label)], ...rows.map(r => [r.number, r.status, r.created_by, r.created_at, ...fs.map(f => plain(f, r.data[f.k]))])]));
   });
 }
 
@@ -242,40 +284,80 @@ function fieldHtml(f, v, disabled) {
   const lab = `<label class="f" for="${id}">${esc(f.label)}${req}</label>`;
   let input;
   if (v === undefined || v === null) v = f.def !== undefined ? f.def : '';
+  const optLabel = (o) => (f.optionLabels || {})[o] || CFG.ROLES[o] || o;
   switch (f.type) {
+    case 'section': return `<h4 class="full form-section">${esc(f.label)}</h4>`;
     case 'textarea': input = `<textarea id="${id}" name="${f.k}" rows="${f.rows || 4}" ${d}>${esc(v)}</textarea>`; break;
-    case 'select': input = `<select id="${id}" name="${f.k}" ${d}><option value=""></option>${f.options.map(o => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`; break;
+    case 'select': input = `<select id="${id}" name="${f.k}" ${d}><option value=""></option>${f.options.map(o => `<option value="${esc(o)}" ${o === v ? 'selected' : ''}>${esc(optLabel(o))}</option>`).join('')}</select>`; break;
     case 'user': input = `<select id="${id}" name="${f.k}" ${d}><option value=""></option>${USERS.filter(u => u.active || u.username === v).map(u => `<option value="${esc(u.username)}" ${u.username === v ? 'selected' : ''}>${esc(u.fullname)} (${esc(u.username)})</option>`).join('')}</select>`; break;
     case 'checkbox': return `<div class="${f.full ? 'full' : ''}"><label class="f">&nbsp;</label><label class="row"><input type="checkbox" id="${id}" name="${f.k}" ${v ? 'checked' : ''} ${d}> ${esc(f.label)}</label></div>`;
-    case 'multicheck': input = `<div class="checks" role="group" aria-label="${esc(f.label)}">${f.options.map(o => `<label><input type="checkbox" name="${f.k}" value="${esc(o)}" ${(v || []).includes(o) ? 'checked' : ''} ${d}> ${esc(CFG.ROLES[o] || o)}</label>`).join('')}</div>`; break;
-    case 'computed': case 'readonly': input = `<div class="computed" id="${id}" data-computed="${f.k}">${esc(v)}</div>`; break;
+    case 'multicheck': input = `<div class="checks" role="group" aria-label="${esc(f.label)}">${f.options.map(o => `<label><input type="checkbox" name="${f.k}" value="${esc(o)}" ${(v || []).includes(o) ? 'checked' : ''} ${d}> ${esc(optLabel(o))}</label>`).join('')}</div>`; break;
+    case 'computed': case 'readonly': input = `<div class="computed" id="${id}" data-computed="${f.k}">${f.fmt === 'date' ? dmy(v) : esc(v)}</div>`; break;
+    case 'checklist': input = `<div class="table-wrap"><table class="t check-table" role="group" aria-label="${esc(f.label)}"><thead><tr><th>Area</th><th>Yes</th><th>No</th><th>Remarks</th></tr></thead><tbody>
+      ${f.rows.map((row, i) => { const x = (v || {})[row] || {}; return `<tr><td>${esc(row)}</td>
+        <td><input type="radio" name="${f.k}__${i}" value="Yes" ${x.v === 'Yes' ? 'checked' : ''} ${d} aria-label="${esc(row)}: yes"></td>
+        <td><input type="radio" name="${f.k}__${i}" value="No" ${x.v === 'No' ? 'checked' : ''} ${d} aria-label="${esc(row)}: no"></td>
+        <td><input type="text" name="${f.k}__${i}__r" value="${esc(x.r || '')}" ${d} aria-label="${esc(row)}: remarks"></td></tr>`; }).join('')}</tbody></table></div>`; break;
+    case 'table': input = `<div class="table-wrap"><table class="t edit-table" data-table="${f.k}"><thead><tr>${f.cols.map(c => `<th>${esc(c.label)}</th>`).join('')}${d ? '' : '<th></th>'}</tr></thead>
+      <tbody>${(Array.isArray(v) ? v : []).map(r => tableRow(f, r, d)).join('')}</tbody></table></div>${d ? '' : `<button type="button" class="btn" data-addrow="${f.k}" style="margin-top:.4rem">Add row</button>`}`; break;
+    case 'recordref': {
+      const hit = v && ALL.find(r => r.number === v && f.refTypes.includes(r.type));
+      input = `<input id="${id}" type="text" name="${f.k}" value="${esc(v)}" list="dl_${f.k}" autocomplete="off" ${d}><datalist id="dl_${f.k}">${ALL.filter(r => f.refTypes.includes(r.type)).slice(0, 300).map(r => `<option value="${esc(r.number)}">${esc(r.data.title || '')}</option>`).join('')}</datalist>${hit ? ` <a class="small" href="#/r/${hit.id}">Open ${esc(hit.number)}</a>` : ''}`; break;
+    }
     default: input = `<input id="${id}" type="${f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}" name="${f.k}" value="${esc(v)}" ${d}>`;
   }
   return `<div class="${f.full || f.type === 'multicheck' ? 'full' : ''}">${lab}${input}</div>`;
 }
+function tableRow(f, r = {}, d = '') {
+  const calc = f.rowCompute ? f.rowCompute(r) : {};
+  const cell = (c) => {
+    const v = r[c.k] || '', aria = `aria-label="${esc(c.label)}"`;
+    if (c.computed) return `<span class="mono" data-calc="${c.k}">${esc(calc[c.k] || '')}</span>`;
+    if (c.options) return `<select data-col="${c.k}" ${d} ${aria}><option value=""></option>${c.options.map(o => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+    if (c.type === 'score') return `<input type="number" min="1" max="5" step="1" class="score" data-col="${c.k}" value="${esc(v)}" ${d} ${aria}>`;
+    return `<input type="${c.type === 'date' ? 'date' : 'text'}" data-col="${c.k}" value="${esc(v)}" ${d} ${aria}>`;
+  };
+  return `<tr>${f.cols.map(c => `<td>${cell(c)}</td>`).join('')}${d ? '' : '<td><button type="button" class="btn" data-delrow>Remove</button></td>'}</tr>`;
+}
 function readForm(root, m) {
   const out = {};
-  for (const f of m.fields) {
+  for (const f of dataFields(m)) {
     if (f.type === 'computed' || f.type === 'readonly') continue;
     if (f.type === 'multicheck') out[f.k] = $$(`input[name="${f.k}"]:checked`, root).map(x => x.value);
     else if (f.type === 'checkbox') out[f.k] = !!$(`[name="${f.k}"]`, root)?.checked;
+    else if (f.type === 'checklist') out[f.k] = Object.fromEntries(f.rows.map((row, i) => [row, { v: $(`input[name="${f.k}__${i}"]:checked`, root)?.value || '', r: $(`[name="${f.k}__${i}__r"]`, root)?.value || '' }]));
+    else if (f.type === 'table') out[f.k] = $$(`table[data-table="${f.k}"] tbody tr`, root).map(tr => Object.fromEntries(f.cols.filter(c => !c.computed).map(c => [c.k, $(`[data-col="${c.k}"]`, tr).value.trim()]))).filter(r => Object.values(r).some(Boolean));
     else out[f.k] = $(`[name="${f.k}"]`, root)?.value ?? '';
   }
   return out;
 }
-function liveCompute(root, m) {
+/** Wires up form behaviour: live computed fields (merged over the saved record) and add / remove rows in table fields. */
+function liveCompute(root, m, base = {}) {
+  root.addEventListener('click', (e) => {
+    const add = e.target.closest('[data-addrow]');
+    if (add) { const f = m.fields.find(x => x.k === add.dataset.addrow); $(`table[data-table="${f.k}"] tbody`, root).insertAdjacentHTML('beforeend', tableRow(f)); }
+    const del = e.target.closest('[data-delrow]');
+    if (del) del.closest('tr').remove();
+  });
+  // calculated table columns (e.g. FMEA RPN and risk level) follow the row as it is typed
+  root.addEventListener('input', (e) => {
+    const tr = e.target.closest('table[data-table] tbody tr'); if (!tr) return;
+    const f = m.fields.find(x => x.k === tr.closest('table').dataset.table); if (!f || !f.rowCompute) return;
+    const calc = f.rowCompute(Object.fromEntries($$('[data-col]', tr).map(i => [i.dataset.col, i.value])));
+    $$('[data-calc]', tr).forEach(s => { s.textContent = calc[s.dataset.calc] || ''; });
+  });
   if (!m.compute) return;
-  const run = () => { const d = readForm(root, m); for (const [k, fn] of Object.entries(m.compute)) { const el = $(`[data-computed="${k}"]`, root); if (el) el.textContent = fn(d); } };
-  root.addEventListener('input', run); run();
+  const run = () => { const d = { ...base, ...readForm(root, m) }; for (const [k, fn] of Object.entries(m.compute)) { const el = $(`[data-computed="${k}"]`, root); if (el) el.textContent = fn(d); } };
+  root.addEventListener('input', run); root.addEventListener('change', run); run();
 }
 function newView(type) {
   const m = MODS[type]; if (!m) return dashboard();
-  shell(type, `<div class="spread"><div><h1>New ${esc(m.name.toLowerCase().replace(/s$/, ''))}</h1><p class="muted">The record number is assigned when you save. Fields marked * are required.</p></div></div>
-   <form id="nf" class="panel"><div class="grid">${m.fields.filter(f => f.type !== 'readonly').map(f => fieldHtml(f, undefined, false)).join('')}</div>
-   <div class="error" style="margin-top:1rem"></div><div class="row"><button class="btn primary">Save record</button><a class="btn" href="#/m/${type}">Cancel</a></div></form>`);
-  const form = $('#nf'); liveCompute(form, m);
-  if (type === 'deviations') { const o = $('[name=occurred]', form); if (o) o.value = today(); }
-  if (type === 'complaints') { const o = $('[name=received]', form); if (o) o.value = today(); }
+  shell(type, `<div class="spread"><div><h1>New ${esc(singular(m))}</h1><p class="muted">${m.tempNumbering ? 'Your request gets a request number now. After QA approves it, the designated number generator assigns the record number and you complete Part 1.' : 'The record number is assigned when you save.'} Fields marked * are required.</p></div></div>
+   <form id="nf" class="panel"><div class="grid">${createFields(m).filter(f => f.type !== 'readonly').map(f => fieldHtml(f, undefined, false)).join('')}</div>
+   <div class="error" style="margin-top:1rem"></div><div class="row"><button class="btn primary">${m.tempNumbering ? 'Submit request to QA' : 'Save record'}</button><a class="btn" href="#/m/${type}">Cancel</a></div></form>`);
+  const form = $('#nf');
+  if (type === 'investigations') { const o = $('[name=dateIdentified]', form); if (o) o.value = today(); }
+  liveCompute(form, m, type === 'investigations' ? { qaNotified: today() } : {});
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     try { const rec = await api('POST', '/api/records', { type, data: readForm(form, m) }); toast(`${rec.number} created`); location.hash = '#/r/' + rec.id; }
@@ -298,9 +380,17 @@ async function detailView(id) {
     if (rec.status === 'Approved') extraBtns.push(`<button class="btn primary sign" data-act="issue">Print issued copies</button>`);
     if (rec.status === 'Issued') extraBtns.push(`<button class="btn sign" data-act="reissue">Print replacement copy</button>`);
   }
-  if (rec.type === 'deviations' || rec.type === 'complaints' || rec.type === 'audits') extraBtns.push(`<button class="btn" data-act="spawn" data-to="capa">Raise CAPA</button>`, `<button class="btn" data-act="spawn" data-to="rca">Start RCA</button>`);
-  if (rec.type === 'deviations' || rec.type === 'capa') extraBtns.push(`<button class="btn" data-act="spawn" data-to="changes">Raise change control</button>`);
-  if (rec.type === 'capa') extraBtns.push(`<button class="btn" data-act="spawn" data-to="training">Assign retraining</button>`);
+  const open = !DONE.has(rec.status) && !rec.status.startsWith('Closed');
+  const canWrite = !ME.roles.every(r => r === 'extaud');
+  const isRequest = ['investigations', 'changes'].includes(rec.type) && ['Requested', 'Number Assignment', 'Rejected'].includes(rec.status);
+  if (canWrite && !isRequest) {
+    if (['investigations', 'selfinspections', 'extaudits'].includes(rec.type)) extraBtns.push(`<button class="btn" data-act="spawn" data-to="capa">Raise CAPA</button>`, `<button class="btn" data-act="spawn" data-to="rca">Start RCA</button>`);
+    if (['investigations', 'capa', 'extaudits'].includes(rec.type)) extraBtns.push(`<button class="btn" data-act="spawn" data-to="changes">Raise change control</button>`);
+    if (['changes', 'investigations', 'capa'].includes(rec.type)) extraBtns.push(`<button class="btn" data-act="spawn" data-to="risks">Start risk assessment</button>`);
+    if (rec.type === 'capa') extraBtns.push(`<button class="btn" data-act="spawn" data-to="training">Assign retraining</button>`);
+    if ((['investigations', 'capa', 'changes'].includes(rec.type) || (rec.type === 'selfinspections' && rec.status === 'Report Issued')) && open && d.dueDate && !d.extendedDue) extraBtns.push(`<button class="btn" data-act="spawn" data-to="extensions">Request extension</button>`);
+    if (rec.type === 'mgmtreviews' && ['Planned', 'Data Compiled', 'Meeting Held'].includes(rec.status) && hasRole(['qa'])) extraBtns.push(`<button class="btn primary" data-act="compile">${d.metrics ? 'Re-compile QMR data' : 'Compile QMR data'}</button>`);
+  }
 
   shell(rec.type, `<div class="spread"><div><p class="muted small"><a href="#/m/${rec.type}">${esc(m.name)}</a></p>
     <h1><span class="mono">${esc(rec.number)}</span>${rec.type === 'documents' ? ' <span class="muted">v' + esc(d.version) + '</span>' : ''}</h1>
@@ -308,12 +398,19 @@ async function detailView(id) {
     <div class="row no-print">${pill(rec.status)}${isOverdue(rec) ? '<span class="pill bad">Overdue</span>' : ''}</div></div>
     <div class="record"><div>
       <div class="panel no-print"><h3>Next steps</h3><div class="row">
-        ${trans.length ? trans.map(t => `<button class="btn ${t.sign ? 'primary sign' : ''}" data-act="tr" data-to="${esc(t.to)}" ${t.allowed ? '' : 'disabled title="Your roles do not permit this step"'}>${esc(t.label)}</button>`).join('') : extraBtns.length ? '' : '<span class="muted">No workflow steps available from this status.</span>'}
+        ${trans.length ? trans.map((t, i) => `<button class="btn ${t.sign ? 'primary sign' : ''}" data-act="tr" data-i="${i}" ${t.allowed ? '' : 'disabled title="Your roles do not permit this step"'}>${esc(t.label)}</button>`).join('') : extraBtns.length ? '' : '<span class="muted">No workflow steps available from this status.</span>'}
         ${extraBtns.join('')}<button class="btn" data-act="print">Print record</button><button class="btn" data-act="export">Export JSON</button></div></div>
       <form class="panel" id="rf"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Record details</h3>${det.editable ? '<span class="small muted">Changes need a reason and are recorded in the audit trail.</span>' : '<span class="pill grey">Read-only in this status</span>'}</div>
-        <div class="grid">${m.fields.map(f => fieldHtml(f, d[f.k], !det.editable)).join('')}</div>
+        <div class="grid">${(() => { let s = null; return m.fields.map(f => {
+          if (f.type === 'section') { s = f; return fieldHtml(f) + sectionSignatures(m, f, det.signatures); }
+          return fieldHtml(f, d[f.k], !det.editable || !!f.lock || !canEditSection(s, rec));
+        }).join(''); })()}</div>
         ${det.editable ? '<div class="error" style="margin-top:.8rem"></div><button class="btn primary">Save changes</button>' : ''}</form>
       <div id="special"></div>
+      <div class="panel"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Linked records</h3>
+        <form id="lk" class="row no-print"><input type="text" name="number" placeholder="Record number, e.g. CAPA/QAS/001/26" list="dl_links" style="max-width:260px" aria-label="Record number to link">
+        <datalist id="dl_links">${ALL.filter(r => r.id !== rec.id).slice(0, 300).map(r => `<option value="${esc(r.number)}">${esc(r.data.title || '')}</option>`).join('')}</datalist><button class="btn">Link</button></form></div>
+        ${det.links.length ? table(det.links.map(l => ALL.find(r => r.id === l.id) || { ...l, data: { title: l.title } }), ['number', 'module', 'title', 'status']) : '<p class="muted small">No linked records. CAPA, RCA, change controls and extension requests raised from this record are linked automatically.</p>'}</div>
       <div class="panel"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Attachments</h3><label class="btn no-print">Add file<input type="file" id="att" hidden></label></div>
         ${det.attachments.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>File</th><th>Size</th><th>SHA-256</th><th>Added</th></tr></thead><tbody>${det.attachments.map(a => `<tr><td><a href="/api/attachments/${a.id}">${esc(a.name)}</a></td><td>${(a.size / 1024).toFixed(1)} KB</td><td class="mono small" title="${a.sha256}">${a.sha256.slice(0, 16)}…</td><td>${esc(userName(a.uploaded_by))}<br><span class="small muted">${dmyt(a.ts)}</span></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No attachments. Files are stored with a SHA-256 checksum that is verified on every download.</p>'}</div>
     </div><aside class="rail">
@@ -323,21 +420,32 @@ async function detailView(id) {
         ${a.old_value != null || a.new_value != null ? `<div class="diff">${a.old_value != null ? `<del>${esc(a.old_value).slice(0, 160)}</del> ` : ''}<ins>${esc(a.new_value ?? '').slice(0, 160)}</ins></div>` : ''}${a.reason ? `<div class="muted">Reason: ${esc(a.reason)}</div>` : ''}</div>`).join('')}</div></div>
     </aside></div>`);
 
-  const form = $('#rf'); liveCompute(form, m);
+  const form = $('#rf'); liveCompute(form, m, d);
+  bindRows();
+  $('#lk').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try { await api('POST', `/api/records/${id}/links`, { number: e.target.number.value }); toast('Record linked'); route(); } catch (x) { toast(x.message); }
+  });
   if (det.editable) form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const data = readForm(form, m);
     await stepDialog({ title: 'Save changes', reason: true, perform: async (v) => { const r = await api('PUT', '/api/records/' + id, { data, reason: v.reason }); toast(r.changes ? `${r.changes} field(s) changed` : 'No changes to save'); } }) && route();
   });
   $$('[data-act="tr"]').forEach(b => b.addEventListener('click', async () => {
-    const t = trans.find(x => x.to === b.dataset.to);
-    const ok = await stepDialog({ title: t.label, meaning: t.sign, reason: t.reason, perform: (v) => api('POST', `/api/records/${id}/transition`, { to: t.to, ...v }) });
-    if (ok) { toast(`${rec.number}: ${t.to}`); route(); }
+    const t = trans[+b.dataset.i];
+    const ok = await stepDialog({ title: t.label, meaning: t.sign, reason: t.reason, perform: (v) => api('POST', `/api/records/${id}/transition`, { to: t.to, label: t.label, ...v }) });
+    if (ok) { toast(ok.pending && ok.pending.length ? `Signed – still needed: ${ok.pending.join(', ')}` : `${rec.number}: ${ok.status || t.to}`); route(); }
   }));
   const act = (name, fn) => $$(`[data-act="${name}"]`).forEach(b => b.addEventListener('click', () => fn(b)));
-  act('print', () => printRecord(rec));
+  act('print', () => printRecord(rec, det.signatures));
   act('export', async () => download(`${rec.number}.json`, JSON.stringify(await api('GET', '/api/export/' + id), null, 2), 'application/json'));
-  act('revise', async () => { const r = await stepDialog({ title: 'Start revision', reason: true, perform: (v) => api('POST', `/api/records/${id}/revise`, { reason: v.reason }) }); if (r) { toast('Revision draft created'); location.hash = '#/r/' + r.id; } });
+  act('revise', async () => {
+    const r = await stepDialog({ title: 'Start revision', reason: true,
+      extra: `<div><label class="f">Revision type</label><select name="revisionType"><option>Revision – technical / procedural change</option><option>Periodic review – no change</option></select></div>
+        <div><label class="f">Approved change control no. (for a revision with changes)</label><input type="text" name="changeControl" list="dl_cc"><datalist id="dl_cc">${ALL.filter(x => x.type === 'changes').map(x => `<option value="${esc(x.number)}">${esc(x.data.title || '')}</option>`).join('')}</datalist></div>`,
+      perform: (v) => api('POST', `/api/records/${id}/revise`, v) });
+    if (r) { toast('Revision draft created'); location.hash = '#/r/' + r.id; }
+  });
   act('sp', async () => { try { const r = await api('POST', '/api/sharepoint/publish/' + id); toast('Published to SharePoint'); window.open(r.webUrl, '_blank', 'noopener'); route(); } catch (x) { modal({ title: 'SharePoint publish failed', html: `<p>${esc(x.message)}</p>`, cancel: '', ok: 'Close' }); } });
   act('gen', async () => { const ok = await stepDialog({ title: 'Generate randomization list', meaning: 'Generated', perform: (v) => api('POST', `/api/records/${id}/randomize`, v) }); if (ok) { toast(`List generated: ${ok.kits} kits`); route(); } });
   act('spawn', (b) => spawn(rec, b.dataset.to));
@@ -356,27 +464,82 @@ async function detailView(id) {
   });
   if (rec.type === 'labels') labelPanel(rec);
   if (rec.type === 'randomization' && det.randList) randPanel(rec, det.randList);
+  if (m.deptApproval && (d[m.deptApproval.field] || []).length) optionalApprovalsPanel(rec);
+  if (rec.type === 'mgmtreviews') qmrPanel(rec);
+  act('compile', async () => { try { await api('POST', `/api/records/${id}/compile`); toast('QMR data compiled'); route(); } catch (x) { toast(x.message); } });
+}
+
+// JRS/SOP/QAS/019 – data for the 13 agenda topics and the KPIs, compiled from the eQMS
+function qmrPanel(rec) {
+  const m = rec.data.metrics;
+  if (!m) { $('#special').innerHTML = `<div class="panel"><h3>QMR data</h3><p class="muted">Not compiled yet. QA compiles the data for all agenda topics and KPIs before the meeting.</p></div>`; return; }
+  const tbl = (head, rows) => `<div class="table-wrap" style="margin-bottom:.8rem"><table class="t"><thead><tr>${head.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+  $('#special').innerHTML = `<div class="panel"><h3>QMR data – ${esc(m.period.quarter)}</h3><p class="muted small">Compiled ${dmyt(m.generatedAt)} from the eQMS. Re-compile before the minutes are compiled to refresh.</p>
+    <h4>Key performance indicators (JRS/SOP/QAS/019 §5.17)</h4>${tbl(['KPI', 'Value', 'Basis'], m.kpis)}
+    ${m.sections.map(s => `<h4>${esc(s.title)}</h4>${tbl(m.columns, s.rows)}`).join('')}</div>`;
+}
+
+// Who may change a form section at the record's current stage (section opts.edit in modules.js)
+const canEditSection = (s, rec) => !s || !s.edit || (s.edit[rec.status] || []).some(r =>
+  r === 'initiator' ? rec.created_by === ME.username : r === 'responsible' ? rec.data.respPerson === ME.username : ME.roles.includes(r));
+// Sign-offs expected for a section, taken from the workflow (transitions with the same "part"), each with the
+// latest signature: name and date, or pending. Changing the workflow in modules.js changes these blocks automatically.
+function expectedSignoffs(m, s) {
+  const seen = new Set();
+  return m.transitions.filter(t => s.part && t.part === s.part && t.sign && !seen.has(t.sign) && seen.add(t.sign))
+    .map(t => ({ meaning: t.sign, alt: ['Rejected', 'Cancelled'].includes(t.to), who: t.roles.includes('any') ? (t.checks || []).includes('isInitiator') ? 'Initiator' : (t.checks || []).includes('isResponsible') ? 'Initiator / responsible person' : 'Any user' : t.roles.map(r => CFG.ROLES[r] || r).join(' / ') }));
+}
+// rejection / cancellation sign-offs are shown only when they happened
+const signoffRows = (m, s, sigs) => expectedSignoffs(m, s).map(x => ({ ...x, sig: sigs.filter(z => z.meaning === x.meaning).pop() })).filter(x => !x.alt || x.sig);
+function sectionSignatures(m, s, sigs) {
+  const rows = signoffRows(m, s, sigs); if (!rows.length) return '';
+  return `<div class="full sig-block"><table class="t"><thead><tr><th>Sign-off</th><th>By (role)</th><th>Signed by</th><th>Date / time</th></tr></thead><tbody>${rows.map(x => {
+    const g = x.sig;
+    return `<tr><td>${esc(x.meaning)}</td><td class="small muted">${esc(x.who)}</td><td>${g ? esc(g.fullname) : '<span class="pill warn">Pending</span>'}</td><td class="small">${g ? `${dmyt(g.ts)}${g.current ? '' : ' <span class="pill grey" title="Record changed after this signature">earlier version</span>'}` : ''}</td></tr>`;
+  }).join('')}</tbody></table></div>`;
+}
+
+// Departmental approvals: change control optional approvals 1–4 (JRS/SOP/QAS/007 Part C), cross-functional document review (JRS/SOP/QAS/021)
+function optionalApprovalsPanel(rec) {
+  const cfg = MODS[rec.type].deptApproval, d = rec.data, done = d.deptApprovals || [], canSign = rec.status === cfg.state && hasRole(['hod']);
+  const meaningFor = (dept) => rec.type === 'changes' ? `Approved – optional approval (${dept})` : `Reviewed – cross-functional (${dept})`;
+  $('#special').innerHTML = `<div class="panel"><h3>${esc(cfg.label)}</h3><p class="muted small">Heads of the named departments sign at stage "${esc(cfg.state)}".</p>
+    <div class="table-wrap"><table class="t"><thead><tr><th>Department</th><th>Signed by</th><th>Date</th><th>Comment</th><th></th></tr></thead><tbody>
+    ${d[cfg.field].map(code => { const a = done.find(x => x.dept === code); return `<tr><td>${esc(CFG.DEPTS[code] || code)}</td><td>${a ? esc(a.name) : '<span class="pill warn">Pending</span>'}</td><td>${a ? dmyt(a.ts) : ''}</td><td>${a ? esc(a.comment) : ''}</td>
+      <td>${!a && canSign ? `<button class="btn primary sign" data-dept="${esc(code)}">Sign</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div></div>`;
+  $$('[data-dept]').forEach(b => b.addEventListener('click', async () => {
+    const dept = b.dataset.dept;
+    const ok = await stepDialog({ title: `${cfg.label} – ${CFG.DEPTS[dept] || dept}`, meaning: meaningFor(dept),
+      extra: `<div><label class="f">Comment</label><textarea name="comment" rows="3"></textarea></div>`,
+      perform: (v) => api('POST', `/api/records/${rec.id}/dept-approve`, { ...v, dept }) });
+    if (ok) { toast(`${dept} approval recorded`); route(); }
+  }));
 }
 
 async function spawn(src, to) {
-  const m = MODS[to];
-  const pre = { capa: { title: 'CAPA for ' + src.number + ': ' + (src.data.title || ''), source: { deviations: 'Deviation', complaints: 'Complaint', audits: 'Internal audit' }[src.type] || 'Self-identified', sourceRecord: src.number, rootCause: src.data.rootCause || '' },
-    rca: { title: src.data.title || '', sourceRecord: src.number }, changes: { title: 'Change arising from ' + src.number, justification: 'See ' + src.number },
-    training: { title: 'Retraining – ' + (src.data.title || ''), sourceRecord: src.number, trainingType: 'Read & Understand' } }[to] || {};
-  shell(to, `<div class="spread"><div><h1>New ${esc(m.name.toLowerCase().replace(/s$/, ''))}</h1><p class="muted">Linked to <span class="mono">${esc(src.number)}</span>.</p></div></div>
+  const m = MODS[to], s = src.data;
+  const capaSource = src.type === 'investigations' ? s.invType : src.type === 'selfinspections' ? 'Internal audit / self-inspection'
+    : src.type === 'extaudits' ? (s.auditType === 'Regulatory inspection' ? 'Regulatory inspection / compliance' : 'External audit') : 'Other';
+  const pre = { capa: { title: 'CAPA for ' + src.number + ': ' + (s.title || ''), source: capaSource, sourceRecord: src.number, nonconformance: s.description || s.title || '', respDept: s.respDept || s.auditeeDept || '', respPerson: s.respPerson || s.auditee || '' },
+    rca: { title: s.title || '', sourceRecord: src.number },
+    changes: { title: 'Change arising from ' + src.number, justification: 'See ' + src.number, respDept: s.respDept || '' },
+    risks: { title: 'Risk assessment for ' + src.number + ': ' + (s.title || ''), referenceDoc: src.number, site: s.site || '' },
+    extensions: { documentId: src.number, scope: 'Overall due date' },
+    training: { title: 'Retraining – ' + (s.title || ''), sourceRecord: src.number, trainingType: 'Read & Understand' } }[to] || {};
+  shell(to, `<div class="spread"><div><h1>New ${esc(singular(m))}</h1><p class="muted">Linked to <span class="mono">${esc(src.number)}</span>.</p></div></div>
    <form id="nf" class="panel"><div class="grid">${m.fields.filter(f => f.type !== 'readonly').map(f => fieldHtml(f, pre[f.k], false)).join('')}</div><div class="error" style="margin-top:1rem"></div>
    <div class="row"><button class="btn primary">Save record</button><a class="btn" href="#/r/${src.id}">Cancel</a></div></form>`);
   const form = $('#nf'); liveCompute(form, m);
-  form.addEventListener('submit', async (e) => { e.preventDefault(); try { const r = await api('POST', '/api/records', { type: to, data: readForm(form, m) }); toast(r.number + ' created'); location.hash = '#/r/' + r.id; } catch (x) { $('.error', form).textContent = x.message; } });
+  form.addEventListener('submit', async (e) => { e.preventDefault(); try { const r = await api('POST', '/api/records', { type: to, data: readForm(form, m), linkFrom: src.id }); toast(r.number + ' created'); location.hash = '#/r/' + r.id; } catch (x) { $('.error', form).textContent = x.message; } });
 }
 
-function printRecord(rec) {
+function printRecord(rec, sigs = []) {
   const m = MODS[rec.type];
   api('POST', `/api/records/${rec.id}/printed`, {}).catch(() => {});
   const w = window.open('', '_blank'); if (!w) return toast('Allow pop-ups to print.');
-  w.document.write(`<!doctype html><title>${esc(rec.number)}</title><style>body{font:11pt Arial,sans-serif;margin:15mm}table{border-collapse:collapse;width:100%}td,th{border:1px solid #888;padding:4px 6px;text-align:left;vertical-align:top}th{width:30%;background:#eee}.wm{position:fixed;top:40%;left:5%;font-size:44pt;color:rgba(0,0,0,.08);transform:rotate(-30deg)}</style>
+  w.document.write(`<!doctype html><title>${esc(rec.number)}</title><style>body{font:11pt Arial,sans-serif;margin:15mm}table{border-collapse:collapse;width:100%}td,th{border:1px solid #888;padding:4px 6px;text-align:left;vertical-align:top}th{width:30%;background:#eee}th.sec{background:#cfd8d4;width:auto}.wm{position:fixed;top:40%;left:5%;font-size:44pt;color:rgba(0,0,0,.08);transform:rotate(-30deg)}</style>
    <div class="wm">UNCONTROLLED COPY</div><h2>${esc(rec.number)} – ${esc(m.name)}</h2><p>Status: ${esc(rec.status)} · Printed ${dmyt(new Date().toISOString())} by ${esc(ME.fullname)} · Valid on date of print only</p>
-   <table>${m.fields.map(f => `<tr><th>${esc(f.label)}</th><td style="white-space:pre-wrap">${esc(Array.isArray(rec.data[f.k]) ? rec.data[f.k].join(', ') : rec.data[f.k] === true ? 'Yes' : rec.data[f.k] === false ? 'No' : rec.data[f.k])}</td></tr>`).join('')}</table>`);
+   <table>${m.fields.map(f => f.type === 'section' ? `<tr><th class="sec" colspan="2">${esc(f.label)}</th></tr>${signoffRows(m, f, sigs).map(x => `<tr><th>${esc(x.meaning)}</th><td>${x.sig ? `${esc(x.sig.fullname)} · ${dmyt(x.sig.ts)}` : 'Pending'}</td></tr>`).join('')}` :`<tr><th>${esc(f.label)}</th><td style="white-space:pre-wrap">${esc(f.type === 'user' ? userName(rec.data[f.k]) : f.fmt === 'date' ? dmy(rec.data[f.k]) : plain(f, rec.data[f.k]))}</td></tr>`).join('')}</table>`);
   w.document.close(); w.focus(); w.print();
 }
 
@@ -469,13 +632,23 @@ function readiness() {
   const trn = ALL.filter(r => r.type === 'training' && r.status !== 'Cancelled');
   const compliance = trn.length ? Math.round(100 * trn.filter(r => r.status === 'Completed').length / trn.length) : 100;
   const licences = ALL.filter(r => (r.type === 'vendors' || r.type === 'customers') && !['Disqualified', 'Blocked'].includes(r.status) && r.data.licenceExpiry && r.data.licenceExpiry <= in90);
-  const oldDev = ALL.filter(r => r.type === 'deviations' && !DONE.has(r.status) && r.data.occurred && (Date.now() - new Date(r.data.occurred)) > 30 * 864e5);
+  const inv = ALL.filter(r => r.type === 'investigations' && !DONE.has(r.status)), ic = MODS.investigations.compute;
+  const followUpDue = (r) => { const d = r.data; if (d.customerApproval !== 'Pending' || !d.reportSent) return false; const n = [d.followUp1, d.followUp2, d.followUp3].filter(Boolean).length; return n < 3 && addDaysIso(d.reportSent, 15 * (n + 1)) <= t; };
   const items = [
-    ['Overdue CAPA', ALL.filter(r => r.type === 'capa' && isOverdue(r))], ['Deviations open more than 30 days', oldDev],
+    ['Deviations and complaints past due date', inv.filter(isOverdue)],
+    ['Customer / sponsor not notified within 3 days', inv.filter(r => /^(Overdue|Late)/.test(ic.notifyStatus(r.data)))],
+    ['Customer follow-ups due', inv.filter(r => r.status === 'Customer Approval' && followUpDue(r))],
+    ['Overdue CAPA (incl. effectiveness checks)', ALL.filter(r => r.type === 'capa' && isOverdue(r))],
+    ['Change controls past due date (incl. effectiveness checks)', ALL.filter(r => r.type === 'changes' && isOverdue(r))],
+    ['Temporary changes past their end date', ALL.filter(r => r.type === 'changes' && r.data.nature === 'Temporary' && r.data.tempEnd && r.data.tempEnd < t && !DONE.has(r.status) && !r.status.startsWith('Closed'))],
+    ['Self-inspection responses overdue', ALL.filter(r => r.type === 'selfinspections' && r.status === 'Report Issued' && isOverdue(r))],
+    ['Self-inspection observations not yet complied', ALL.filter(r => r.type === 'selfinspections' && !DONE.has(r.status) && (r.data.observations || []).some(o => o.status !== 'Complied'))],
+    ['External audit findings past their due date', ALL.filter(r => r.type === 'extaudits' && !DONE.has(r.status) && (r.data.findings || []).some(f => f.status !== 'Closed' && f.due && f.due < t))],
+    ['Risk assessments past review date', ALL.filter(r => r.type === 'risks' && r.data.reviewDate && r.data.reviewDate < t)],
     ['Documents past periodic review', docsOverdue], ['Overdue training assignments', trn.filter(isOverdue)],
-    ['Change controls past target date', ALL.filter(r => r.type === 'changes' && isOverdue(r))],
-    ['Vendor / customer licences expiring within 90 days', licences],
-    ['Complaints with adverse event status unknown', ALL.filter(r => r.type === 'complaints' && r.data.ae === 'Unknown' && !DONE.has(r.status))]
+    ['Approved documents waiting for training past the effective date', ALL.filter(r => r.type === 'documents' && r.status === 'Approved – Training' && isOverdue(r))],
+    ['Failed training assessments awaiting retraining', ALL.filter(r => r.type === 'training' && r.status === 'Failed')],
+    ['Archived records not returned within 7 working days', ALL.filter(r => r.type === 'archives' && isOverdue(r))],    ['Vendor / customer licences expiring within 90 days', licences]
   ];
   shell('readiness', `<div class="spread"><div><h1>Inspection readiness</h1><p class="muted">Items an inspector is likely to ask about first. Each list links to the records.</p></div></div>
     <div class="kpis"><div class="kpi ${compliance >= 95 ? 'ok' : 'alert'}"><b>${compliance}%</b>Training compliance (target 95%)</div>${items.map(([l, list], i) => `<a class="kpi ${list.length ? 'alert' : 'ok'}" href="#/readiness" data-scroll="r${i}"><b>${list.length}</b>${esc(l)}</a>`).join('')}</div>
@@ -488,7 +661,8 @@ function readiness() {
   $('#pe').addEventListener('click', () => {
     const k = $('#pm').value, m = MODS[k], f = $('#pf').value, to = $('#pt').value + 'T23:59:59';
     const rows = ALL.filter(r => r.type === k && r.created_at >= f && r.created_at <= to);
-    download(`inspection_${k}_${f}_${$('#pt').value}.csv`, toCsv([['Number', 'Status', 'Created', ...m.fields.map(x => x.label)], ...rows.map(r => [r.number, r.status, r.created_at, ...m.fields.map(x => r.data[x.k])])]));
+    const fs = dataFields(m);
+    download(`inspection_${k}_${f}_${$('#pt').value}.csv`, toCsv([['Number', 'Status', 'Created', ...fs.map(x => x.label)], ...rows.map(r => [r.number, r.status, r.created_at, ...fs.map(x => plain(x, r.data[x.k]))])]));
   });
 }
 
@@ -526,27 +700,43 @@ async function auditView() {
   await load();
 }
 
+// ---------- register of signatures (JRS/SOP/QAS/009) ----------
+async function signatureRegister() {
+  USERS = await api('GET', '/api/users');
+  const status = (u) => !u.active ? `<span class="pill grey">Inactive${u.inactive_date ? ' from ' + dmy(u.inactive_date) : ''}</span>` : !u.esig_accepted ? '<span class="pill warn">Not registered</span>'
+    : u.esigCurrent ? '<span class="pill done">Registered</span>' : '<span class="pill bad">Re-registration due</span>';
+  shell('signatures', `<div class="spread"><div><h1>Signature register</h1><p class="muted">Electronic register of signatures (replaces FRM/QAS/008). A user registers by accepting the electronic signature statement at first signing; registration is renewed every 5 years. Superseded entries stay in the audit trail.</p></div><button class="btn" id="sx">Export CSV</button></div>
+    <div class="table-wrap"><table class="t"><thead><tr><th>Name</th><th>User ID</th><th>Designation</th><th>Department</th><th>Initials</th><th>Registered on</th><th>Re-register by</th><th>Status</th></tr></thead><tbody>
+    ${USERS.map(u => `<tr><td>${esc(u.fullname)}</td><td class="mono">${esc(u.username)}</td><td>${esc(u.designation || '')}</td><td>${esc(CFG.DEPTS[u.department] || u.department || '')}</td><td class="mono">${esc(u.initials || '')}</td><td>${dmy(u.esig_accepted)}</td><td>${dmy(u.reregisterBy)}</td><td>${status(u)}</td></tr>`).join('')}</tbody></table></div>`);
+  $('#sx').addEventListener('click', () => download(`signature_register_${today()}.csv`, toCsv([['Name', 'User ID', 'Designation', 'Department', 'Initials', 'Registered on', 'Re-register by', 'Active', 'Inactive from'], ...USERS.map(u => [u.fullname, u.username, u.designation, u.department, u.initials, u.esig_accepted, u.reregisterBy, u.active ? 'Yes' : 'No', u.inactive_date])])));
+}
+
 // ---------- users ----------
 async function usersView() {
   if (!ME.roles.includes('admin')) return dashboard();
   USERS = await api('GET', '/api/users');
   const roleChecks = (sel = []) => `<div class="checks">${Object.entries(CFG.ROLES).map(([k, v]) => `<label><input type="checkbox" name="roles" value="${k}" ${sel.includes(k) ? 'checked' : ''}> ${esc(v)}</label>`).join('')}</div>`;
+  // register-of-signatures details (JRS/SOP/QAS/009)
+  const regFields = (u = {}) => `<div class="grid"><div><label class="f">Designation</label><input type="text" name="designation" value="${esc(u.designation || '')}"></div>
+    <div><label class="f">Department</label><select name="department"><option value=""></option>${Object.entries(CFG.DEPTS).map(([k, v]) => `<option value="${k}" ${u.department === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
+    <div><label class="f">Initials</label><input type="text" name="initials" value="${esc(u.initials || '')}"></div></div>`;
+  const regVals = (f) => ({ designation: val(f, 'designation'), department: val(f, 'department'), initials: val(f, 'initials') });
   shell('users', `<div class="spread"><div><h1>Users and roles</h1><p class="muted">User IDs are unique and never reused. Deactivate instead of deleting. Administrators cannot approve GxP records unless also given a QA role (avoid this).</p></div><div class="row"><button class="btn primary" id="nu">New user</button><button class="btn" id="ux">Access review CSV</button></div></div>
     <div class="table-wrap"><table class="t"><thead><tr><th>User ID</th><th>Name</th><th>Roles</th><th>Status</th><th>Last login</th><th></th></tr></thead><tbody>
     ${USERS.map(u => `<tr><td class="mono">${esc(u.username)}</td><td>${esc(u.fullname)}</td><td class="small">${esc(u.roles.map(r => CFG.ROLES[r]).join(', '))}</td><td>${u.locked ? '<span class="pill bad">Locked</span>' : u.active ? '<span class="pill done">Active</span>' : '<span class="pill grey">Inactive</span>'}</td><td class="small">${dmyt(u.last_login)}</td><td><button class="btn" data-edit="${esc(u.username)}">Edit</button></td></tr>`).join('')}</tbody></table></div>`);
   $('#nu').addEventListener('click', async () => {
     const ok = await modal({ title: 'New user', ok: 'Create user', html: `<div class="grid"><div><label class="f">User ID</label><input type="text" name="username"></div><div><label class="f">Full name</label><input type="text" name="fullname"></div>
       <div><label class="f">Email</label><input type="text" name="email"></div><div><label class="f">Initial password</label><input type="password" name="password" autocomplete="new-password"></div></div>
-      <div><label class="f">Roles</label>${roleChecks()}</div><div><label class="f">Reason / access request reference</label><input type="text" name="reason"></div>`,
-      onOk: (f) => api('POST', '/api/users', { username: val(f, 'username'), fullname: val(f, 'fullname'), email: val(f, 'email'), password: f.password.value, reason: val(f, 'reason'), roles: $$('input[name=roles]:checked', f).map(x => x.value) }) });
+      ${regFields()}<div><label class="f">Roles</label>${roleChecks()}</div><div><label class="f">Reason / access request reference</label><input type="text" name="reason"></div>`,
+      onOk: (f) => api('POST', '/api/users', { username: val(f, 'username'), fullname: val(f, 'fullname'), email: val(f, 'email'), password: f.password.value, reason: val(f, 'reason'), roles: $$('input[name=roles]:checked', f).map(x => x.value), ...regVals(f) }) });
     if (ok) { toast('User created – they must change the password at first sign-in'); usersView(); }
   });
   $$('[data-edit]').forEach(b => b.addEventListener('click', async () => {
     const u = USERS.find(x => x.username === b.dataset.edit);
-    const ok = await modal({ title: 'Edit ' + u.username, ok: 'Save', html: `<div><label class="f">Roles</label>${roleChecks(u.roles)}</div>
+    const ok = await modal({ title: 'Edit ' + u.username, ok: 'Save', html: `${regFields(u)}<div><label class="f">Roles</label>${roleChecks(u.roles)}</div>
       <div class="row"><label><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> Active</label>${u.locked ? '<label><input type="checkbox" name="unlock"> Unlock account</label>' : ''}</div>
       <div><label class="f">Reset password (optional)</label><input type="password" name="password" autocomplete="new-password"></div><div><label class="f">Reason <span class="req">*</span></label><input type="text" name="reason"></div>`,
-      onOk: (f) => api('PUT', '/api/users/' + u.username, { roles: $$('input[name=roles]:checked', f).map(x => x.value), active: f.active.checked, unlock: f.unlock ? f.unlock.checked : false, password: f.password.value || undefined, reason: val(f, 'reason') }) });
+      onOk: (f) => api('PUT', '/api/users/' + u.username, { roles: $$('input[name=roles]:checked', f).map(x => x.value), active: f.active.checked, unlock: f.unlock ? f.unlock.checked : false, password: f.password.value || undefined, reason: val(f, 'reason'), ...regVals(f) }) });
     if (ok) { toast('User updated'); usersView(); }
   }));
   $('#ux').addEventListener('click', () => download(`user_access_review_${today()}.csv`, toCsv([['User ID', 'Name', 'Roles', 'Active', 'Locked', 'Last login', 'Created'], ...USERS.map(u => [u.username, u.fullname, u.roles.join('; '), u.active ? 'Yes' : 'No', u.locked ? 'Yes' : 'No', u.last_login, u.created_at])])));

@@ -16,30 +16,25 @@ async function login(u,p='Demo-Pass-2026'){const r=await fetch(B+'/api/login',{m
 const ok=(c,m)=>{if(!c)failed++;console.log((c?'PASS ':'FAIL ')+m)};
 const au=await login('author1'), qa=await login('qa.lead'), qr=await login('qa.reviewer'), op=await login('operator1'), st=await login('stat1'), cs=await login('cs.manager');
 // documents
-let d=await au.call('POST','/api/records',{type:'documents',data:{docType:'SOP',title:'Deviation management',version:'1.0',trainingImpact:'Read & Understand',trainingRoles:['user','qa'],content:'Step 1...'}});
-ok(d.number&&d.status==='Draft','document created '+d.number);
+// documents (full JRS/SOP/QAS/021 and 003 rules are in tests/documents-training.mjs)
+const today=new Date().toISOString().slice(0,10);
+let d=await au.call('POST','/api/records',{type:'documents',data:{docType:'SOP',division:'QAS',title:'Deviation management',sites:['JRS INC'],reviewer:'qa.reviewer',revisionSummary:'New SOP',trainingImpact:'None',content:'Step 1...'}});
+ok(d.number==='JRS/SOP/QAS/001'&&d.status==='Draft'&&d.data.version==='1.0','document created '+d.number);
 ok((await au.sig(d.id,'In Review')).s===200,'send for review');
-ok((await qr.sig(d.id,'In Approval')).ok,'review signed');
-ok((await au.sig(d.id,'Effective')).s===403,'author cannot approve (role)');
-let bad=await qa.call('POST',`/api/records/${d.id}/transition`,{to:'Effective',sigUsername:'qa.lead',password:'wrong'});ok(bad.s===422,'wrong password rejected: '+bad.error);
-ok((await qa.sig(d.id,'Effective')).ok,'QA approve effective');
-let tr=(await op.call('GET','/api/records?type=training'))._arr;ok(tr.length===3,'training auto-assigned to '+tr.length+' users');
-let mine=tr.find(t=>t.data.trainee==='operator1');
-await op.call('POST',`/api/records/${mine.id}/transition`,{to:'In Progress'});
-ok((await qa.sig(mine.id,'Completed')).s===403,'others cannot sign trainee record');
-ok((await op.sig(mine.id,'Completed')).ok,'trainee signs training');
+ok((await qr.sig(d.id,'QA Review')).ok,'review signed');
+ok((await qr.sig(d.id,'Approval')).ok,'QA review signed');
+ok((await au.sig(d.id,'Approved – Training')).s===403,'author cannot approve (role)');
+await qa.call('PUT',`/api/records/${d.id}`,{data:{effectiveDate:today,shortNotice:'Test'},reason:'set effective date'});
+let bad=await qa.call('POST',`/api/records/${d.id}/transition`,{to:'Approved – Training',sigUsername:'qa.lead',password:'wrong'});ok(bad.s===422,'wrong password rejected: '+bad.error);
+ok((await qa.sig(d.id,'Approved – Training')).ok,'Head QA approves');
+ok((await qa.sig(d.id,'Effective')).ok,'QA makes effective');
 let ed=await au.call('PUT',`/api/records/${d.id}`,{data:{title:'x'},reason:'test'});ok(ed.s===409,'effective doc locked');
-let rv=await au.call('POST',`/api/records/${d.id}/revise`,{reason:'periodic review'});ok(rv.number===d.number&&rv.data.version==='2.0','revision v2.0 same number');
-// deviation
-let dv=await op.call('POST','/api/records',{type:'deviations',data:{title:'Temp excursion WH-2',category:'Temperature excursion',classification:'Major',occurred:'2026-10-19',description:'Logger showed 9°C for 2h'}});
-ok(dv.data.dueDate==='2026-11-18','due date auto +30d');
-ok((await qa.sig(dv.id,'Investigation')).ok,'triage');
-await op.call('POST',`/api/records/${dv.id}/transition`,{to:'QA Review'}).then(r=>ok(r.s===403,'operator cannot submit investigation (role)'));
-await au.sig(dv.id,'QA Review');
-ok((await qa.sig(dv.id,'Closed')).s===400,'close blocked without root cause');
-let up=await au.call('PUT',`/api/records/${dv.id}`,{data:{rootCause:'Door seal failure'}});ok(up.s===400,'edit without reason blocked');
-await qa.call('PUT',`/api/records/${dv.id}`,{data:{rootCause:'Door seal failure'},reason:'RCA complete'});
-ok((await qa.sig(dv.id,'Closed')).ok,'deviation closed by QA (not initiator)');
+let rv=await au.call('POST',`/api/records/${d.id}/revise`,{revisionType:'Periodic review – no change',reason:'periodic review'});ok(rv.number===d.number&&rv.data.version==='2.0','revision v2.0 same number');
+// deviation (full Quality Events rules are in tests/quality-events.mjs)
+let dv=await op.call('POST','/api/records',{type:'investigations',data:{invType:'Deviation',site:'JRS INC',title:'Temp excursion WH-2',dateIdentified:'2026-10-19',requestDetails:'Logger showed 9°C for 2h'}});
+ok(/^REQ-\d{4}-0001$/.test(dv.number),'deviation request numbered '+dv.number);
+let up=await op.call('PUT',`/api/records/${dv.id}`,{data:{title:'x'}});ok(up.s===400,'edit without reason blocked');
+await op.call('POST',`/api/records/${dv.id}/transition`,{to:'Number Assignment',sigUsername:'operator1',password:'Demo-Pass-2026'}).then(r=>ok(r.s===403,'operator cannot approve the request (role)'));
 // randomization
 let rn=await st.call('POST','/api/records',{type:'randomization',data:{title:'Kit list',study:'ABC-301',arms:'A,B',ratio:'2:1',blockSize:6,kits:60,startKit:1001,seed:'test-seed'}});
 ok(rn.number,'rand created');
@@ -68,14 +63,14 @@ const rp=await login('rp1');
 ok((await rp.sig(cu.id,'Qualified')).s===400,'qualification blocked without sanctions clear');
 // audit trail
 let v=await qa.call('GET','/api/audit/verify');ok(v.ok,'audit chain intact, entries '+v.checked);
-let det=await qa.call('GET',`/api/records/${dv.id}`);ok(det.signatures.length===2,'deviation signatures '+det.signatures.length);
+let det=await qa.call('GET',`/api/records/${rn.id}`);ok(det.signatures.length===2,'randomization signatures '+det.signatures.length);
 ok((await fetch(B+'/api/records')).status===401,'unauthenticated blocked');
 let nocsrf=await fetch(B+'/api/logout',{method:'POST',headers:{cookie:'x'}});ok(nocsrf.status===401,'no session on POST');
 
 // document issuance
-let is1=await op.call('POST','/api/records',{type:'issues',data:{docNumber:'DOC-9999-0001',copyType:'Controlled – working copy (SOP / WI)',copies:2,issuedTo:'operator1',purpose:'Line 2',returnBy:'2026-12-31'}});
+let is1=await op.call('POST','/api/records',{type:'issues',data:{docNumber:'JRS/SOP/QAS/999',copyType:'Controlled copy (department display / reference)',copies:2,issuedTo:'operator1',purpose:'Line 2',returnBy:'2026-12-31'}});
 ok(is1.s===400,'issue blocked for non-effective document');
-let is=await op.call('POST','/api/records',{type:'issues',data:{docNumber:d.number,copyType:'Controlled – executed record (form / logbook / batch record)',copies:2,issuedTo:'operator1',purpose:'BMR lot B2610-07',returnBy:'2026-12-31'}});
+let is=await op.call('POST','/api/records',{type:'issues',data:{docNumber:d.number,copyType:'Form issued by QA (ISSUED BY QA, FRM/QAS/050)',copies:2,issuedTo:'operator1',purpose:'BMR lot B2610-07',returnBy:'2026-12-31'}});
 ok(is.data&&is.data.docVersion==='1.0','issue request filled with effective version '+(is.data&&is.data.docVersion));
 ok((await qa.call('POST',`/api/records/${is.id}/issue-print`,{sigUsername:'qa.lead',password:'Demo-Pass-2026'})).s===409,'print blocked before approval');
 ok((await qa.sig(is.id,'Approved')).ok,'QA approves issue');

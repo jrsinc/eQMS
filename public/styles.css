@@ -69,6 +69,16 @@ label.f .req { color: var(--red); }
 .checks { display: flex; flex-wrap: wrap; gap: .35rem 1rem; padding: .3rem 0; }
 .checks label { display: flex; gap: .35rem; align-items: center; font-size: .92rem; }
 .computed { font-family: var(--mono); padding: .45rem .6rem; border: 1px dashed var(--line); border-radius: var(--radius-s); min-height: 2.3rem; }
+.env-banner { background: var(--amber-soft); color: var(--amber); border-bottom: 1px solid var(--amber); text-align: center; font-weight: 600; font-size: .88rem; padding: .3rem 1rem; }
+.form-section { margin: .9rem 0 0; padding: .45rem .7rem; background: var(--accent-soft); color: var(--accent); border-radius: var(--radius-s); font-size: .95rem; font-weight: 600; }
+.form-section:first-child { margin-top: 0; }
+.sig-block { margin-bottom: .3rem; }
+.sig-block table.t th, .sig-block table.t td { padding: .35rem .6rem; font-size: .88rem; }
+table.check-table td:nth-child(2), table.check-table td:nth-child(3) { text-align: center; width: 3.5rem; }
+table.check-table input[type=radio] { width: auto; }
+table.edit-table td { padding: .3rem .4rem; }
+table.edit-table input, table.edit-table select { min-width: 8rem; }
+table.edit-table input.score { min-width: 3.6rem; width: 4rem; }
 
 /* panels and tables */
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m); padding: 1.1rem 1.25rem; }
@@ -99,6 +109,7 @@ table.t tr.click:hover td { background: var(--surface-2); }
 
 /* record detail */
 .record { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 1.25rem; align-items: start; }
+.record > div, .grid > div { min-width: 0; } /* wide tables scroll inside their box instead of widening the page */
 .rail > * + * { margin-top: 1rem; }
 .lifecycle { list-style: none; margin: 0; padding: 0; counter-reset: s; }
 .lifecycle li { position: relative; padding: 0 0 .7rem 1.6rem; color: var(--ink-3); font-size: .9rem; }

@@ -13,70 +13,197 @@
     unblinded: 'Unblinded randomization officer',
     trainer: 'Training coordinator',
     auditor: 'Internal auditor',
+    hod: 'Department Head',
+    pm: 'Project Manager (client communication)',
+    mgmt: 'Senior leadership / Management Representative',
+    numgen: 'Record number generator (QA)',
+    extaud: 'External auditor / inspector (read-only)',
     user: 'General user'
   };
 
   const CLASS = ['Critical', 'Major', 'Minor'];
-  const SITES = ['Site 1 – Manufacturing', 'Site 2 – Wholesale / GDP warehouse', 'Site 3 – Clinical packaging'];
+  const SITES = ['JRS INC', 'JRS IND', 'JRS INC SMT'];
+  // Division codes per JRS/SOP/QAS/021 (also used in CAPA numbers, JRS/SOP/QAS/006)
+  const DEPTS = {
+    QAS: 'QAS – Quality Assurance', OPS: 'OPS – Operations', ADM: 'ADM – Administration', PKG: 'PKG – Packaging',
+    ENG: 'ENG – Engineering', PMT: 'PMT – Project Management', HRM: 'HRM – Human Resource Management',
+    ITS: 'ITS – IT Services', SMT: 'SMT – JRS INC Somerset facility'
+  };
+  const DEPT_CODES = Object.keys(DEPTS);
+  const EC_DUE = ['3 months', '6 months', '9 months', '12 months', 'Not applicable'];
 
-  // Helper to build a transition
+  // Helpers shared by browser and server (dates are ISO yyyy-mm-dd, calculated in UTC)
   const t = (from, to, label, roles, opts = {}) => ({ from, to, label, roles, ...opts });
+  // Form section. opts: part (links signatures of transitions with the same part), create (shown on the new-record form),
+  // edit ({ state: [roles | 'initiator'] } – who may change the section's fields in which state)
+  const sec = (label, opts = {}) => ({ type: 'section', label, ...opts });
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const plusDays = (d, n) => { const x = new Date(String(d).slice(0, 10) + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return iso(x); };
+  const dayDiff = (a, b) => Math.round((Date.parse(String(b).slice(0, 10)) - Date.parse(String(a).slice(0, 10))) / 864e5);
+  const todayIso = () => iso(new Date());
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  // JRS/SOP/QAS/020 Appendix 2, RPN = S × O × D (1–125). Bands made contiguous: Minor 1–19, Moderate 20–44, Major 45–79, Critical 80–125
+  const rpnLevel = (n) => !n ? '' : n >= 80 ? 'Critical' : n >= 45 ? 'Major' : n >= 20 ? 'Moderate' : 'Minor';
+  const score = (v) => { const n = Number(v); return Number.isInteger(n) && n >= 1 && n <= 5 ? n : 0; };
+  const fmeaRow = (r) => {
+    const n = score(r.s) * score(r.o) * score(r.d), p = score(r.ps) * score(r.po) * score(r.pd);
+    return { rpn: n ? String(n) : '', level: rpnLevel(n), prpn: p ? String(p) : '', plevel: rpnLevel(p) };
+  };
+
+  // JRS/SOP/QAS/021 document types and number codes (JRS/SOP/DIV/XXX, JRS/POL/…, JRS/WI/…, JRS/FRM/…)
+  const DOC_CODES = { SOP: 'SOP', Policy: 'POL', 'Work Instruction': 'WI', Form: 'FRM' };
+  // JRS/SOP/QAS/003
+  const TRAINING_TYPES = ['Induction', 'SOP training – read & understand', 'SOP training – instructor-led', 'On-the-job training', 'GMP / GDP / GCP', 'Annual refresher', 'Retraining', 'Self-reading (Manager and above)', 'Qualification / validation protocol', 'Other'];
+  const PASS_MARK = 80;
+  const trainingScore = (d) => {
+    const q = (d.questions || []).filter(x => +x.marks > 0);
+    if (!q.length) return null;
+    return Math.round(100 * q.reduce((a, x) => a + (+x.obtained || 0), 0) / q.reduce((a, x) => a + +x.marks, 0));
+  };
+  // FRM/QAS/032 trainer assessment; the SOP defines no pass mark – 70 of 100 is used until QA defines one
+  const TRAINER_PARAMS = [['p1', 'Educated, qualified and experienced in cGMP and the pharmaceutical quality system', 10], ['p2', 'Skilled and well-behaved towards trainees', 10],
+    ['p3', 'SME / fluency of languages', 10], ['p4', 'Experience, technical competence, confidence', 10], ['p5', 'Delivers the content, good speaker, answers questions', 20],
+    ['p6', 'Teaches to learning objectives with appropriate techniques', 20], ['p7', 'Overall technical competency', 20]];
+  const TRAINER_PASS = 70;
+  // JRS/SOP/QAS/012 §5.4.6 retention matrix (years from archival, or Permanent)
+  const RETENTION = {
+    'List of SOPs / forms / WI / policies': 15, 'SOPs / WI / forms / policies (current and obsolete)': 15, 'Contracts / agreements (clients, vendors, consultants)': 'Permanent',
+    'Facility layout': 15, 'Equipment qualification protocols / reports': 15, 'Essential documents (Quality Manual, BCP, approved vendor / customer lists, audits, logs)': 15,
+    'HR employee files': 15, 'Training records and employee training files': 15, 'QMS records (change control, deviations, CAPA, complaints, logs)': 15,
+    'Calibration records and equipment validation reports': 15, 'Pest control records': 15, 'Product recall reports': 15,
+    'Project-specific files (project manual, packaging records, label proofs, shipment and receipt documents)': 15, 'Temperature records': 15,
+    'Mock recall reports': 15, 'Data archived electronically': 15
+  };
 
   const MODULES = {
     documents: {
-      name: 'Documents', group: 'Documents & training', prefix: 'DOC',
-      intro: 'Controlled SOPs, work instructions, policies, forms and specifications.',
-      list: ['number', 'docType', 'title', 'version', 'status', 'nextReview'],
+      name: 'Documents', single: 'document', group: 'Documents & training', prefix: 'DOC',
+      intro: 'Controlled SOPs, policies, work instructions and forms per JRS/SOP/QAS/021 (templates FRM/QAS/046 and 047, list of controlled documents FRM/QAS/048). Number JRS/type/division/serial; numbers are never reused.',
+      numbering: (d) => ({ pre: `JRS/${DOC_CODES[d.docType]}/${d.division}/`, pad: 3 }),
+      list: ['number', 'version', 'title', 'docType', 'effectiveDate', 'nextReview', 'status'],
       fields: [
-        { k: 'docType', label: 'Document type', type: 'select', req: true, options: ['Quality Manual', 'Policy', 'SOP', 'Work Instruction', 'Form / Template', 'Specification', 'Master Batch Record', 'Packaging Instruction', 'Label Template', 'Validation Protocol', 'Validation Report', 'Quality Agreement', 'Site Master File'] },
-        { k: 'title', label: 'Title', type: 'text', req: true, full: true },
-        { k: 'version', label: 'Version', type: 'text', req: true, def: '1.0' },
-        { k: 'department', label: 'Department', type: 'select', options: ['Quality Assurance', 'Quality Control', 'Production', 'Clinical Supply', 'Warehouse / GDP', 'Engineering', 'Regulatory Affairs', 'IT'] },
-        { k: 'site', label: 'Site', type: 'select', options: SITES },
-        { k: 'parent', label: 'Parent document no.', type: 'text' },
-        { k: 'trainingImpact', label: 'Training impact', type: 'select', req: true, options: ['None', 'Read & Understand', 'Instructor-led', 'Assessment required'] },
+        sec('Document', { edit: { Draft: ['initiator', 'qa'] } }),
+        { k: 'docType', label: 'Document type', type: 'select', req: true, lock: true, options: Object.keys(DOC_CODES) },
+        { k: 'division', label: 'Division (sets the document number)', type: 'select', req: true, lock: true, options: DEPT_CODES, optionLabels: DEPTS },
+        { k: 'title', label: 'Title (stored in capitals; [GLB] added when it applies to more than one site)', type: 'text', req: true, full: true },
+        { k: 'sites', label: 'Applicable site(s)', type: 'multicheck', req: true, options: SITES },
+        { k: 'relatedSop', label: 'Related SOP (forms)', type: 'recordref', refTypes: ['documents'] },
+        { k: 'version', label: 'Version', type: 'readonly' },
+        { k: 'revisionType', label: 'Revision type', type: 'readonly' },
+        { k: 'changeControl', label: 'Change control no. (required for a revision with technical or procedural changes)', type: 'recordref', refTypes: ['changes'] },
+        { k: 'revisionSummary', label: 'Reason for issue / summary of changes (revision history)', type: 'textarea', full: true },
+        { k: 'reviewer', label: 'Reviewer (SME / Head of Department)', type: 'user', req: true },
+        { k: 'crossDepts', label: 'Cross-functional review – departments whose function is affected', type: 'multicheck', options: DEPT_CODES, optionLabels: DEPTS },
+        { k: 'trainingImpact', label: 'Training before the effective date', type: 'select', req: true, options: ['Read & Understand', 'Instructor-led', 'Assessment required', 'None'] },
         { k: 'trainingRoles', label: 'Roles to be trained', type: 'multicheck', options: Object.keys(ROLES) },
-        { k: 'reviewYears', label: 'Periodic review (years)', type: 'number', def: 2 },
-        { k: 'effectiveDate', label: 'Effective date', type: 'date' },
-        { k: 'nextReview', label: 'Next periodic review', type: 'date' },
-        { k: 'sharepointUrl', label: 'SharePoint link (draft / published)', type: 'text', full: true },
-        { k: 'content', label: 'Document content / summary of changes', type: 'textarea', full: true, rows: 10 }
+        { k: 'content', label: 'Document content (or attach the approved Word / PDF file below)', type: 'textarea', full: true, rows: 10 },
+        sec('Approval and effective date', { edit: { Draft: ['initiator', 'qa'], Approval: ['qa'] } }),
+        { k: 'effectiveDate', label: 'Effective date (at least 8 calendar days after approval)', type: 'date' },
+        { k: 'shortNotice', label: 'QA justification if effective in less than 8 days', type: 'textarea', full: true },
+        { k: 'nextReview', label: 'Periodic review due (3 years from effective date)', type: 'readonly', fmt: 'date' },
+        { k: 'sharepointUrl', label: 'SharePoint link (published copy)', type: 'readonly' }
       ],
-      states: ['Draft', 'In Review', 'In Approval', 'Effective', 'Superseded', 'Obsolete'],
+      states: ['Draft', 'In Review', 'QA Review', 'Approval', 'Approved – Training', 'Effective', 'Superseded', 'Obsolete'],
       transitions: [
-        t('Draft', 'In Review', 'Send for review', ['author', 'qa']),
-        t('In Review', 'Draft', 'Return to author', ['sme', 'qa'], { reason: true }),
-        t('In Review', 'In Approval', 'Complete review', ['sme', 'qa'], { sign: 'Reviewed' }),
-        t('In Approval', 'Effective', 'Approve and make effective', ['qa'], { sign: 'Approved', sod: true }),
-        t('In Approval', 'Draft', 'Reject', ['qa'], { reason: true }),
-        t('Effective', 'Superseded', 'Supersede', ['qa'], { sign: 'Approved', reason: true }),
-        t('Effective', 'Obsolete', 'Make obsolete', ['qa'], { sign: 'Approved', reason: true })
-      ]
+        t('Draft', 'In Review', 'Submit for review', ['any'], { sign: 'Prepared – author', needs: ['reviewer', 'sites', 'revisionSummary'], checks: ['isInitiator', 'docRevisionCC'] }),
+        t('In Review', 'Draft', 'Return to author', ['any'], { reason: true, checks: ['isReviewer'] }),
+        t('In Review', 'QA Review', 'Complete review', ['any'], { sign: 'Reviewed – SME / Head of Department', checks: ['isReviewer', 'deptApprovalsDone'] }),
+        t('QA Review', 'Draft', 'Return to author', ['qa'], { reason: true }),
+        t('QA Review', 'Approval', 'QA review complete (GDocP, format, numbering, regulatory)', ['qa'], { sign: 'Reviewed – QA' }),
+        t('Approval', 'Draft', 'Reject', ['qa'], { reason: true }),
+        t('Approval', 'Approved – Training', 'Approve document (Head QA)', ['qa'], { sign: 'Approved – Head QA', sod: true, sodWith: 'Reviewed – QA', needs: ['effectiveDate'], checks: ['docEffective8'] }),
+        t('Approved – Training', 'Effective', 'Make effective', ['qa'], { sign: 'Made effective – QA', checks: ['docEffectiveToday', 'docTrainingDone'] }),
+        t('Effective', 'Obsolete', 'Discontinue – make obsolete (link the approved change control first)', ['qa'], { sign: 'Made obsolete – QA', reason: true, checks: ['docDiscontinueCC'] })
+      ],
+      deptApproval: { state: 'In Review', field: 'crossDepts', label: 'Cross-functional review' }
     },
 
     training: {
-      name: 'Training records', group: 'Documents & training', prefix: 'TRN',
-      intro: 'Read & understand, classroom, on-the-job and e-learning assignments.',
+      name: 'Training records', single: 'training record', group: 'Documents & training', prefix: 'TRN',
+      intro: 'Training records per JRS/SOP/QAS/003: attendance (FRM/QAS/002) and assessment (FRM/QAS/034). Pass mark 80%; the training log is signed by both trainee and certified trainer; only trained personnel work independently.',
       list: ['number', 'trainee', 'title', 'trainingType', 'dueDate', 'status'],
       fields: [
-        { k: 'trainee', label: 'Trainee (username)', type: 'user', req: true },
-        { k: 'title', label: 'Course / document', type: 'text', req: true, full: true },
-        { k: 'docRef', label: 'Linked document no.', type: 'text' },
-        { k: 'trainingType', label: 'Training type', type: 'select', req: true, options: ['Read & Understand', 'Instructor-led', 'On-the-job', 'e-Learning', 'External', 'GMP/GDP induction', 'Annual refresher'] },
-        { k: 'trainer', label: 'Trainer (username)', type: 'user' },
+        sec('Training (FRM/QAS/002)'),
+        { k: 'trainee', label: 'Trainee', type: 'user', req: true },
+        { k: 'title', label: 'Topic / subject of training', type: 'text', req: true, full: true },
+        { k: 'docRef', label: 'Reference SOP / document no.', type: 'recordref', refTypes: ['documents'] },
+        { k: 'docVersion', label: 'Document version', type: 'readonly' },
+        { k: 'trainingType', label: 'Type of training', type: 'select', req: true, options: TRAINING_TYPES },
+        { k: 'mode', label: 'Mode of training', type: 'select', options: ['Classroom', 'Online (remote)', 'Self-training', 'On-the-job'] },
+        { k: 'trainer', label: 'Certified trainer (FRM/QAS/033)', type: 'user' },
         { k: 'dueDate', label: 'Due date', type: 'date', req: true },
-        { k: 'passMark', label: 'Pass mark (%)', type: 'number' },
-        { k: 'score', label: 'Assessment score (%)', type: 'number' },
-        { k: 'sourceRecord', label: 'Triggered by (CAPA / CC / Deviation no.)', type: 'text' },
+        { k: 'trainingDate', label: 'Date of training', type: 'date' },
+        { k: 'sourceRecord', label: 'Triggered by (TNI, CAPA, deviation, change control, audit)', type: 'recordref', refTypes: ['tni', 'capa', 'investigations', 'changes', 'selfinspections', 'extaudits', 'documents'] },
+        { k: 'attempt', label: 'Attempt', type: 'readonly' },
+        sec('Assessment (FRM/QAS/034)'),
+        { k: 'assessment', label: 'Written assessment required', type: 'checkbox' },
+        { k: 'questions', label: 'Questions', type: 'table', full: true, cols: [{ k: 'question', label: 'Question' }, { k: 'answer', label: 'Answer' }, { k: 'marks', label: 'Marks', type: 'number' }, { k: 'obtained', label: 'Marks obtained', type: 'number' }] },
+        { k: 'score', label: 'Result', type: 'computed' },
+        { k: 'gapTopic', label: 'Score 80–99%: trainee did not understand the procedure for … (topic explained again)', type: 'textarea', full: true },
         { k: 'notes', label: 'Notes', type: 'textarea', full: true }
       ],
-      states: ['Assigned', 'In Progress', 'Completed', 'Failed', 'Cancelled'],
+      compute: { score: (d) => { const s = trainingScore(d); return s == null ? '' : `${s}% – ${s >= PASS_MARK ? 'Satisfactory (≥ 80%)' : 'Unsatisfactory (< 80%) – retraining required'}`; } },
+      states: ['Assigned', 'In Progress', 'Trainer Evaluation', 'Completed', 'Failed', 'Cancelled'],
       transitions: [
-        t('Assigned', 'In Progress', 'Start', ['any']),
-        t('In Progress', 'Completed', 'Sign as trained', ['any'], { sign: 'Trained – read and understood', traineeOnly: true, checkScore: true }),
-        t('In Progress', 'Failed', 'Record failed assessment', ['trainer', 'qa'], { reason: true }),
-        t('Failed', 'Assigned', 'Re-assign', ['trainer', 'qa']),
+        t('Assigned', 'In Progress', 'Start training', ['any'], { checks: ['isTrainee'] }),
+        t('In Progress', 'Completed', 'Sign as read and understood (self-reading)', ['any'], { sign: 'Read and understood – trainee', checks: ['isTrainee', 'trSelfReading'] }),
+        t('In Progress', 'Trainer Evaluation', 'Sign training log – trainee', ['any'], { sign: 'Trained – trainee', needs: ['trainer', 'trainingDate', 'mode'], checks: ['isTrainee', 'trNotSelfReading'] }),
+        t('Trainer Evaluation', 'Completed', 'Evaluate and sign – certified trainer', ['any'], { sign: 'Evaluated – certified trainer', checks: ['isTrainer', 'certifiedTrainer', 'trPass'] }),
+        t('Trainer Evaluation', 'Failed', 'Record unsatisfactory result (< 80%)', ['any'], { sign: 'Evaluated – certified trainer', checks: ['isTrainer', 'certifiedTrainer', 'trFail'] }),
+        t('Failed', 'Assigned', 'Retrain and reassess', ['any'], { checks: ['isTrainer'] }),
         t('Assigned', 'Cancelled', 'Cancel', ['trainer', 'qa'], { reason: true })
+      ]
+    },
+
+    tni: {
+      name: 'Training need identification', single: 'training need identification', group: 'Documents & training', prefix: 'TNI',
+      intro: 'Training need identification per JRS/SOP/QAS/003 (FRM/QAS/030) and training certificate (FRM/QAS/031). Prepared by the Head of Department, approved by the Head of Quality; must include QA SOPs. Approval assigns the training; the certificate is effective on the Head of Quality signature.',
+      list: ['number', 'employee', 'department', 'designation', 'status'],
+      fields: [
+        sec('Employee details'),
+        { k: 'employee', label: 'Employee', type: 'user', req: true, lock: true },
+        { k: 'dateJoining', label: 'Date of joining', type: 'date' },
+        { k: 'designation', label: 'Designation', type: 'text', req: true },
+        { k: 'department', label: 'Department', type: 'select', req: true, options: DEPT_CODES, optionLabels: DEPTS },
+        { k: 'reason', label: 'Reason', type: 'select', req: true, options: ['New joiner (induction)', 'Transfer / new responsibilities', 'Return after more than 3 months leave', 'Annual retraining', 'Other'] },
+        sec('Training needs (FRM/QAS/030)'),
+        { k: 'plan', label: 'Training subjects', type: 'table', full: true, cols: [{ k: 'subject', label: 'Training subject' }, { k: 'refDoc', label: 'Reference SOP / document no.', ref: ['documents'] }, { k: 'type', label: 'Type', options: TRAINING_TYPES }] },
+        sec('Training certificate (FRM/QAS/031)'),
+        { k: 'area', label: 'Qualified to carry out activities in (area / section)', type: 'text', full: true },
+        { k: 'certificateDate', label: 'Certificate effective date (Head of Quality signature)', type: 'readonly', fmt: 'date' }
+      ],
+      states: ['Draft', 'Head of Quality Approval', 'Training In Progress', 'Certificate Issued', 'Certified'],
+      transitions: [
+        t('Draft', 'Head of Quality Approval', 'Prepare TNI (Head of Department)', ['hod'], { sign: 'Prepared – Head of Department', needs: ['plan'], checks: ['tniPlan'] }),
+        t('Head of Quality Approval', 'Draft', 'Return to Head of Department', ['qa'], { reason: true }),
+        t('Head of Quality Approval', 'Training In Progress', 'Approve TNI – assign training', ['qa'], { sign: 'Approved – Head of Quality', sod: true }),
+        t('Training In Progress', 'Certificate Issued', 'Issue training certificate (line manager)', ['hod'], { sign: 'Certificate issued – line manager', needs: ['area'], checks: ['tniDone'] }),
+        t('Certificate Issued', 'Certified', 'Approve certificate (Head of Quality)', ['qa'], { sign: 'Certificate approved – Head of Quality' })
+      ]
+    },
+
+    trainers: {
+      name: 'Certified trainers', single: 'trainer assessment', group: 'Documents & training', prefix: 'TRC',
+      intro: 'Trainer assessment (FRM/QAS/032) and list of certified trainers (FRM/QAS/033) per JRS/SOP/QAS/003. Only certified trainers deliver and evaluate training.',
+      numbering: () => ({ pre: 'TRC-', pad: 3 }),
+      list: ['number', 'trainer', 'department', 'topics', 'total', 'status'],
+      fields: [
+        { k: 'trainer', label: 'Name of trainer', type: 'user', req: true, lock: true },
+        { k: 'department', label: 'Department', type: 'select', req: true, options: DEPT_CODES, optionLabels: DEPTS },
+        { k: 'qualification', label: 'Qualification', type: 'text', req: true },
+        { k: 'experience', label: 'Experience', type: 'text', req: true },
+        { k: 'topics', label: 'Training topics', type: 'text', req: true, full: true },
+        { k: 'observer', label: 'Observer', type: 'user' },
+        ...TRAINER_PARAMS.map(([k, label, max]) => ({ k, label: `${label} (max. ${max})`, type: 'number' })),
+        { k: 'total', label: `Total (of 100; pass mark ${TRAINER_PASS})`, type: 'computed' }
+      ],
+      compute: { total: (d) => { const n = TRAINER_PARAMS.reduce((a, [k]) => a + (+d[k] || 0), 0); return n ? `${n} – ${n >= TRAINER_PASS ? 'meets acceptance criteria' : 'below acceptance criteria'}` : ''; } },
+      states: ['Assessment', 'Head of Quality Approval', 'Certified', 'Withdrawn'],
+      transitions: [
+        t('Assessment', 'Head of Quality Approval', 'Submit assessment (Head of Department)', ['hod'], { sign: 'Prepared – Head of Department', checks: ['trainerScores'] }),
+        t('Head of Quality Approval', 'Assessment', 'Return', ['qa'], { reason: true }),
+        t('Head of Quality Approval', 'Certified', 'Approve – add to certified trainer list', ['qa'], { sign: 'Approved – Head of Quality', sod: true, checks: ['trainerScores'] }),
+        t('Certified', 'Withdrawn', 'Withdraw', ['qa'], { sign: 'Withdrawn – QA', reason: true })
       ]
     },
 
@@ -89,7 +216,7 @@
         { k: 'docNumber', label: 'Document no. to issue (must be Effective)', type: 'text', req: true },
         { k: 'title', label: 'Document title (filled automatically)', type: 'readonly' },
         { k: 'docVersion', label: 'Version issued (filled automatically)', type: 'readonly' },
-        { k: 'copyType', label: 'Copy type', type: 'select', req: true, options: ['Controlled – executed record (form / logbook / batch record)', 'Controlled – working copy (SOP / WI)'] },
+        { k: 'copyType', label: 'Copy type (JRS/SOP/QAS/021)', type: 'select', req: true, options: ['Controlled copy (department display / reference)', 'Uncontrolled copy (customer / external / authorised person)', 'Form issued by QA (ISSUED BY QA, FRM/QAS/050)', 'Bound logbook (pre-numbered pages)'] },
         { k: 'copies', label: 'Number of copies', type: 'number', req: true, def: 1 },
         { k: 'issuedTo', label: 'Issued to (username)', type: 'user', req: true },
         { k: 'purpose', label: 'Purpose / batch / lot / equipment', type: 'text', req: true, full: true },
@@ -110,36 +237,149 @@
       ]
     },
 
-    deviations: {
-      name: 'Deviations', group: 'Quality events', prefix: 'DEV',
-      intro: 'Unplanned and planned departures from approved procedures, specifications or GDP conditions.',
-      list: ['number', 'title', 'category', 'classification', 'dueDate', 'status'],
+    archives: {
+      name: 'Record archive', single: 'archived record', group: 'Documents & training', prefix: 'ARC',
+      intro: 'Archival log per JRS/SOP/QAS/012 (FRM/QAS/028): records are verified, sealed and archived by QA each year, retained for 15 years (contracts permanently, or as the customer requests), retrieved on request and returned within 7 working days, and destroyed by QA after the retention period.',
+      list: ['number', 'title', 'recordType', 'boxId', 'destroyFrom', 'status'],
       fields: [
-        { k: 'title', label: 'Short description', type: 'text', req: true, full: true },
-        { k: 'planned', label: 'Planned deviation', type: 'checkbox' },
-        { k: 'category', label: 'Category', type: 'select', req: true, options: ['Manufacturing', 'Packaging', 'Labelling', 'Laboratory / OOS', 'Equipment', 'Facility / utilities', 'Temperature excursion', 'Documentation', 'Supplier', 'Clinical supply / blinding', 'Data integrity', 'GDP / distribution'] },
-        { k: 'classification', label: 'Classification', type: 'select', req: true, options: CLASS },
-        { k: 'site', label: 'Site', type: 'select', options: SITES },
-        { k: 'occurred', label: 'Date occurred', type: 'date', req: true },
-        { k: 'dueDate', label: 'Closure due', type: 'date' },
-        { k: 'product', label: 'Product(s)', type: 'text' },
-        { k: 'batch', label: 'Batch / lot / kit nos.', type: 'text' },
-        { k: 'study', label: 'Clinical study', type: 'text' },
-        { k: 'description', label: 'What happened (who, what, where, when)', type: 'textarea', req: true, full: true },
-        { k: 'immediate', label: 'Immediate / containment actions', type: 'textarea', full: true },
-        { k: 'impact', label: 'Impact assessment (product, other batches, validated state, MA, study, patient)', type: 'textarea', full: true },
-        { k: 'reportable', label: 'Regulatory reportable?', type: 'select', options: ['No', 'Yes – field alert / authority', 'Yes – serious breach (CTR)', 'Under assessment'] },
-        { k: 'rootCause', label: 'Root cause summary (see linked RCA)', type: 'textarea', full: true },
-        { k: 'disposition', label: 'Batch disposition recommendation', type: 'select', options: ['N/A', 'Release', 'Reject', 'Rework', 'Hold pending further data'] }
+        sec('Record', { edit: { 'Pending Archival': ['initiator', 'qa'] } }),
+        { k: 'title', label: 'Document title', type: 'text', req: true, full: true },
+        { k: 'recordType', label: 'Record type (retention matrix)', type: 'select', req: true, options: Object.keys(RETENTION) },
+        { k: 'retention', label: 'Retention period', type: 'computed' },
+        { k: 'mode', label: 'Kept as', type: 'select', req: true, options: ['Physical', 'Electronic', 'Physical and electronic'] },
+        { k: 'version', label: 'Version no.', type: 'text' },
+        { k: 'versionDate', label: 'Version date', type: 'date' },
+        { k: 'uniqueId', label: 'Unique ID', type: 'text', req: true },
+        { k: 'boxId', label: 'Box ID', type: 'text' },
+        { k: 'location', label: 'Storage location', type: 'select', req: true, options: ['On-site archive', 'Off-site storage (qualified vendor)', 'Electronic (restricted OneDrive / shared drive)'] },
+        { k: 'vendor', label: 'Off-site storage vendor (must be approved)', type: 'recordref', refTypes: ['vendors'] },
+        { k: 'client', label: 'Client (client-specific records)', type: 'text' },
+        { k: 'clientRetention', label: 'Client-requested retention / destruction instruction', type: 'text', full: true },
+        sec('Archival', { edit: { 'Pending Archival': ['qa'] } }),
+        { k: 'verified', label: 'Department and QA checked signatures, completed entries and struck-off blanks; sealed and labelled', type: 'checkbox', full: true },
+        { k: 'archivalDate', label: 'Archival date', type: 'date' },
+        { k: 'destroyFrom', label: 'Eligible for destruction from', type: 'computed' },
+        sec('Retrieval log (return within 7 working days)', { edit: { Archived: ['qa'], Retrieved: ['qa'] } }),
+        { k: 'retrievals', label: 'Retrievals', type: 'table', full: true, cols: [{ k: 'date', label: 'Retrieval date', type: 'date' }, { k: 'by', label: 'Requested by' }, { k: 'purpose', label: 'Purpose' }, { k: 'returned', label: 'Return date', type: 'date' }, { k: 'rearchived', label: 'Re-archival date', type: 'date' }] },
+        sec('Destruction', { edit: { Archived: ['qa'] } }),
+        { k: 'destructionDate', label: 'Destruction date', type: 'date' },
+        { k: 'destructionMethod', label: 'Method', type: 'select', options: ['Paper shredder', 'Secure electronic deletion'] }
       ],
-      states: ['Open', 'Investigation', 'QA Review', 'Closed', 'Cancelled'],
+      compute: {
+        retention: (d) => { const r = RETENTION[d.recordType]; return !r ? '' : r === 'Permanent' ? 'Permanent' : `${r} years from archival` + (d.client ? ' (or as the client requests)' : ''); },
+        destroyFrom: (d) => { const r = RETENTION[d.recordType]; return !r || !d.archivalDate ? '' : r === 'Permanent' ? 'Never (permanent)' : plusDays(d.archivalDate, Math.round(r * 365.25)); }
+      },
+      states: ['Pending Archival', 'Archived', 'Retrieved', 'Destroyed'],
       transitions: [
-        t('Open', 'Investigation', 'QA triage – start investigation', ['qa'], { sign: 'Reviewed' }),
-        t('Investigation', 'QA Review', 'Submit investigation', ['sme', 'qa', 'author']),
-        t('QA Review', 'Investigation', 'Return for more investigation', ['qa'], { reason: true }),
-        t('QA Review', 'Closed', 'Approve and close', ['qa'], { sign: 'Approved', sod: true, needs: ['rootCause'] }),
-        t('Open', 'Cancelled', 'Cancel (raised in error)', ['qa'], { reason: true, sign: 'Approved' })
+        t('Pending Archival', 'Archived', 'Archive – QA verified', ['qa'], { sign: 'Archived – QA verified', needs: ['verified', 'archivalDate'], checks: ['arLocation'] }),
+        t('Archived', 'Retrieved', 'Release for retrieval (QA approved)', ['qa'], { sign: 'Retrieval approved – QA', checks: ['arRetrievalOpen'] }),
+        t('Retrieved', 'Archived', 'Returned – re-archive', ['qa'], { sign: 'Re-archived – QA', checks: ['arRetrievalClosed'] }),
+        t('Archived', 'Destroyed', 'Destroy (retention period ended)', ['qa'], { sign: 'Destroyed – QA', reason: true, needs: ['destructionDate', 'destructionMethod'], checks: ['arDestroy'] })
       ]
+    },
+
+    investigations: {
+      name: 'Deviations & complaints', single: 'deviation or complaint', group: 'Quality events', prefix: 'INV',
+      intro: 'Quality event investigations per JRS/SOP/QAS/022 (form JRS/FRM/QAS/054, register JRS/FRM/QAS/055). Deviation = event while the item is in JRS custody; complaint = event outside JRS custody reported by a customer, sponsor or other external party.',
+      numbering: (d, y) => ({ pre: `JRS-${d.invType === 'Complaint' ? 'COM' : 'DEVN'}-${y}-`, pad: 3 }),
+      list: ['number', 'invType', 'title', 'criticality', 'dueDate', 'status'],
+      fields: [
+        sec('Request to QA', { part: 'R', create: true, edit: { Requested: ['initiator', 'qa'] } }),
+        { k: 'invType', label: 'Investigation type', type: 'select', req: true, lock: true, options: ['Deviation', 'Complaint'] },
+        { k: 'site', label: 'Applicable JRS site', type: 'select', req: true, options: SITES },
+        { k: 'title', label: 'Short description', type: 'text', req: true, full: true },
+        { k: 'dateIdentified', label: 'Date identified / received', type: 'date', req: true },
+        { k: 'qaNotified', label: 'Date reported to QA (request date)', type: 'readonly', fmt: 'date' },
+        { k: 'reporting', label: '24-hour reporting to QA', type: 'computed' },
+        { k: 'requestDetails', label: 'What happened – request details for QA', type: 'textarea', req: true, full: true },
+        { k: 'requestNo', label: 'Request no.', type: 'readonly' },
+        sec('Part 1 (A) – Initiation', { part: 'A', edit: { Initiation: ['initiator'], 'QA Assessment': ['qa'] } }),
+        { k: 'dateOpened', label: 'Date opened (number assigned)', type: 'readonly', fmt: 'date' },
+        { k: 'dueDate', label: 'Date due (30 calendar days; Critical: 10 working days)', type: 'readonly', fmt: 'date' },
+        { k: 'extendedDue', label: 'Extended due date (approved extension request)', type: 'readonly', fmt: 'date' },
+        { k: 'respPerson', label: 'Responsible person / SME', type: 'user' },
+        { k: 'respDept', label: 'Responsible department', type: 'select', options: DEPT_CODES, optionLabels: DEPTS },
+        { k: 'eventOrigin', label: 'Event origin (area / process / party)', type: 'text' },
+        { k: 'receivedVia', label: 'Received via (if complaint)', type: 'select', options: ['Email', 'Phone', 'Fax', 'Customer portal', 'Letter', 'Other'] },
+        { k: 'clientComplaintNo', label: 'Client complaint no. (if applicable)', type: 'text' },
+        { k: 'reportingIndividual', label: 'Name of reporting individual', type: 'text' },
+        { k: 'receivedBy', label: 'Complaint received by', type: 'user' },
+        { k: 'customer', label: 'Customer / sponsor name', type: 'text' },
+        { k: 'customerNotified', label: 'Customer / sponsor notified on', type: 'date' },
+        { k: 'notifyStatus', label: 'Customer notification (3 calendar days)', type: 'computed' },
+        { k: 'description', label: 'Detailed description', type: 'textarea', full: true },
+        { k: 'immediate', label: 'Immediate action taken (containment, segregation, data and evidence preserved)', type: 'textarea', full: true },
+        sec('Part 2 (B) – Initial quality review and pre-approval', { part: 'B', edit: { 'QA Assessment': ['qa'] } }),
+        { k: 'criticality', label: 'Criticality (if unclear between two, assign the higher)', type: 'select', options: ['Minor', 'Major', 'Critical'] },
+        { k: 'fieldAlert', label: 'Field alert report (if complaint)', type: 'select', options: ['No', 'Yes'] },
+        { k: 'recall', label: 'Product recall', type: 'select', options: ['No', 'Yes – per JRS/SOP/OPS/013'] },
+        { k: 'processStep', label: 'Process step', type: 'text' },
+        { k: 'materialStatus', label: 'Current status of material', type: 'select', options: ['Quarantined / on hold', 'Available / released', 'Distributed', 'At investigator site', 'Returned', 'Destroyed', 'Not applicable'] },
+        { k: 'impactedAreas', label: 'Impacted area(s) / function(s)', type: 'multicheck', options: ['Comparator sourcing', 'Clinical trial ancillary management', 'Warehousing', 'Receipt', 'Storage', 'Distribution', 'Packaging (kitting & assembly)', 'Returns management', 'Destruction'] },
+        { k: 'impactedProducts', label: 'Impacted product(s)', type: 'multicheck', options: ['Blinded', 'Unblinded / open label', 'Randomized', 'Non-randomized', 'Shipper boxes', 'Ancillary supply', 'Bulk drug', 'Finished kit(s)', 'Comparator drug / NIMP', 'Labels', 'TempTale(s)', 'Other'] },
+        { k: 'productDetails', label: 'Product / material details (name, lot, kit nos.)', type: 'text', full: true },
+        { k: 'tempRange', label: 'Temperature range', type: 'select', options: ['Not applicable', 'Controlled ambient (+15 to +25 °C)', 'Cold chain / refrigerated (+2 to +8 °C)', 'Frozen (-25 to -15 °C)', 'Uncontrolled'] },
+        { k: 'qaReviewComment', label: 'Quality approver comment', type: 'textarea', full: true },
+        sec('Part 3 (C) – Investigation and evaluation (QA and RP)', { part: 'C', edit: { Investigation: ['qa', 'rp'] } }),
+        { k: 'invPlan', label: 'Investigation plan', type: 'textarea', full: true },
+        { k: 'investigation', label: 'Investigation (process records, equipment, data-logger data, training of personnel involved, recall assessment)', type: 'textarea', full: true },
+        { k: 'historicalReview', label: 'Historical review (prior deviations, complaints, CAPA, recurring failure modes)', type: 'textarea', full: true },
+        { k: 'rcaTools', label: 'Root cause analysis tools', type: 'multicheck', options: ['Fishbone (6M)', '5 Whys', 'Fault tree analysis', 'TapRooT', 'Process mapping', 'RCA not performed – justified'] },
+        { k: 'rootCause', label: 'Root cause / probable root cause (or justification if no RCA)', type: 'textarea', full: true },
+        { k: 'riskAssessment', label: 'Risk / impact assessment (patient safety, quality, identity, packaging & labelling, storage, distribution, other lots, GxP, customer requirements, recurrence)', type: 'textarea', full: true },
+        { k: 'productImpact', label: 'Product / material impact', type: 'textarea', full: true },
+        { k: 'conclusion', label: 'Conclusion', type: 'textarea', full: true },
+        { k: 'capaRequired', label: 'CAPA required?', type: 'select', options: ['Yes', 'No'] },
+        { k: 'capaJustification', label: 'Justification if no CAPA is required', type: 'textarea', full: true },
+        sec('Part 4 (D) – QA / RP evaluation, customer approval and closure', { part: 'D', edit: { Evaluation: ['qa', 'rp'], 'Customer Approval': ['qa', 'pm'] } }),
+        { k: 'finalDisposition', label: 'Final disposition', type: 'select', options: ['Not applicable', 'Release / use as is', 'Reject', 'Return to sponsor / supplier', 'Destroy', 'Hold pending customer decision'] },
+        { k: 'customerApproval', label: 'Customer approval (per QTA)', type: 'select', options: ['Pending', 'Approved by customer', 'Deemed closed – no response after 3 follow-ups', 'Not applicable (no customer impact)'] },
+        { k: 'reportSent', label: 'QA-approved report shared with customer on', type: 'date' },
+        { k: 'followUp1', label: 'Customer follow-up 1', type: 'date' },
+        { k: 'followUp2', label: 'Customer follow-up 2', type: 'date' },
+        { k: 'followUp3', label: 'Customer follow-up 3', type: 'date' },
+        { k: 'nextFollowUp', label: 'Customer follow-up reminder', type: 'computed' }
+      ],
+      compute: {
+        reporting: (d) => !d.dateIdentified || !d.qaNotified ? '' : dayDiff(d.dateIdentified, d.qaNotified) <= 1 ? 'Met (within 24 hours)' : 'Late (more than 24 hours) – record the reason in the description',
+        notifyStatus: (d) => {
+          if (String(d.customerApproval || '').startsWith('Not applicable')) return 'Not applicable';
+          if (!d.dateIdentified) return '';
+          const by = plusDays(d.dateIdentified, 3);
+          if (d.customerNotified) return d.customerNotified <= by ? 'Met (within 3 days)' : 'Late (more than 3 days)';
+          return todayIso() > by ? 'Overdue – notify the customer / sponsor' : 'Due by ' + by;
+        },
+        nextFollowUp: (d) => {
+          if (d.customerApproval !== 'Pending' || !d.reportSent) return '';
+          const n = [d.followUp1, d.followUp2, d.followUp3].filter(Boolean).length;
+          return n < 3 ? `Follow-up ${n + 1} due ${plusDays(d.reportSent, 15 * (n + 1))}` : `Deemed closure possible from ${plusDays(d.reportSent, 45)}`;
+        }
+      },
+      // Request → QA approval → number assigned → Part 1 (initiator) → Part 2 (QA) → pre-approval (QA + RP) → Part 3 → Part 4 (QA + RP) → customer → closed
+      tempNumbering: (d, y) => ({ pre: `REQ-${y}-`, pad: 4 }),
+      states: ['Requested', 'Number Assignment', 'Initiation', 'QA Assessment', 'Pre-Approval', 'Investigation', 'Evaluation', 'Customer Approval', 'Closed', 'Rejected', 'Cancelled'],
+      transitions: [
+        t('Requested', 'Number Assignment', 'Approve request', ['qa'], { part: 'R', sign: 'Request approved – QA', sod: true }),
+        t('Requested', 'Rejected', 'Reject request', ['qa'], { part: 'R', sign: 'Request rejected – QA', reason: true }),
+        t('Number Assignment', 'Initiation', 'Assign deviation / complaint number', ['numgen'], { part: 'R', sign: 'Number assigned – number generator' }),
+        t('Initiation', 'QA Assessment', 'Submit Part 1 to QA', ['any'], { part: 'A', sign: 'Initiated – investigation initiator', needs: ['description', 'immediate'], checks: ['isInitiator'] }),
+        t('Initiation', 'Cancelled', 'Cancel (raised in error)', ['qa'], { reason: true, sign: 'Cancelled – QA' }),
+        t('QA Assessment', 'Initiation', 'Return Part 1 to initiator', ['qa'], { reason: true }),
+        t('QA Assessment', 'Pre-Approval', 'Complete Part 2 – submit for pre-approval', ['qa'], { part: 'B', sign: 'Assessed – QA (Part 2)', needs: ['description', 'immediate', 'respDept', 'criticality', 'impactedAreas'] }),
+        t('Pre-Approval', 'Pre-Approval', 'Pre-approve – QA', ['qa'], { part: 'B', sign: 'Pre-approved – QA', cosign: true, sod: true }),
+        t('Pre-Approval', 'Pre-Approval', 'Pre-approve – RP', ['rp'], { part: 'B', sign: 'Pre-approved – RP', cosign: true, sod: true }),
+        t('Pre-Approval', 'QA Assessment', 'Return to QA assessment', ['qa', 'rp'], { reason: true }),
+        t('Investigation', 'Evaluation', 'Submit investigation (Part 3)', ['qa', 'rp'], { part: 'C', sign: 'Investigation completed – QA / RP', needs: ['investigation', 'historicalReview', 'rootCause', 'riskAssessment', 'conclusion', 'capaRequired'], checks: ['capaDecision'] }),
+        t('Evaluation', 'Investigation', 'Return for further investigation', ['qa', 'rp'], { reason: true }),
+        t('Evaluation', 'Evaluation', 'Approve Part 4 – QA', ['qa'], { part: 'D', sign: 'Approved – QA evaluation', cosign: true, sod: true, needs: ['finalDisposition', 'customerApproval'], checks: ['capaDecision', 'capaLinked'] }),
+        t('Evaluation', 'Evaluation', 'Approve Part 4 – RP', ['rp'], { part: 'D', sign: 'Approved – RP evaluation', cosign: true, sod: true, needs: ['finalDisposition', 'customerApproval'], checks: ['capaDecision', 'capaLinked'] }),
+        t('Customer Approval', 'Closed', 'Close – customer approved or deemed closed', ['qa', 'pm'], { part: 'D', sign: 'Closed – customer approval recorded', checks: ['customerClosure'] })
+      ],
+      // Steps that need two signatures from different people; the record moves on once both are given
+      cosign: {
+        'Pre-Approval': { meanings: ['Pre-approved – QA', 'Pre-approved – RP'], next: () => 'Investigation' },
+        'Evaluation': { meanings: ['Approved – QA evaluation', 'Approved – RP evaluation'], next: (r) => String(r.data.customerApproval).startsWith('Not applicable') ? 'Closed' : 'Customer Approval' }
+      }
     },
 
     rca: {
@@ -148,8 +388,8 @@
       list: ['number', 'title', 'method', 'rootCategory', 'status'],
       fields: [
         { k: 'title', label: 'Problem statement', type: 'text', req: true, full: true },
-        { k: 'sourceRecord', label: 'Source record no.', type: 'text', req: true },
-        { k: 'method', label: 'Method', type: 'select', req: true, options: ['5 Whys', 'Ishikawa (6M)', '5 Whys + Ishikawa', 'Fault tree', 'Is / Is-not', 'Kepner-Tregoe'] },
+        { k: 'sourceRecord', label: 'Source record no. (deviation, complaint, audit or CAPA)', type: 'recordref', refTypes: ['investigations', 'selfinspections', 'extaudits', 'capa'], req: true },
+        { k: 'method', label: 'Method', type: 'select', req: true, options: ['5 Whys', 'Ishikawa (6M)', '5 Whys + Ishikawa', 'Fault tree', 'TapRooT', 'Process mapping', 'Is / Is-not', 'Kepner-Tregoe'] },
         { k: 'team', label: 'RCA team', type: 'text', full: true },
         { k: 'why1', label: 'Why 1', type: 'text', full: true }, { k: 'why2', label: 'Why 2', type: 'text', full: true },
         { k: 'why3', label: 'Why 3', type: 'text', full: true }, { k: 'why4', label: 'Why 4', type: 'text', full: true },
@@ -171,117 +411,322 @@
 
     capa: {
       name: 'CAPA', group: 'Quality events', prefix: 'CAPA',
-      intro: 'Corrective and preventive actions with effectiveness checks.',
-      list: ['number', 'title', 'source', 'owner', 'dueDate', 'status'],
+      intro: 'Corrective and preventive actions per JRS/SOP/QAS/006 (form JRS/FRM/QAS/006 Parts A–E, register JRS/FRM/QAS/016). Number CAPA/department/serial/year; the serial restarts each year per department.',
+      numbering: (d, y) => ({ pre: `CAPA/${d.respDept}/`, suf: '/' + String(y).slice(2), pad: 3 }),
+      list: ['number', 'title', 'source', 'respPerson', 'dueDate', 'status'],
       fields: [
-        { k: 'title', label: 'CAPA title', type: 'text', req: true, full: true },
-        { k: 'source', label: 'Source', type: 'select', req: true, options: ['Deviation', 'Complaint', 'Internal audit', 'Supplier audit', 'Regulatory inspection', 'OOS / OOT', 'Trend / PQR', 'Management review', 'Risk assessment', 'Recall', 'Self-identified'] },
-        { k: 'sourceRecord', label: 'Source record no.', type: 'text' },
-        { k: 'actionType', label: 'Action type', type: 'select', req: true, options: ['Correction', 'Corrective action', 'Preventive action'] },
-        { k: 'owner', label: 'Action owner (username)', type: 'user', req: true },
+        sec('Part A – Initiation'),
+        { k: 'title', label: 'Short description of CAPA', type: 'text', req: true, full: true },
+        { k: 'respDept', label: 'Responsible department (sets the CAPA number)', type: 'select', req: true, lock: true, options: DEPT_CODES, optionLabels: DEPTS },
+        { k: 'respPerson', label: 'Responsible person', type: 'user', req: true },
+        { k: 'dateOpened', label: 'Date opened', type: 'readonly', fmt: 'date' },
         { k: 'dueDate', label: 'Due date', type: 'date', req: true },
-        { k: 'rootCause', label: 'Root cause addressed', type: 'textarea', full: true },
-        { k: 'plan', label: 'Action plan', type: 'textarea', req: true, full: true },
-        { k: 'evidence', label: 'Implementation evidence', type: 'textarea', full: true },
-        { k: 'ecCriteria', label: 'Effectiveness check – criteria and method', type: 'textarea', full: true },
-        { k: 'ecDate', label: 'Effectiveness check due', type: 'date' },
-        { k: 'ecResult', label: 'Effectiveness result', type: 'select', options: ['Pending', 'Effective', 'Not effective – new CAPA raised'] }
+        { k: 'extendedDue', label: 'Extended due date (approved extension request)', type: 'readonly', fmt: 'date' },
+        { k: 'source', label: 'Source of CAPA', type: 'select', req: true, options: ['Deviation', 'Complaint', 'Internal audit / self-inspection', 'External audit', 'Regulatory inspection / compliance', 'Product recall', 'Risk management', 'Incident report', 'Returned goods', 'CAPA not effective', 'Other'] },
+        { k: 'sourceRecord', label: 'Reference document no. (source record)', type: 'recordref', refTypes: ['investigations', 'selfinspections', 'extaudits', 'risks', 'changes', 'capa', 'mgmtreviews'] },
+        { k: 'nonconformance', label: 'Description of nonconformance', type: 'textarea', req: true, full: true },
+        { k: 'capaDetail', label: 'Detailed description of CAPA', type: 'textarea', full: true },
+        { k: 'correction', label: 'Proposed correction', type: 'textarea', full: true },
+        { k: 'corrDue', label: 'Correction – target due date', type: 'date' },
+        { k: 'corrExt', label: 'Correction – extended target due date', type: 'readonly', fmt: 'date' },
+        { k: 'corrective', label: 'Proposed corrective action(s)', type: 'textarea', full: true },
+        { k: 'caDue', label: 'Corrective action – target due date', type: 'date' },
+        { k: 'caExt', label: 'Corrective action – extended target due date', type: 'readonly', fmt: 'date' },
+        { k: 'preventive', label: 'Proposed preventive action(s)', type: 'textarea', full: true },
+        { k: 'paDue', label: 'Preventive action – target due date', type: 'date' },
+        { k: 'paExt', label: 'Preventive action – extended target due date', type: 'readonly', fmt: 'date' },
+        { k: 'clientReported', label: 'External incident reported by a client (CAPA report to client/sponsor within 21 days)', type: 'checkbox', full: true },
+        { k: 'clientReportDue', label: 'CAPA report to client due', type: 'computed' },
+        { k: 'clientReportSent', label: 'CAPA report sent to client on', type: 'date' },
+        sec('Part B – Pre-approval'),
+        { k: 'hodComment', label: 'Department Head comment', type: 'textarea', full: true },
+        { k: 'qaPreComment', label: 'QA comment', type: 'textarea', full: true },
+        { k: 'ecRequired', label: 'Effectiveness check', type: 'select', options: ['Required', 'Not required'] },
+        { k: 'ecReason', label: 'Reason if effectiveness check is not required', type: 'textarea', full: true },
+        { k: 'ecDue', label: 'Effectiveness check due (from QA closure)', type: 'select', options: EC_DUE },
+        sec('Part C – Implementation status'),
+        { k: 'corrDone', label: 'Correction completed', type: 'textarea', full: true },
+        { k: 'corrDate', label: 'Correction – implementation date', type: 'date' },
+        { k: 'corrRef', label: 'Correction – reference document no.', type: 'text' },
+        { k: 'caDone', label: 'Corrective action(s) taken', type: 'textarea', full: true },
+        { k: 'caDate', label: 'Corrective action – implementation date', type: 'date' },
+        { k: 'caRef', label: 'Corrective action – reference document no.', type: 'text' },
+        { k: 'paDone', label: 'Preventive action(s) taken', type: 'textarea', full: true },
+        { k: 'paDate', label: 'Preventive action – implementation date', type: 'date' },
+        { k: 'paRef', label: 'Preventive action – reference document no.', type: 'text' },
+        sec('Part D – Evaluation and closure by QA'),
+        { k: 'closureRemarks', label: 'Remarks for closure by QA', type: 'textarea', full: true },
+        { k: 'ecDueDate', label: 'Due date for effectiveness check', type: 'readonly', fmt: 'date' },
+        sec('Part E – Effectiveness verification'),
+        { k: 'effective', label: 'Is the CAPA effective?', type: 'select', options: ['Yes', 'No'] },
+        { k: 'ecRespComment', label: 'Responsible person comment', type: 'textarea', full: true },
+        { k: 'ecQaComment', label: 'QA comment', type: 'textarea', full: true }
       ],
-      states: ['Open', 'Plan Approved', 'Implemented', 'Effectiveness Check', 'Closed', 'Cancelled'],
+      compute: { clientReportDue: (d) => d.clientReported && d.dateOpened ? plusDays(d.dateOpened, 21) + ' (or as directed by the client)' : '' },
+      states: ['Initiated', 'HOD Pre-Approval', 'QA Pre-Approval', 'Implementation', 'HOD Verification', 'QA Closure', 'Effectiveness Check', 'Closed', 'Cancelled'],
       transitions: [
-        t('Open', 'Plan Approved', 'Approve CAPA plan', ['qa'], { sign: 'Approved', sod: true, needs: ['plan', 'ecCriteria'] }),
-        t('Plan Approved', 'Implemented', 'Record implementation', ['any'], { sign: 'Implemented', needs: ['evidence'] }),
-        t('Implemented', 'Effectiveness Check', 'Verify implementation', ['qa'], { sign: 'Verified' }),
-        t('Effectiveness Check', 'Closed', 'Close as effective', ['qa'], { sign: 'Approved', needs: ['ecResult'] }),
-        t('Open', 'Cancelled', 'Cancel', ['qa'], { reason: true, sign: 'Approved' })
+        t('Initiated', 'HOD Pre-Approval', 'Submit for pre-approval', ['any'], { checks: ['capaPlan'] }),
+        t('Initiated', 'Cancelled', 'Cancel', ['qa'], { reason: true, sign: 'Approved' }),
+        t('HOD Pre-Approval', 'QA Pre-Approval', 'Department Head pre-approval', ['hod'], { sign: 'Pre-approved – Department Head' }),
+        t('HOD Pre-Approval', 'Initiated', 'Return to initiator', ['hod'], { reason: true }),
+        t('QA Pre-Approval', 'Implementation', 'QA pre-approval', ['qa'], { sign: 'Approved – QA', sod: true, needs: ['ecRequired'], checks: ['capaPlan', 'ecDecision'] }),
+        t('QA Pre-Approval', 'Initiated', 'Return to initiator', ['qa'], { reason: true }),
+        t('Implementation', 'HOD Verification', 'Record implementation', ['any'], { sign: 'Implemented – Responsible Person', checks: ['respOrQa', 'capaImplemented'] }),
+        t('HOD Verification', 'Implementation', 'Return – implementation incomplete', ['hod'], { reason: true }),
+        t('HOD Verification', 'QA Closure', 'Verify implementation', ['hod'], { sign: 'Verified – Department Head' }),
+        t('QA Closure', 'Effectiveness Check', 'QA close – effectiveness check pending', ['qa'], { sign: 'Closed – QA', needs: ['closureRemarks'], checks: ['ecIsRequired'] }),
+        t('QA Closure', 'Closed', 'QA close (no effectiveness check)', ['qa'], { sign: 'Closed – QA', needs: ['closureRemarks'], checks: ['ecNotRequired'] }),
+        t('Effectiveness Check', 'Closed', 'Record effectiveness verification', ['qa'], { sign: 'Effectiveness verified – QA', needs: ['effective', 'ecQaComment'] })
       ]
     },
 
     changes: {
       name: 'Change control', group: 'Quality events', prefix: 'CC',
-      intro: 'Change control and change management: impact, regulatory assessment, implementation and readiness.',
-      list: ['number', 'title', 'changeType', 'classification', 'targetDate', 'status'],
+      intro: 'Change control per JRS/SOP/QAS/007 (form JRS/FRM/QAS/007 Parts A–E, register JRS/FRM/QAS/017). A change control must be approved before the change is implemented.',
+      numbering: (d, y) => ({ pre: `CC-JRS-${y}-`, pad: 3 }),
+      // Request → QA approval → number assigned → Part A (initiator) → Parts B + C (QA) → pre-approval (QA + RP) → optional approvals → implementation → Part D closure (QA + RP) → Part E
+      tempNumbering: (d, y) => ({ pre: `REQ-CC-${y}-`, pad: 4 }),
+      list: ['number', 'title', 'nature', 'classification', 'dueDate', 'status'],
       fields: [
-        { k: 'title', label: 'Change title', type: 'text', req: true, full: true },
-        { k: 'changeType', label: 'Change type', type: 'select', req: true, options: ['Facility', 'Equipment', 'Process', 'Analytical method', 'Specification', 'Supplier / material', 'Packaging / label artwork', 'Computerised system', 'Document', 'Organisational', 'Regulatory (MA variation)', 'Clinical supply (protocol / label / pack design)'] },
-        { k: 'classification', label: 'Classification', type: 'select', req: true, options: CLASS },
-        { k: 'duration', label: 'Permanent / temporary', type: 'select', options: ['Permanent', 'Temporary', 'Emergency'] },
-        { k: 'targetDate', label: 'Target implementation date', type: 'date' },
-        { k: 'current', label: 'Current state', type: 'textarea', full: true },
-        { k: 'proposed', label: 'Proposed change', type: 'textarea', req: true, full: true },
-        { k: 'justification', label: 'Justification', type: 'textarea', req: true, full: true },
-        { k: 'impactAreas', label: 'Impacted areas (SME sign-off required)', type: 'multicheck', options: ['QA', 'QC', 'Production', 'Engineering', 'Validation', 'Regulatory', 'IT / CSV', 'Supply chain', 'Clinical supply', 'EHS', 'Customers / sponsors'] },
-        { k: 'impact', label: 'Impact assessment', type: 'textarea', full: true },
-        { k: 'regImpact', label: 'Regulatory impact', type: 'select', options: ['None', 'EU Type IA', 'EU Type IB', 'EU Type II', 'US CBE-0', 'US CBE-30', 'US PAS', 'CTA substantial modification', 'Annual report'] },
-        { k: 'customerNotify', label: 'Customer / sponsor notification required', type: 'checkbox' },
-        { k: 'plan', label: 'Implementation plan (tasks, owners, dates)', type: 'textarea', full: true },
-        { k: 'readiness', label: 'Readiness checklist complete', type: 'multicheck', options: ['Documents effective', 'Training complete', 'Validation complete', 'ERP / master data updated', 'Stock reconciled', 'Communication sent'] },
-        { k: 'firstBatch', label: 'First batch / kit lot under change', type: 'text' },
-        { k: 'review', label: 'Post-implementation review / effectiveness', type: 'textarea', full: true }
+        sec('Request to QA', { part: 'R', create: true, edit: { Requested: ['initiator', 'qa'], 'QA Assessment': ['qa'] } }),
+        { k: 'title', label: 'Short description', type: 'text', req: true, full: true },
+        { k: 'nature', label: 'Nature of change', type: 'select', req: true, options: ['Permanent', 'Temporary'] },
+        { k: 'requestDetails', label: 'Proposed change and reason – request details for QA', type: 'textarea', req: true, full: true },
+        { k: 'requestNo', label: 'Request no.', type: 'readonly' },
+        sec('Part A (1) – Initiation', { part: 'A', edit: { Initiation: ['initiator'], 'QA Assessment': ['qa'] } }),
+        { k: 'respPerson', label: 'Change control responsible person', type: 'user' },
+        { k: 'dateOpened', label: 'Date opened (number assigned)', type: 'readonly', fmt: 'date' },
+        { k: 'respDept', label: 'Responsible department', type: 'select', options: DEPT_CODES, optionLabels: DEPTS },
+        { k: 'dueDate', label: 'Date due (permanent change: within 90 days)', type: 'date' },
+        { k: 'extendedDue', label: 'Extended due date (approved extension request)', type: 'readonly', fmt: 'date' },
+        { k: 'tempStart', label: 'Temporary change – start date', type: 'date' },
+        { k: 'tempEnd', label: 'Temporary change – end date', type: 'date' },
+        { k: 'changeType', label: 'Change type', type: 'multicheck', options: ['Quality system', 'Facility / utilities (HVAC, cold room, freezer, power backup)', 'Equipment / instrument', 'Process / method', 'Clinical trial supply / packaging / labelling', 'Computerized system / eQMS / IRT / IVRS', 'Documentation (SOP, format, record)', 'Regulatory', 'Other'] },
+        { k: 'impactedAreas', label: 'Impacted area(s)', type: 'multicheck', options: ['Comparator sourcing', 'Clinical trial ancillaries', 'Labelling', 'Secondary packaging', 'Storage (+15 to +25 °C)', 'Storage (+2 to +8 °C)', 'Storage (−25 to −15 °C)', 'Distribution', 'Returns', 'Destruction', 'Other'] },
+        { k: 'current', label: 'Current practice / situation', type: 'textarea', full: true },
+        { k: 'description', label: 'Description of change', type: 'textarea', full: true },
+        { k: 'justification', label: 'Reason / justification for change', type: 'textarea', full: true },
+        sec('Part B (2) – Impact assessment (QA)', { part: 'B', edit: { 'QA Assessment': ['qa'] } }),
+        { k: 'impactCheck', label: 'Impact assessment', type: 'checklist', full: true, rows: ['Subject / patient safety', 'Product quality / integrity', 'Data integrity (ALCOA+)', 'GMP / GCP / GDP compliance', 'Client requirement (client notification / approval required)', 'Regulatory filings', 'Validation / qualification', 'Cold chain', 'Labelling / packaging', 'Computer system (21 CFR Part 11)', 'Training requirement'] },
+        { k: 'impactSummary', label: 'Impact summary', type: 'textarea', full: true },
+        { k: 'classification', label: 'Change classification', type: 'select', options: ['Minor', 'Major', 'Critical'] },
+        { k: 'classRationale', label: 'Classification rationale', type: 'textarea', full: true },
+        { k: 'riskRequired', label: 'Risk assessment (JRS/SOP/QAS/020)', type: 'select', options: ['Required', 'Not required'] },
+        { k: 'riskRef', label: 'Risk assessment reference', type: 'recordref', refTypes: ['risks'] },
+        sec('Implementation plan (Part B) – activity closure dates are updated during implementation', { edit: { 'QA Assessment': ['qa'], Implementation: ['initiator', 'responsible', 'qa'] } }),
+        { k: 'plan', label: 'Implementation plan', type: 'table', full: true, cols: [{ k: 'activity', label: 'Activity' }, { k: 'dept', label: 'Responsible department' }, { k: 'person', label: 'Responsible person' }, { k: 'due', label: 'Target due date', type: 'date' }, { k: 'closed', label: 'Activity closure date', type: 'date' }] },
+        sec('Part C (3) – Pre-approval (QA and RP)', { part: 'C', edit: { 'QA Assessment': ['qa'] } }),
+        { k: 'clientPre', label: 'Client pre-communication', type: 'select', options: ['Required', 'Not required'] },
+        { k: 'clientPost', label: 'Client post-communication', type: 'select', options: ['Required', 'Not required'] },
+        { k: 'clientComments', label: 'Client communication comments', type: 'textarea', full: true },
+        { k: 'pm', label: 'Person responsible for client communication (Project Manager)', type: 'user' },
+        { k: 'ecRequired', label: 'Effectiveness check', type: 'select', options: ['Required', 'Not required'] },
+        { k: 'ecReason', label: 'Reason if effectiveness check is not required', type: 'textarea', full: true },
+        { k: 'ecDue', label: 'Effectiveness check due (from final implementation)', type: 'select', options: EC_DUE },
+        { k: 'optionalDepts', label: 'Optional approvals – impacted departments (max. 4)', type: 'multicheck', max: 4, options: DEPT_CODES, optionLabels: DEPTS },
+        sec('Part D (4) – Closure (QA and RP)', { part: 'D', edit: { Implementation: ['initiator', 'responsible', 'qa'], 'Pending Closure': ['qa', 'rp', 'pm'] } }),
+        { k: 'finalImplDate', label: 'Date of final implementation', type: 'date' },
+        { k: 'restored', label: 'Temporary change – original condition restored', type: 'select', options: ['Yes', 'No'] },
+        { k: 'finalSummary', label: 'Final summary', type: 'textarea', full: true },
+        { k: 'clientCommunicated', label: 'Client communicated (by Project Manager)', type: 'select', options: ['Yes', 'No', 'N/A'] },
+        { k: 'ecDueDate', label: 'Due date for effectiveness check', type: 'readonly', fmt: 'date' },
+        sec('Part E (5) – Effectiveness verification', { part: 'E', edit: { 'Closed – EC Pending': ['qa', 'responsible'] } }),
+        { k: 'effective', label: 'Is the change effective?', type: 'select', options: ['Yes', 'No', 'N/A'] },
+        { k: 'ecRespComment', label: 'Responsible person comment', type: 'textarea', full: true },
+        { k: 'ecQaComment', label: 'QA comment', type: 'textarea', full: true }
       ],
-      states: ['Draft', 'Impact Assessment', 'Approved', 'Implementation', 'Post-Implementation Review', 'Closed', 'Rejected'],
+      states: ['Requested', 'Number Assignment', 'Initiation', 'QA Assessment', 'Pre-Approval', 'Optional Approvals', 'Implementation', 'Pending Closure', 'Closed – EC Pending', 'Closed', 'Rejected', 'Cancelled'],
       transitions: [
-        t('Draft', 'Impact Assessment', 'Submit for impact assessment', ['any']),
-        t('Impact Assessment', 'Approved', 'Approve change', ['qa'], { sign: 'Approved', sod: true, needs: ['impact'] }),
-        t('Impact Assessment', 'Rejected', 'Reject change', ['qa'], { sign: 'Rejected', reason: true }),
-        t('Approved', 'Implementation', 'Start implementation', ['any']),
-        t('Implementation', 'Post-Implementation Review', 'Implementation complete', ['any'], { sign: 'Implemented', needs: ['plan'] }),
-        t('Post-Implementation Review', 'Closed', 'Close change', ['qa'], { sign: 'Approved', needs: ['review'] })
+        t('Requested', 'Number Assignment', 'Approve request', ['qa'], { part: 'R', sign: 'Request approved – QA', sod: true }),
+        t('Requested', 'Rejected', 'Reject request', ['qa'], { part: 'R', sign: 'Request rejected – QA', reason: true }),
+        t('Number Assignment', 'Initiation', 'Assign change control number', ['numgen'], { part: 'R', sign: 'Number assigned – number generator' }),
+        t('Initiation', 'QA Assessment', 'Submit Part A to QA', ['any'], { part: 'A', sign: 'Initiated – change initiator', needs: ['respPerson', 'respDept', 'dueDate', 'changeType', 'description', 'justification'], checks: ['isInitiator', 'ccDue90', 'ccTemp'] }),
+        t('Initiation', 'Cancelled', 'Cancel (raised in error)', ['qa'], { reason: true, sign: 'Cancelled – QA' }),
+        t('QA Assessment', 'Initiation', 'Return Part A to initiator', ['qa'], { reason: true }),
+        t('QA Assessment', 'Pre-Approval', 'Complete Parts B and C – submit for pre-approval', ['qa'], { part: 'B', sign: 'Assessed – QA (Parts B and C)', needs: ['respPerson', 'respDept', 'dueDate', 'changeType', 'description', 'justification', 'impactCheck', 'impactSummary', 'classification', 'classRationale', 'riskRequired', 'plan', 'clientPre', 'clientPost', 'ecRequired'], checks: ['ccDue90', 'ccTemp', 'ccRiskClass', 'ccRiskRef', 'ecDecision', 'ccClientPm'] }),
+        t('Pre-Approval', 'Pre-Approval', 'Pre-approve – QA', ['qa'], { part: 'C', sign: 'Pre-approved – QA', cosign: true, sod: true }),
+        t('Pre-Approval', 'Pre-Approval', 'Pre-approve – RP', ['rp'], { part: 'C', sign: 'Pre-approved – RP', cosign: true, sod: true }),
+        t('Pre-Approval', 'QA Assessment', 'Return to QA assessment', ['qa', 'rp'], { reason: true }),
+        t('Pre-Approval', 'Rejected', 'Reject change', ['qa'], { part: 'C', sign: 'Change rejected – QA', reason: true }),
+        t('Optional Approvals', 'Implementation', 'Start implementation', ['any'], { checks: ['ccOptional'] }),
+        t('Implementation', 'Pending Closure', 'All activities complete – submit for closure', ['any'], { part: 'D', sign: 'Implemented – responsible person', needs: ['finalImplDate', 'finalSummary'], checks: ['isResponsible', 'ccPlanClosed'] }),
+        t('Pending Closure', 'Implementation', 'Return – closure incomplete', ['qa', 'rp'], { reason: true }),
+        t('Pending Closure', 'Pending Closure', 'Approve closure – QA', ['qa'], { part: 'D', sign: 'Closure approved – QA', cosign: true, checks: ['ccClientComm', 'ccRestored'] }),
+        t('Pending Closure', 'Pending Closure', 'Approve closure – RP', ['rp'], { part: 'D', sign: 'Closure approved – RP', cosign: true, checks: ['ccClientComm', 'ccRestored'] }),
+        t('Closed – EC Pending', 'Closed', 'Record effectiveness verification', ['qa'], { part: 'E', sign: 'Effectiveness verified – QA', needs: ['effective', 'ecQaComment'] })
+      ],
+      deptApproval: { state: 'Optional Approvals', field: 'optionalDepts', label: 'Optional approvals' },
+      cosign: {
+        'Pre-Approval': { meanings: ['Pre-approved – QA', 'Pre-approved – RP'], next: (r) => (r.data.optionalDepts || []).length ? 'Optional Approvals' : 'Implementation' },
+        'Pending Closure': { meanings: ['Closure approved – QA', 'Closure approved – RP'], next: (r) => r.data.ecRequired === 'Required' ? 'Closed – EC Pending' : 'Closed' }
+      }
+    },
+
+    extensions: {
+      name: 'Extension requests', single: 'extension request', group: 'Quality events', prefix: 'ER',
+      intro: 'Due-date extensions for change controls, deviations, complaints and CAPA (form JRS/FRM/QAS/045). Only one extension per record, requested and approved before the current due date.',
+      numbering: (d, y) => ({ pre: `ER-${y}-`, pad: 3 }),
+      list: ['number', 'documentId', 'recordType', 'originalDue', 'requestedDate', 'status'],
+      fields: [
+        { k: 'documentId', label: 'Document ID (record to extend)', type: 'recordref', refTypes: ['investigations', 'capa', 'changes', 'selfinspections'], req: true, lock: true },
+        { k: 'scope', label: 'Due date to extend', type: 'select', req: true, lock: true, def: 'Overall due date', options: ['Overall due date', 'Correction (CAPA)', 'Corrective action (CAPA)', 'Preventive action (CAPA)'] },
+        { k: 'recordType', label: 'Record type', type: 'readonly' },
+        { k: 'originalDue', label: 'Original due date', type: 'readonly', fmt: 'date' },
+        { k: 'requestedDate', label: 'Requested extension date', type: 'date', req: true },
+        { k: 'justification', label: 'Justification of extension / delay', type: 'textarea', req: true, full: true },
+        { k: 'interimUpdate', label: 'Interim update', type: 'textarea', req: true, full: true },
+        { k: 'impactAssessment', label: 'Impact assessment (product quality, patient safety, regulatory compliance, business operations)', type: 'textarea', req: true, full: true },
+        { k: 'hodComment', label: 'Head of Department comments', type: 'textarea', full: true },
+        { k: 'qaComment', label: 'Head of Quality / designee comments', type: 'textarea', full: true }
+      ],
+      states: ['Draft', 'HOD Review', 'Head of Quality Approval', 'Approved', 'Rejected'],
+      transitions: [
+        t('Draft', 'HOD Review', 'Submit request', ['any'], { sign: 'Requested', checks: ['erValid'] }),
+        t('HOD Review', 'Head of Quality Approval', 'Head of Department approval', ['hod'], { sign: 'Approved – Head of Department', checks: ['erValid'] }),
+        t('HOD Review', 'Rejected', 'Reject', ['hod'], { sign: 'Rejected', reason: true }),
+        t('Head of Quality Approval', 'Approved', 'Head of Quality approval', ['qa'], { sign: 'Approved – Head of Quality', sod: true, checks: ['erValid'] }),
+        t('Head of Quality Approval', 'Rejected', 'Reject', ['qa'], { sign: 'Rejected', reason: true })
       ]
     },
 
-    complaints: {
-      name: 'Complaints', group: 'Quality events', prefix: 'CMP',
-      intro: 'Product, distribution and clinical-kit complaints with adverse-event screening and recall decision.',
-      list: ['number', 'title', 'complaintType', 'product', 'received', 'status'],
+    selfinspections: {
+      name: 'Self-inspections', single: 'self-inspection', group: 'Compliance', prefix: 'SI', hideFrom: ['extaud'],
+      intro: 'Self-inspections per JRS/SOP/QAS/004 (agenda FRM/QAS/040, report FRM/QAS/003, response and CAPA plan FRM/QAS/041). Confidential: not shown to external auditors.',
+      numbering: (d, y) => ({ pre: `JRS-SI-${y}-`, pad: 3 }),
+      list: ['number', 'auditeeDept', 'plannedDate', 'leadAuditor', 'dueDate', 'status'],
       fields: [
-        { k: 'title', label: 'Summary', type: 'text', req: true, full: true },
-        { k: 'source', label: 'Complainant type', type: 'select', req: true, options: ['Customer – wholesaler', 'Pharmacy / hospital', 'Healthcare professional', 'Patient', 'Clinical site', 'Sponsor / CRO', 'Internal'] },
-        { k: 'complaintType', label: 'Complaint type', type: 'select', req: true, options: ['Quality defect', 'Packaging / labelling', 'Suspected falsified', 'Distribution / temperature', 'Lack of effect', 'Clinical kit issue', 'Service'] },
-        { k: 'received', label: 'Date received', type: 'date', req: true },
-        { k: 'customer', label: 'Customer / site', type: 'text' },
-        { k: 'product', label: 'Product', type: 'text' },
-        { k: 'batch', label: 'Batch / lot', type: 'text' },
-        { k: 'kit', label: 'Kit no. / serial no.', type: 'text' },
-        { k: 'ae', label: 'Adverse event involved?', type: 'select', req: true, options: ['No', 'Yes – forwarded to PV', 'Unknown'] },
-        { k: 'description', label: 'Complaint description (no patient identifiers)', type: 'textarea', req: true, full: true },
-        { k: 'hazard', label: 'Health hazard assessment / recall decision', type: 'textarea', full: true },
-        { k: 'sample', label: 'Sample status', type: 'select', options: ['No sample', 'Requested', 'Received', 'Retained sample tested'] },
-        { k: 'investigation', label: 'Investigation findings', type: 'textarea', full: true },
-        { k: 'response', label: 'Response to complainant', type: 'textarea', full: true }
+        sec('Planning and agenda (FRM/QAS/040)'),
+        { k: 'auditeeDept', label: 'Auditee section / department', type: 'select', req: true, options: DEPT_CODES, optionLabels: DEPTS },
+        { k: 'title', label: 'Audit objective', type: 'text', req: true, full: true },
+        { k: 'auditee', label: 'Auditee name', type: 'user', req: true },
+        { k: 'scheduleRef', label: 'Annual schedule (FRM/QAS/038)', type: 'recordref', refTypes: ['sischedule'] },
+        { k: 'unscheduledTrigger', label: 'Unscheduled self-inspection – trigger', type: 'select', options: ['Quality event / deviation', 'Complaint', 'External audit observation', 'Repetitive failure', 'Other (QA / Quality Head decision)'] },
+        { k: 'postponeReason', label: 'Advanced or postponed (max. 1 month) – reason', type: 'select', options: ['Regulatory or customer audit in the period', 'Auditee has other commitments'] },
+        { k: 'plannedDate', label: 'Date of audit', type: 'date', req: true },
+        { k: 'duration', label: 'Timing / duration', type: 'text' },
+        { k: 'leadAuditor', label: 'Lead auditor (QA expert)', type: 'user', req: true },
+        { k: 'coAuditor', label: 'Co-auditor (cross-functional)', type: 'user', req: true },
+        { k: 'consultant', label: 'External consultant (optional)', type: 'text' },
+        { k: 'activities', label: 'Audit activities / focus areas (including follow-up of previous CAPA)', type: 'textarea', full: true },
+        { k: 'notifiedOn', label: 'Agenda e-mailed to auditee on (at least 3 working days before)', type: 'date' },
+        sec('Self-inspection report (FRM/QAS/003)'),
+        { k: 'auditDate', label: 'Date of self-inspection (completed)', type: 'date' },
+        { k: 'reportDate', label: 'Date of audit report (within 15 calendar days)', type: 'date' },
+        { k: 'summary', label: 'Executive summary', type: 'textarea', full: true },
+        { k: 'observations', label: 'Observations, response and CAPA plan (FRM/QAS/003 and FRM/QAS/041)', type: 'table', full: true, cols: [
+          { k: 'no', label: 'Obs. #' }, { k: 'system', label: 'System / sub-system' }, { k: 'category', label: 'Category', options: ['Minor', 'Major', 'Critical'] },
+          { k: 'description', label: 'Description of observation' }, { k: 'recommendation', label: 'Recommendation' },
+          { k: 'corrective', label: 'Corrective action' }, { k: 'caDue', label: 'CA due date', type: 'date' },
+          { k: 'preventive', label: 'Preventive action' }, { k: 'paDue', label: 'PA due date', type: 'date' },
+          { k: 'responsible', label: 'Responsible person' }, { k: 'capa', label: 'CAPA no.', ref: ['capa'] }, { k: 'status', label: 'Status', options: ['Open', 'Complied'] }] },
+        sec('Response and closure'),
+        { k: 'dueDate', label: 'Response due (15 calendar days from the report)', type: 'readonly', fmt: 'date' },
+        { k: 'extendedDue', label: 'Extended response due (approved extension – one only)', type: 'readonly', fmt: 'date' },
+        { k: 'responseDate', label: 'Response and CAPA plan submitted on', type: 'readonly', fmt: 'date' },
+        { k: 'responseTimeliness', label: 'Response timeliness', type: 'computed' },
+        { k: 'qaVerification', label: 'QA verification of compliance', type: 'textarea', full: true }
       ],
-      states: ['Received', 'Triage', 'Investigation', 'Response', 'Closed'],
+      compute: { responseTimeliness: (d) => !d.responseDate ? '' : d.responseDate <= (d.extendedDue || d.dueDate) ? 'On time' : 'Late – submitted after the due date' },
+      states: ['Planned', 'Notified', 'In Progress', 'Report Issued', 'Response Submitted', 'Auditor Review', 'Response Accepted', 'Closed', 'Cancelled'],
       transitions: [
-        t('Received', 'Triage', 'Acknowledge', ['qa', 'rp', 'user', 'cs']),
-        t('Triage', 'Investigation', 'Triage complete', ['qa', 'rp'], { sign: 'Reviewed', needs: ['ae'] }),
-        t('Investigation', 'Response', 'Investigation complete', ['qa', 'sme'], { needs: ['investigation'] }),
-        t('Response', 'Closed', 'Approve response and close', ['qa'], { sign: 'Approved', sod: true, needs: ['response'] })
+        t('Planned', 'Notified', 'Agenda sent – confirm date and audit team', ['qa'], { needs: ['notifiedOn'], checks: ['siTeam', 'siSchedule', 'siNotice'] }),
+        t('Planned', 'Cancelled', 'Cancel', ['qa'], { reason: true, sign: 'Approved' }),
+        t('Notified', 'In Progress', 'Start self-inspection (pre-meeting held)', ['any'], { checks: ['isAuditor'] }),
+        t('In Progress', 'Report Issued', 'Issue report', ['any'], { sign: 'Prepared – lead auditor', needs: ['auditDate', 'reportDate', 'summary'], checks: ['isLeadAuditor', 'siReport'] }),
+        t('Report Issued', 'Response Submitted', 'Submit response and CAPA plan', ['any'], { sign: 'Response submitted – CAPA plan owner', checks: ['isAuditee', 'siResponse'] }),
+        t('Response Submitted', 'Auditor Review', 'Manager of CAPA plan owner approval', ['hod'], { sign: 'Approved – manager of CAPA plan owner' }),
+        t('Response Submitted', 'Report Issued', 'Return to auditee', ['hod'], { reason: true }),
+        t('Auditor Review', 'Response Accepted', 'Accept response and CAPA plan', ['any'], { sign: 'CAPA plan approved – lead auditor', checks: ['isLeadAuditor'] }),
+        t('Auditor Review', 'Report Issued', 'Return to auditee for rectification', ['any'], { reason: true, checks: ['isAuditor'] }),
+        t('Response Accepted', 'Closed', 'QA verification – close self-inspection', ['qa'], { sign: 'Verified and closed – QA', needs: ['qaVerification'], checks: ['siClosure'], sodWith: 'Response submitted' })
       ]
     },
 
-    audits: {
-      name: 'Audits & inspections', group: 'Compliance', prefix: 'AUD',
-      intro: 'Internal, supplier, customer-hosted and regulatory audits with findings and commitments.',
-      list: ['number', 'title', 'auditType', 'startDate', 'leadAuditor', 'status'],
+    sischedule: {
+      name: 'Self-inspection schedule', single: 'self-inspection schedule', group: 'Compliance', prefix: 'SIS',
+      intro: 'Annual risk-based self-inspection schedule (JRS/SOP/QAS/004, form JRS/FRM/QAS/038): at least four self-inspections a year, high-risk areas first, approved by the Head of Quality by the end of January.',
+      numbering: (d) => ({ fixed: `SIS-${d.year}` }),
+      list: ['number', 'year', 'approveBy', 'status'],
       fields: [
-        { k: 'title', label: 'Audit title', type: 'text', req: true, full: true },
-        { k: 'auditType', label: 'Audit type', type: 'select', req: true, options: ['Internal / self-inspection', 'Supplier / vendor', 'Customer-hosted', 'Regulatory inspection', 'CMO / CRO', 'Clinical depot / site', 'Mock inspection'] },
-        { k: 'auditee', label: 'Auditee / authority', type: 'text', req: true },
-        { k: 'startDate', label: 'Start date', type: 'date', req: true },
-        { k: 'endDate', label: 'End date', type: 'date' },
-        { k: 'leadAuditor', label: 'Lead auditor', type: 'user' },
-        { k: 'scope', label: 'Scope and regulatory basis', type: 'textarea', full: true },
-        { k: 'findings', label: 'Findings (one per line: Classification | Finding | Reference)', type: 'textarea', full: true, rows: 8 },
-        { k: 'responseDue', label: 'Auditee response due', type: 'date' },
-        { k: 'capaRefs', label: 'Linked CAPA nos.', type: 'text' },
-        { k: 'outcome', label: 'Overall outcome', type: 'select', options: ['Pending', 'Acceptable', 'Acceptable with conditions', 'Not acceptable'] }
+        { k: 'year', label: 'Year', type: 'number', req: true, lock: true },
+        { k: 'approveBy', label: 'Approval deadline', type: 'computed' },
+        { k: 'riskRef', label: 'Risk assessment used for scheduling (JRS/SOP/QAS/020)', type: 'recordref', refTypes: ['risks'] },
+        { k: 'riskBasis', label: 'Risk basis (personnel, premises, equipment, documentation, packaging, distribution, previous findings)', type: 'textarea', full: true },
+        { k: 'plan', label: 'Schedule', type: 'table', full: true, cols: [{ k: 'dept', label: 'Section / department', options: DEPT_CODES }, { k: 'month', label: 'Planned month', options: MONTHS }, { k: 'start', label: 'Audit start date', type: 'date' }, { k: 'end', label: 'Audit end date', type: 'date' }, { k: 'remarks', label: 'Remarks' }] }
       ],
-      states: ['Planned', 'In Progress', 'Report Issued', 'Follow-up', 'Closed'],
+      compute: { approveBy: (d) => d.year ? `Approve by ${d.year}-01-31` : '' },
+      states: ['Draft', 'Approved'],
       transitions: [
-        t('Planned', 'In Progress', 'Start audit', ['auditor', 'qa']),
-        t('In Progress', 'Report Issued', 'Issue report', ['auditor', 'qa'], { sign: 'Authored', needs: ['findings'] }),
-        t('Report Issued', 'Follow-up', 'Start CAPA follow-up', ['auditor', 'qa']),
-        t('Follow-up', 'Closed', 'Close audit', ['qa'], { sign: 'Approved', needs: ['outcome'] })
+        t('Draft', 'Approved', 'Approve schedule', ['qa'], { sign: 'Approved – Head of Quality', sod: true, needs: ['plan'], checks: ['sisMinimum'] }),
+        t('Approved', 'Draft', 'Revise schedule (addendum)', ['qa'], { reason: true })
+      ]
+    },
+
+    auditors: {
+      name: 'Qualified auditors', single: 'qualified auditor', group: 'Compliance', prefix: 'AUDR',
+      intro: 'List of qualified auditors (JRS/FRM/QAS/039 for self-inspections, JRS/FRM/QAS/043 for supplier audits). Only qualified auditors can be assigned to an audit.',
+      numbering: () => ({ pre: 'AUDR-', pad: 3 }),
+      list: ['number', 'auditor', 'department', 'designation', 'scope', 'status'],
+      fields: [
+        { k: 'auditor', label: 'Auditor', type: 'user', req: true, lock: true },
+        { k: 'department', label: 'Department', type: 'select', req: true, options: DEPT_CODES, optionLabels: DEPTS },
+        { k: 'designation', label: 'Designation', type: 'text', req: true },
+        { k: 'experience', label: 'Experience (years)', type: 'number', req: true },
+        { k: 'scope', label: 'Qualified for', type: 'multicheck', req: true, options: ['Self-inspection (FRM/QAS/039)', 'Supplier audit (FRM/QAS/043)'] },
+        { k: 'basis', label: 'Qualification basis (education, audit training, audits observed or led)', type: 'textarea', req: true, full: true }
+      ],
+      states: ['Proposed', 'Qualified', 'Withdrawn'],
+      transitions: [
+        t('Proposed', 'Qualified', 'Approve – add to list of qualified auditors', ['qa'], { sign: 'Approved – Head of Quality', sod: true }),
+        t('Qualified', 'Withdrawn', 'Withdraw from list', ['qa'], { sign: 'Withdrawn', reason: true }),
+        t('Withdrawn', 'Proposed', 'Propose again', ['qa'], { reason: true })
+      ]
+    },
+
+    extaudits: {
+      name: 'External audits & inspections', single: 'external audit', group: 'Compliance', prefix: 'EA',
+      intro: 'Customer, regulatory and third-party audits of JRS per JRS/SOP/QAS/002 (register FRM/QAS/012, response FRM/QAS/013) and regulatory inspections per JRS/SOP/QAS/008. Every audit finding is answered through a CAPA (JRS/SOP/QAS/006).',
+      numbering: (d, y) => ({ pre: `JRS-EA-${y}-`, pad: 3 }),
+      list: ['number', 'title', 'auditType', 'auditStart', 'findingCounts', 'status'],
+      fields: [
+        sec('Audit request and planning'),
+        { k: 'title', label: 'Name of auditing entity', type: 'text', req: true, full: true },
+        { k: 'auditType', label: 'Type', type: 'select', req: true, options: ['Customer / client audit', 'Regulatory inspection', 'Third-party audit'] },
+        { k: 'planned', label: 'Planned or unplanned', type: 'select', req: true, options: ['Planned', 'Unplanned'] },
+        { k: 'mode', label: 'Mode', type: 'select', options: ['On-site', 'Virtual (video)'] },
+        { k: 'auditorName', label: 'Name of auditor', type: 'text' },
+        { k: 'auditorCompany', label: 'Auditor company', type: 'text' },
+        { k: 'auditorEmail', label: 'Auditor e-mail', type: 'text' },
+        { k: 'auditorContact', label: 'Auditor contact details', type: 'text' },
+        { k: 'auditStart', label: 'Date of external audit (start)', type: 'date' },
+        { k: 'auditEnd', label: 'Date of external audit (end)', type: 'date' },
+        { k: 'host', label: 'JRS host (QA Manager / designee)', type: 'user' },
+        { k: 'cdaSigned', label: 'Confidentiality agreement signed on', type: 'date' },
+        { k: 'agenda', label: 'Final agenda from the requestor', type: 'textarea', full: true },
+        { k: 'attendees', label: 'Audit attendees', type: 'table', full: true, cols: [{ k: 'name', label: 'Name' }, { k: 'company', label: 'Company' }] },
+        sec('Report and response (FRM/QAS/013)'),
+        { k: 'reportDate', label: 'Date of external audit report', type: 'date' },
+        { k: 'responseDue', label: 'Response due date (set by the auditor)', type: 'date' },
+        { k: 'findings', label: 'Audit findings and JRS response', type: 'table', full: true, cols: [{ k: 'no', label: 'Sr. no.' }, { k: 'finding', label: 'Audit finding' }, { k: 'category', label: 'Category', options: ['Observation', 'Minor', 'Major', 'Critical'] }, { k: 'response', label: 'Initial / final response with action items' }, { k: 'due', label: 'Due date', type: 'date' }, { k: 'capa', label: 'CAPA no.', ref: ['capa'] }, { k: 'cc', label: 'Change control no.', ref: ['changes'] }, { k: 'status', label: 'Status', options: ['Open', 'Closed'] }] },
+        { k: 'findingCounts', label: 'Findings (Critical / Major / Minor / Observation)', type: 'computed' },
+        { k: 'clientFormat', label: "Response sent in the client's own format", type: 'checkbox' },
+        { k: 'initialResponse', label: 'Date of initial response', type: 'date' },
+        sec('Closure'),
+        { k: 'finalResponse', label: 'Date of final response', type: 'date' },
+        { k: 'clientClosure', label: 'Closure confirmed by the requestor', type: 'select', options: ['Confirmed', 'Not provided by the requestor'] },
+        { k: 'closureNotes', label: 'Closure notes', type: 'textarea', full: true }
+      ],
+      compute: { findingCounts: (d) => { const c = { Critical: 0, Major: 0, Minor: 0, Observation: 0 }; for (const f of d.findings || []) if (f.category in c) c[f.category]++; return `${c.Critical} / ${c.Major} / ${c.Minor} / ${c.Observation}`; } },
+      states: ['Requested', 'Confirmed', 'Audit Completed', 'Report Received', 'Response Prepared', 'Response Approved', 'Closed', 'Cancelled'],
+      transitions: [
+        t('Requested', 'Confirmed', 'Confirm audit (agenda and confidentiality agreement in place)', ['qa'], { needs: ['auditStart', 'cdaSigned', 'agenda'] }),
+        t('Requested', 'Cancelled', 'Cancel', ['qa'], { reason: true }),
+        t('Confirmed', 'Audit Completed', 'Record close-out meeting held', ['qa'], { needs: ['attendees'] }),
+        t('Audit Completed', 'Report Received', 'Report received and accepted', ['qa'], { needs: ['reportDate', 'responseDue'], checks: ['eaFindings'] }),
+        t('Report Received', 'Response Prepared', 'Prepare response', ['qa'], { sign: 'Prepared – QA Manager', checks: ['eaResponse'] }),
+        t('Response Prepared', 'Report Received', 'Return for rework', ['qa'], { reason: true }),
+        t('Response Prepared', 'Response Approved', 'Approve response', ['qa'], { sign: 'Approved – Head QA', sodWith: 'Prepared' }),
+        t('Response Approved', 'Closed', 'Close audit', ['qa'], { sign: 'Closed – QA', needs: ['initialResponse', 'finalResponse', 'clientClosure'], checks: ['eaClosure'] })
       ]
     },
 
@@ -450,32 +895,75 @@
     },
 
     risks: {
-      name: 'Risk assessments', group: 'Compliance', prefix: 'RSK',
-      intro: 'ICH Q9(R1) FMEA risk assessments linked to changes, deviations and vendors.',
-      list: ['number', 'title', 'process', 'rpn', 'status'],
+      name: 'Risk assessments', single: 'risk assessment', group: 'Compliance', prefix: 'RA',
+      intro: 'Quality risk management per JRS/SOP/QAS/020 and ICH Q9(R1): FMEA on form JRS/FRM/QAS/036, RPN = severity × occurrence × detection (each 1–5), register JRS/FRM/QAS/037. Minor 1–19 · Moderate 20–44 · Major 45–79 · Critical 80–125.',
+      numbering: (d, y) => ({ pre: `RA/JRS/${y}-`, pad: 3 }),
+      list: ['number', 'title', 'site', 'highestRisk', 'status'],
       fields: [
-        { k: 'title', label: 'Failure mode', type: 'text', req: true, full: true },
-        { k: 'process', label: 'Process / system', type: 'text', req: true },
-        { k: 'linked', label: 'Linked record no.', type: 'text' },
-        { k: 'effect', label: 'Effect', type: 'textarea', full: true },
-        { k: 'severity', label: 'Severity (1–10)', type: 'number', req: true },
-        { k: 'occurrence', label: 'Occurrence (1–10)', type: 'number', req: true },
-        { k: 'detection', label: 'Detection (1–10)', type: 'number', req: true },
-        { k: 'rpn', label: 'RPN (computed)', type: 'computed' },
-        { k: 'controls', label: 'Risk controls / mitigation', type: 'textarea', full: true },
-        { k: 'reviewDate', label: 'Next risk review', type: 'date' }
+        { k: 'site', label: 'Applicable site', type: 'select', req: true, options: SITES },
+        { k: 'title', label: 'Title of risk assessment', type: 'text', req: true, full: true },
+        { k: 'referenceDoc', label: 'Reference document no. (if applicable)', type: 'recordref', refTypes: ['changes', 'investigations', 'capa', 'selfinspections', 'extaudits', 'documents'] },
+        { k: 'team', label: 'Team (SMEs and a person knowledgeable in QRM)', type: 'text', full: true },
+        { k: 'scope', label: 'Scope / process assessed', type: 'textarea', full: true },
+        { k: 'fmea', label: 'FMEA – scores 1 to 5 for severity (S), occurrence (O) and detection (D)', type: 'table', full: true, rowCompute: fmeaRow, cols: [
+          { k: 'id', label: 'ID#' }, { k: 'step', label: 'Process step' }, { k: 'mode', label: 'Potential failure mode' }, { k: 'effect', label: 'Potential failure effect' },
+          { k: 's', label: 'S', type: 'score' }, { k: 'cause', label: 'Potential causes' }, { k: 'o', label: 'O', type: 'score' }, { k: 'control', label: 'Preventive control' }, { k: 'd', label: 'D', type: 'score' },
+          { k: 'rpn', label: 'RPN', computed: true }, { k: 'level', label: 'Risk level', computed: true },
+          { k: 'mitigation', label: 'Mitigation plan' }, { k: 'ps', label: 'Post S', type: 'score' }, { k: 'po', label: 'Post O', type: 'score' }, { k: 'pd', label: 'Post D', type: 'score' },
+          { k: 'prpn', label: 'Post RPN', computed: true }, { k: 'plevel', label: 'Residual level', computed: true },
+          { k: 'accept', label: 'Accept risk', options: ['Yes', 'No'] }, { k: 'comments', label: 'Comments / justification' }] },
+        { k: 'highestRisk', label: 'Highest current risk', type: 'computed' },
+        { k: 'conclusion', label: 'Conclusion', type: 'textarea', full: true },
+        { k: 'reviewDate', label: 'Next risk review (optional)', type: 'date' }
       ],
-      compute: { rpn: (d) => { const v = (+d.severity || 0) * (+d.occurrence || 0) * (+d.detection || 0); return v ? String(v) + (v >= 125 ? ' – High' : v >= 60 ? ' – Medium' : ' – Low') : ''; } },
-      states: ['Draft', 'Approved', 'Under Review'],
+      compute: {
+        highestRisk: (d) => {
+          const n = Math.max(0, ...(d.fmea || []).map(r => { const c = fmeaRow(r); return +(c.prpn || c.rpn) || 0; }));
+          return n ? `${n} – ${rpnLevel(n)}` : '';
+        }
+      },
+      states: ['Draft', 'HOD Review', 'QA Approval', 'Approved', 'Residual Risk Review'],
       transitions: [
-        t('Draft', 'Approved', 'Approve assessment', ['qa'], { sign: 'Approved', sod: true }),
-        t('Approved', 'Under Review', 'Start periodic review', ['any']),
-        t('Under Review', 'Approved', 'Re-approve', ['qa'], { sign: 'Approved' })
+        t('Draft', 'HOD Review', 'Submit (prepared by SME)', ['any'], { sign: 'Prepared – SME', needs: ['fmea', 'conclusion'], checks: ['raScores'] }),
+        t('HOD Review', 'Draft', 'Return to SME', ['hod'], { reason: true }),
+        t('HOD Review', 'QA Approval', 'Head of Department review', ['hod'], { sign: 'Reviewed – Head of Department', checks: ['raScores'] }),
+        t('QA Approval', 'QA Approval', 'Senior leadership acceptance of unmitigated Critical risk', ['mgmt'], { sign: 'Risk accepted – senior leadership', checks: ['raCriticalOpen'] }),
+        t('QA Approval', 'Draft', 'Return to SME', ['qa'], { reason: true }),
+        t('QA Approval', 'Approved', 'Approve risk assessment', ['qa'], { sign: 'Approved – QA Head', sod: true, checks: ['raScores', 'raActions'] }),
+        t('Approved', 'Residual Risk Review', 'Re-assess residual risk after mitigation', ['any']),
+        t('Residual Risk Review', 'Approved', 'Approve residual risk assessment', ['qa'], { sign: 'Approved – residual risk', checks: ['raScores', 'raActions', 'raResidual'] })
+      ]
+    },
+
+    mgmtreviews: {
+      name: 'Management reviews', single: 'management review', group: 'Compliance', prefix: 'QMR', hideFrom: ['extaud'],
+      intro: 'Quarterly quality management review per JRS/SOP/QAS/019 (minutes on form JRS/FRM/QAS/035). Data for all agenda topics and KPIs is compiled from the eQMS. Internal only – not shared with customers or external auditors.',
+      numbering: (d) => ({ fixed: `QMR-${d.year}-${d.quarter}` }),
+      list: ['number', 'meetingDate', 'nextMeeting', 'status'],
+      fields: [
+        { k: 'quarter', label: 'Target quarter', type: 'select', req: true, lock: true, options: ['Q1', 'Q2', 'Q3', 'Q4'] },
+        { k: 'year', label: 'Year', type: 'number', req: true, lock: true },
+        { k: 'meetingDate', label: 'Date of QMR meeting', type: 'date' },
+        { k: 'nextMeeting', label: 'Next QMR meeting (planned date)', type: 'date' },
+        { k: 'attendees', label: 'Attendance – mandatory attendees must be present', type: 'table', full: true,
+          def: [{ name: '', designation: 'Manager Quality Assurance', mandatory: 'Yes', attendance: '' }, { name: '', designation: 'Director International Business', mandatory: 'Yes', attendance: '' }],
+          cols: [{ k: 'name', label: 'Name' }, { k: 'designation', label: 'Designation' }, { k: 'mandatory', label: 'Mandatory', options: ['Yes', 'No'] }, { k: 'attendance', label: 'Attendance', options: ['Present', 'Absent'] }] },
+        { k: 'prevActions', label: 'Status of actions from the previous QMR', type: 'table', full: true, cols: [{ k: 'from', label: 'From QMR' }, { k: 'recommendation', label: 'Recommendation' }, { k: 'responsibility', label: 'Responsibility' }, { k: 'target', label: 'Target date', type: 'date' }, { k: 'update', label: 'Update' }, { k: 'status', label: 'Status', options: ['Open', 'Closed'] }] },
+        { k: 'discussion', label: 'Discussion of the agenda topics (compiled data shown below)', type: 'textarea', full: true, rows: 8 },
+        { k: 'actions', label: 'Action plan', type: 'table', full: true, cols: [{ k: 'recommendation', label: 'Recommendation' }, { k: 'responsibility', label: 'Responsibility' }, { k: 'target', label: 'Target completion date', type: 'date' }, { k: 'capa', label: 'CAPA no. (if any)', ref: ['capa'] }, { k: 'remarks', label: 'Remarks' }] },
+        { k: 'conclusion', label: 'Conclusion', type: 'textarea', full: true }
+      ],
+      states: ['Planned', 'Data Compiled', 'Meeting Held', 'Minutes Compiled', 'Authorized'],
+      transitions: [
+        t('Data Compiled', 'Meeting Held', 'Record meeting held', ['qa'], { needs: ['meetingDate'], checks: ['qmrAttendance'] }),
+        t('Meeting Held', 'Minutes Compiled', 'Compile minutes', ['qa'], { sign: 'Compiled – Manager QA', needs: ['discussion', 'conclusion', 'nextMeeting'], checks: ['qmrMinutes'] }),
+        t('Minutes Compiled', 'Meeting Held', 'Return minutes for correction', ['mgmt', 'qa'], { reason: true }),
+        t('Minutes Compiled', 'Authorized', 'Authorize minutes', ['mgmt'], { sign: 'Authorized – Director / Management Representative', sodWith: 'Compiled' })
       ]
     }
   };
 
   // Enrich: every transition from any open state to "Reopened" is not allowed; closures are final.
-  const api = { ROLES, MODULES, SITES };
+  const api = { ROLES, MODULES, SITES, DEPTS, rpnLevel, fmeaRow, trainingScore, PASS_MARK, TRAINER_PARAMS, TRAINER_PASS, RETENTION };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.QMS_CONFIG = api;
 })(typeof window !== 'undefined' ? window : globalThis);

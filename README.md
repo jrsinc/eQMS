@@ -11,8 +11,8 @@ and the Validation Summary Report is approved.
 | Area | Modules |
 | --- | --- |
 | Documents & training | Documents (SOP, WI, policies, forms) with revisions and effectivity · Document issuance with issue stamp, replacement copies and reconciliation · Training records (auto-assigned on effectivity) · Training matrix |
-| Quality events | Deviations · Root cause analysis (5 Whys, fishbone) · CAPA with effectiveness check · Change control and change management · Complaints |
-| Compliance | Audits and inspections · Risk assessments (FMEA) · Inspection readiness dashboard and inspection-pack export |
+| Quality events | Deviations and complaints (JRS/SOP/QAS/022) · Root cause analysis (5 Whys, fishbone) · CAPA with effectiveness check (JRS/SOP/QAS/006) · Change control with optional departmental approvals (JRS/SOP/QAS/007) · Extension requests (JRS/FRM/QAS/045) · Linked records across all of them |
+| Compliance | Self-inspections with annual schedule and qualified-auditor list (JRS/SOP/QAS/004) · External audits and inspections (JRS/SOP/QAS/002, QAS/008) · Risk assessments – FMEA, S×O×D 1–5 (JRS/SOP/QAS/020) · Quarterly management review with data compiled from the eQMS (JRS/SOP/QAS/019) · Inspection readiness dashboard and inspection-pack export |
 | Supply chain | Vendors (qualification, risk score) · Customers (GDP bona fides, sanctions check) |
 | Clinical supply | Comparator sourcing · Secondary packaging (line clearance, label reconciliation, QP certification) · Label design and controlled printing (PDF, ZPL) · Kit randomization (seeded block lists, blinded/unblinded views, dual approval) |
 | System | Users and roles · Hash-chained audit trail with integrity check · Electronic signatures · SharePoint publishing (Microsoft Graph) |
@@ -30,11 +30,12 @@ git clone <repo-url> qms && cd qms
 cp .env.example .env            # set HOST=127.0.0.1, COOKIE_SECURE=false for local http
 npm run demo                    # starts with demo users (password Demo-Pass-2026)
 # open http://localhost:8080
-npm test                        # 42 end-to-end workflow and security checks
+npm test                        # end-to-end checks: tests/e2e.mjs (core), tests/quality-events.mjs and tests/compliance.mjs (SOP rules)
 ```
 
 Demo users (development only): `qa.lead`, `qa.reviewer`, `author1`, `cs.manager`, `stat1` (unblinded), `rp1`,
-`trainer1`, `operator1`. The `admin` account is created on first start; its password is printed once and must be changed at first sign-in.
+`trainer1`, `operator1`, `hod.ops` (Department Head), `pm1` (Project Manager), `director1` (Management Representative),
+`inspector1` (external auditor, read-only). The `admin` account is created on first start; its password is printed once and must be changed at first sign-in.
 
 ## Deploy to Azure (internal access through your domain)
 

@@ -7,3 +7,7 @@ data/
 backups/
 node_modules/
 .DS_Store
+# Azure test deployment: generated package and passwords
+deploy/out/
+# local editor / assistant settings
+.claude/
