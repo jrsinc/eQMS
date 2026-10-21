@@ -1,27 +1,36 @@
-# Shared TEST environment on Render (from GitHub)
+# Free DEMO environment on Render (from GitHub)
 
-A public link (`https://jrs-eqms-test.onrender.com` or similar) for the team to test QualiSuite eQMS.
-Every page shows a "TEST SYSTEM" banner. Do not enter real GxP records, patient data or confidential client documents.
+A public link (`https://jrs-eqms-test.onrender.com` or similar) for showing and trying QualiSuite eQMS.
+Every page shows a "FREE DEMO SYSTEM" banner. Do not enter real GxP records, patient data or confidential client documents.
+
+## What "free" means here
+
+- **Data is not kept.** The free plan has no persistent disk: everything entered is wiped when the app sleeps
+  (about 15 minutes without visitors), restarts or redeploys. The demo users are created again each time.
+- **First page after sleeping is slow** (about 30–60 seconds while it wakes up).
+- Good for a demo session; for testing over several days use the paid Starter plan with a disk (see `render.yaml`).
 
 ## One-time set-up
 
 1. Keep the GitHub repository **private** (GitHub → repository → Settings → General → Danger zone → Change visibility).
 2. Sign in to [render.com](https://render.com) with your GitHub account.
-3. **New** → **Blueprint** → choose the repository → Render reads `render.yaml` and shows one web service with a 1 GB disk.
-4. Confirm **Apply**. Cost: Starter plan about US$7 a month plus the disk (about US$0.25 per GB a month); check Render's pricing page.
-5. When the deploy shows **Live**, open the service URL.
-6. Passwords: service → **Environment** → copy `DEMO_PASSWORD` (all demo users) and `ADMIN_INITIAL_PASSWORD` (user `admin`, must be changed at first sign-in).
+3. **+ New** → **Blueprint** (or open `https://dashboard.render.com/select-repo?type=blueprint`).
+4. Connect **jrsinc/eQMS** (if it is not listed: **Configure GitHub** → organization **jrsinc** → only **eQMS**). Branch **main**.
+5. Render shows one web service on the **Free** plan → **Apply**. No payment card is needed for the free plan.
+6. When the service shows **Live**, open its URL.
+7. Passwords: service → **Environment** → reveal `DEMO_PASSWORD` (all demo users) and `ADMIN_INITIAL_PASSWORD` (user `admin`).
    Share the link with the team and the demo password **separately**.
 
 Demo users: qa.lead, qa.reviewer, author1, cs.manager, stat1, rp1, trainer1, operator1, hod.ops, pm1, director1, inspector1, docctrl1.
 
+## Before a demo
+
+- Open the link a minute early so the app is awake.
+- Prepare any example records at the start of the session: they disappear after the app sleeps.
+- After a reset, `admin` signs in with `ADMIN_INITIAL_PASSWORD` again and is asked for a new password again.
+
 ## Day to day
 
-- Every push to the connected branch redeploys automatically; the test data on the disk is kept.
+- Every push to `main` redeploys automatically (and resets the data).
 - Logs: service → **Logs**.
-- Remove everything: service → **Settings** → **Delete web service** (the disk and its data are deleted too).
-
-## Notes
-
-- Changing `DEMO_PASSWORD` later does not change existing demo users; it only applies to users created afterwards.
-- Anyone with the link can reach the sign-in page; accounts lock after 5 failed attempts and sessions end after 15 minutes idle.
+- Remove: service → **Settings** → **Delete web service**.

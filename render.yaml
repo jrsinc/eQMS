@@ -1,25 +1,22 @@
-# Render Blueprint: shared TEST environment of QualiSuite eQMS (see deploy/RENDER-TEST.md).
-# The SQLite database lives on the persistent disk, so test data survives restarts and redeploys.
+# Render Blueprint: free DEMO environment of QualiSuite eQMS (see deploy/RENDER-TEST.md).
+# Free plan: no persistent disk, so the SQLite data is wiped whenever the service sleeps (about 15 minutes
+# without visitors), restarts or redeploys. The demo users are created again at every start.
+# To keep data, change plan to starter and add:  disk: {name: qms-data, mountPath: /var/data, sizeGB: 1}
+# plus the environment variable DATA_DIR=/var/data.
 services:
   - type: web
     name: jrs-eqms-test
     runtime: node
-    plan: starter            # a persistent disk needs a paid plan
+    plan: free
     buildCommand: npm install
     startCommand: node server.js
     healthCheckPath: /api/health
     autoDeploy: true         # redeploys on every push to the connected branch
-    disk:
-      name: qms-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: NODE_VERSION
         value: "22"          # node:sqlite needs Node 22.13 or later
       - key: HOST
         value: 0.0.0.0
-      - key: DATA_DIR
-        value: /var/data
       - key: COOKIE_SECURE
         value: "true"
       - key: SESSION_IDLE_MINUTES
@@ -33,4 +30,4 @@ services:
       - key: ORG_NAME
         value: Jupiter Research Services (TEST)
       - key: APP_ENV_LABEL
-        value: TEST SYSTEM - for team testing only, not for GxP records
+        value: FREE DEMO SYSTEM - data is reset when the app sleeps or restarts; not for GxP records
