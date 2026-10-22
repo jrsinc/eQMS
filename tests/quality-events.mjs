@@ -5,6 +5,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 19000 + Math.floor(Math.random() * 1000);
 const srv = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], { cwd: root, env: { ...process.env, DATA_DIR: mkdtempSync(join(tmpdir(), 'qms-qe-')), PORT: String(PORT), HOST: '127.0.0.1', SEED_DEMO: 'true' }, stdio: 'ignore' });
@@ -268,6 +269,14 @@ ok((await au.sig(cc.id,'QA Review')).ok,'initiator updates and resubmits Part A'
 // Part B – QA
 const plan=[{activity:'Install logger',dept:'OPS',person:'operator1',due:addD(T,20)},{activity:'Update SOP',dept:'QAS',person:'qa.reviewer',due:addD(T,30)}];
 await qa.put(cc.id,{impactCheck:check(5),impactSummary:'Cold chain monitoring only',classification:'Major',classRationale:'Affects GDP storage monitoring',riskRequired:'Not required',plan,clientPre:'Not required',clientPost:'Required'});
+// the browser sends every field of the form: untouched, empty fields of other parts are not changes
+const M=createRequire(import.meta.url)('../public/modules.js').MODULES;
+const blankForm=(type)=>Object.fromEntries(M[type].fields.filter(x=>x.k&&!['computed','readonly'].includes(x.type)).map(x=>[x.k,x.type==='multicheck'||x.type==='table'?[]:x.type==='checkbox'?false:x.type==='checklist'?Object.fromEntries(x.rows.map(r=>[r,{v:'',r:''}])):'']));
+let full={...blankForm('changes'),...(await qa.get(cc.id)).record.data,qaReviewComment:'Part B reviewed'};
+let sv=await qa.put(cc.id,full,'Part B');
+ok(sv.changes===1,'QA saves Part B from the full form; the empty Part D fields (other departments, effectiveness check) are not treated as changes'+(sv.error?' – '+sv.error:''));
+full={...blankForm('changes'),...(await qa.get(cc.id)).record.data,optionalDepts:['QAS']};
+ok((await qa.put(cc.id,full,'x')).s===403,'a real change to Part D at QA review is still refused');
 ok((await qa.sig(cc.id,'RP Review')).s===400,'Part B blocked: impact checklist incomplete');
 await qa.put(cc.id,{impactCheck:check(11)});
 ok((await qa.sig(cc.id,'RP Review')).s===400,'Major change requires a risk assessment');

@@ -1159,6 +1159,10 @@ route('POST', '/api/records', (ctx) => {
   for (const a of (Array.isArray(ctx.body.attachments) ? ctx.body.attachments : []).slice(0, 20)) addAttachment(ctx, rec, a);
   return rec;
 });
+// The form sends every field. An empty value – '', null, [] (no boxes ticked), false (unticked), an empty table or an
+// unanswered checklist – is the same as a field never filled in, so it is not a change (and needs no edit right)
+const emptyValue = (v) => v == null || v === '' || v === false || (Array.isArray(v) ? v.every(emptyValue) : typeof v === 'object' && Object.values(v).every(emptyValue));
+const sameValue = (a, b) => (emptyValue(a) && emptyValue(b)) || JSON.stringify(a ?? '') === JSON.stringify(b ?? '');
 route('PUT', '/api/records/:id', (ctx) => {
   const rec = visibleRecord(ctx.user, getRecord(ctx.params.id)), mod = MODULES[rec.type];
   if (!EDITABLE_ALWAYS.has(rec.type) && LOCKED.has(rec.status)) fail(409, `Record is ${rec.status} and cannot be edited. Raise a change or revision.`);
@@ -1166,16 +1170,16 @@ route('PUT', '/api/records/:id', (ctx) => {
   const reason = String(ctx.body.reason || '').trim(); if (!reason) fail(400, 'Reason for change is required.');
   const clean = sanitize(rec.type, ctx.body.data || {});
   if (rec.type === 'issues' && rec.status !== 'Requested') { delete clean.docNumber; delete clean.copies; delete clean.issuedTo; }
-  for (const f of mod.fields) if (f.lock && f.k in clean && JSON.stringify(clean[f.k] ?? '') !== JSON.stringify(rec.data[f.k] ?? '')) fail(400, `${f.label} cannot be changed after the record is created.`);
+  for (const f of mod.fields) if (f.lock && f.k in clean && !sameValue(clean[f.k], rec.data[f.k])) fail(400, `${f.label} cannot be changed after the record is created.`);
   for (const [k, v] of Object.entries(clean)) {
-    if (JSON.stringify(rec.data[k] ?? '') === JSON.stringify(v ?? '')) continue;
+    if (sameValue(rec.data[k], v)) continue;
     const s = sectionOf(mod, k);
     if (!canEditSection(s, rec, ctx.user)) fail(403, `"${s.label}" cannot be changed by you at stage "${rec.status}".`);
   }
   let changes = 0;
   for (const [k, v] of Object.entries(clean)) {
     const old = rec.data[k];
-    if (JSON.stringify(old ?? '') !== JSON.stringify(v ?? '')) { rec.data[k] = v; audit(ctx.user, 'Field changed', rec, k, fmt(old), fmt(v), reason, ctx.ip); changes++; }
+    if (!sameValue(old, v)) { rec.data[k] = v; audit(ctx.user, 'Field changed', rec, k, fmt(old), fmt(v), reason, ctx.ip); changes++; }
   }
   if (changes) {
     if (DERIVE[rec.type]) { const before = JSON.stringify(rec.data); DERIVE[rec.type](rec); if (JSON.stringify(rec.data) !== before) audit(ctx.user, 'Derived values recalculated', rec, null, null, rec.type === 'investigations' ? 'Due date ' + rec.data.dueDate : 'Title ' + rec.data.title, reason, ctx.ip); }
