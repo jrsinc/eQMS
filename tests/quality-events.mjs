@@ -159,35 +159,64 @@ await cs.put(d4.id,{...inv,capaRequired:'No',capaJustification:'One-off'}); awai
 g=await qa.get(d4.id);ok(g.record.data.hodApprover==='hod.ops','Head of Packaging is the responsible person: Head of Operations (parent department) approves');
 ok((await cs.sig(d4.id,'QA Evaluation')).s===403,'the Head cannot approve their own investigation');
 
-// ===== CAPA – JRS/SOP/QAS/006 =====
+// ===== CAPA – JRS/SOP/QAS/006 (form JRS/FRM/QAS/006 v3.0) =====
+// Part A (initiator) → Head of the responsible department (comment, approve / reject) → QA Part B (comment, effectiveness check)
+// → Part C (responsible department) → Head verifies → QA Part D closure → Part E effectiveness (when required)
 let k2=await qa.call('POST','/api/records',{type:'capa',data:{title:'Update picking SOP',respDept:'QAS',respPerson:'qa.reviewer',dueDate:addD(T,45),source:'Internal audit / self-inspection',nonconformance:'SOP lacks door-closure step'}});
 let k3=await op.call('POST','/api/records',{type:'capa',data:{title:'Retrain warehouse staff',respDept:'QAS',respPerson:'operator1',dueDate:addD(T,45),source:'Deviation',nonconformance:'Training gap',corrective:'Retrain',caDue:addD(T,20)}});
 ok(k2.number===`CAPA/QAS/001/${YY}`&&k3.number===`CAPA/QAS/002/${YY}`,'serial restarts per department: '+k2.number+', '+k3.number);
-ok((await qa.call('POST',`/api/records/${k2.id}/transition`,{to:'HOD Pre-Approval'})).s===400,'submission needs at least one proposed action with due date');
-await op.call('POST',`/api/records/${k1.id}/transition`,{to:'HOD Pre-Approval'});
-ok((await hod.sig(k1.id,'QA Pre-Approval')).ok,'Department Head pre-approval');
-await qa.put(k1.id,{ecRequired:'Not required'});
+ok((await qa.sig(k2.id,'HOD Pre-Approval')).s===400,'Part A needs at least one proposed action with a due date');
+// visibility: responsible department, its Head, QA
+ok((await tr.get(k1.id)).s===404&&(await cs.get(k1.id)).s===404,'other departments cannot see the CAPA');
+ok((await hod.get(k1.id)).record&&(await qr.get(k1.id)).record,'the responsible department\'s Head and QA can see it');
+// Part A – initiator
+ok((await hod.put(k1.id,{nonconformance:'x'})).s===403,'only the initiator writes Part A');
+ok((await au.sig(k1.id,'HOD Pre-Approval')).s===403,'only the initiator submits Part A');
+ok((await op.sig(k1.id,'HOD Pre-Approval')).ok,'initiator signs and submits Part A to the Head of Department');
+g=await qa.get(k1.id);ok(g.record.data.hodApprover==='hod.ops','Head of the responsible department from the organogram: Head of Operation');
+ok((await op.put(k1.id,{nonconformance:'changed'})).s===403,'Part A is locked once submitted');
+// Head of Department – comment, approve or reject
+ok((await hod.sig(k1.id,'QA Pre-Approval')).s===400,'the Head of Department comment is required');
+ok((await hod.sig(k1.id,'Initiated',{reason:'Add the alarm delay to the CAPA description'})).ok,'Head of Department rejects – back to the initiator');
+await op.put(k1.id,{capaDetail:'Door-open alarm with a 2-minute delay'},'Head of Department request');
+await op.sig(k1.id,'HOD Pre-Approval');
+await hod.put(k1.id,{hodComment:'Agreed – alarm to be installed by Operation'});
+ok((await qa.sig(k1.id,'QA Pre-Approval')).s===403,'only the Head named on the CAPA approves');
+ok((await hod.sig(k1.id,'QA Pre-Approval')).ok,'Head of Department approves with a comment');
+// QA – Part B
+ok((await hod.put(k1.id,{qaPreComment:'x'})).s===403,'only QA writes the QA part of Part B');
+await qa.put(k1.id,{qaPreComment:'Plan adequate',ecRequired:'Not required'});
 ok((await qa.sig(k1.id,'Implementation')).s===400,'effectiveness check "not required" needs a reason');
 await qa.put(k1.id,{ecRequired:'Required',ecDue:'3 months'});
-ok((await qa.sig(k1.id,'Implementation')).ok,'QA pre-approval');
-ok((await au.sig(k1.id,'HOD Verification')).s===403,'only the responsible person (or QA) records implementation');
-ok((await op.sig(k1.id,'HOD Verification')).s===400,'implementation needs Part C entries');
+ok((await qa.sig(k1.id,'Implementation')).ok,'QA reviews, comments and approves Part B');
+// Part C – responsible department
+ok((await qa.put(k1.id,{caDone:'x'})).s===403,'QA does not write Part C');
+ok((await qr.sig(k1.id,'HOD Verification')).s===403,'only the responsible person / department submits Part C');
+ok((await op.sig(k1.id,'HOD Verification')).s===400,'implementation needs the Part C entries');
 await op.put(k1.id,{caDone:'Door alarm installed and tested',caDate:T,caRef:'WO-1001'});
-ok((await op.sig(k1.id,'HOD Verification')).ok,'responsible person records implementation');
-ok((await hod.sig(k1.id,'QA Closure')).ok,'Department Head verifies implementation');
+ok((await op.sig(k1.id,'HOD Verification')).ok,'responsible person completes and signs Part C');
+// Head of Department verifies
+ok((await qa.sig(k1.id,'QA Closure')).s===403,'only the Head of Department verifies');
+await hod.put(k1.id,{hodVerifyComment:'Alarm tested on site'});
+ok((await hod.sig(k1.id,'QA Closure')).ok,'Head of Department verifies the implementation');
+// QA – Part D closure, Part E effectiveness
 await qa.put(k1.id,{closureRemarks:'Evidence reviewed'});
 ok((await qa.sig(k1.id,'Closed')).s===400,'cannot skip a required effectiveness check');
-ok((await qa.sig(k1.id,'Effectiveness Check')).ok,'QA closure, effectiveness check pending');
+ok((await qa.sig(k1.id,'Effectiveness Check')).ok,'QA completes Part D – effectiveness check pending');
 g=await qa.get(k1.id);ok(g.record.data.ecDueDate===addM(T,3),'effectiveness check due in 3 months: '+g.record.data.ecDueDate);
 await qa.put(k1.id,{effective:'No',ecQaComment:'Door found open again'});
 ok((await qa.sig(k1.id,'Closed')).ok,'effectiveness recorded');
 g=await qa.get(k1.id);let fu=g.links.find(l=>l.type==='capa'&&l.number===`CAPA/OPS/002/${YY}`);
 ok(!!fu,'not effective: follow-up CAPA raised and linked '+(fu&&fu.number));
+const wantK=['Part A submitted – initiator','Rejected – Head of Department','Pre-approved – Head of Department','Pre-approved – QA','Implemented – responsible person','Verified – Head of Department','Closed – QA (effectiveness check pending)','Effectiveness verified – QA'];
+ok(wantK.every(m=>g.signatures.some(s=>s.meaning===m)),'every CAPA step signed and dated');
 // segregation of duties
-await qa.put(k2.id,{correction:'Revise SOP',corrDue:addD(T,10),ecRequired:'Not required',ecReason:'Editorial SOP change'});
-await qa.call('POST',`/api/records/${k2.id}/transition`,{to:'HOD Pre-Approval'});await hod.sig(k2.id,'QA Pre-Approval');
+await qa.put(k2.id,{correction:'Revise SOP',corrDue:addD(T,10)});
+await qa.sig(k2.id,'HOD Pre-Approval'); await qa.put(k2.id,{hodComment:'OK'}); await qa.sig(k2.id,'QA Pre-Approval');
+await qa.put(k2.id,{qaPreComment:'OK',ecRequired:'Not required',ecReason:'Editorial SOP change'});
 ok((await qa.sig(k2.id,'Implementation')).s===403,'CAPA initiator cannot give the QA pre-approval');
 ok((await qr.sig(k2.id,'Implementation')).ok,'second QA person approves');
+
 
 // ===== Extension requests – form JRS/FRM/QAS/045 =====
 const er=(documentId,requestedDate,extra={})=>op.call('POST','/api/records',{type:'extensions',data:{documentId,requestedDate,justification:'Awaiting vendor report',interimUpdate:'Investigation 70% complete',impactAssessment:'No product impact; stock on hold',...extra}});

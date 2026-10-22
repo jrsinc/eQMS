@@ -92,7 +92,7 @@ let z=await pk.raw(`/api/records/${d.id}/report`);
 ok(z.s===200&&z.type==='application/zip','report can be downloaded at any stage (ZIP)');
 let files=unzip(z.buf), names=Object.keys(files);
 const html=files[names.find(n=>n.endsWith('report.html'))].toString('utf8');
-ok(names.filter(n=>n.startsWith('attachments/')).length===3&&names.some(n=>n.includes('Investigation - investigation-notes.txt')),'ZIP contains the report and all 3 attachments by stage');
+ok(names.filter(n=>n.startsWith('attachments/')).length===3&&names.some(n=>n.includes('Attachment 03 - investigation-notes.txt')),'ZIP contains the report and all 3 attachments by stage');
 ok(files[names.find(n=>n.includes('photo-goods-in'))].toString()==='photo','attachment content intact');
 ok(html.includes('Interim report')&&html.includes('Part C – Investigation')&&html.includes('Part B approved – QA'),'interim report shows every part and the signatures');
 ok(!names.includes('audit-trail.csv')&&html.includes('included in reports downloaded by QA'),'department users get the report without the audit trail');
@@ -124,7 +124,7 @@ ok((await qa.sig(d.id,'Closed')).ok,'deviation closed');
 ok((await pk.attach(d.id,'late.txt','late')).s===409,'after closure only QA adds attachments');
 ok((await qa.attach(d.id,'closure-memo.txt','memo')).sha256,'QA adds a closure attachment');
 z=await pk.raw(`/api/records/${d.id}/report`); files=unzip(z.buf);
-ok(!files[Object.keys(files).find(n=>n.endsWith('report.html'))].toString().includes('Interim report')&&Object.keys(files).some(n=>n.includes('Closed - closure-memo.txt')),'final report after closure includes the closure attachment');
+ok(!files[Object.keys(files).find(n=>n.endsWith('report.html'))].toString().includes('Interim report')&&Object.keys(files).some(n=>n.endsWith('Attachment 06 - closure-memo.txt')),'final report after closure includes the closure attachment (Attachment 06)');
 let au=await qa.call('GET','/api/audit?action='+encodeURIComponent('Report downloaded'));
 ok(au._arr.filter(a=>a.action==='Report downloaded').length===3,'every ZIP download is in the audit trail (3)');
 // no Head anywhere up the hierarchy → the investigation cannot go to approval

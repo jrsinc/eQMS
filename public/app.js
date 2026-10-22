@@ -272,7 +272,12 @@ function myTasks() {
     if (r.type === 'training') return ['Trainer Evaluation', 'Failed'].includes(r.status) ? r.data.trainer === ME.username : r.data.trainee === ME.username;
     if (r.type === 'documents' && r.status === 'In Review' && r.data.reviewer === ME.username) return true;
     if (r.type === 'documents' && r.status === 'Draft' && r.created_by === ME.username) return true;
-    if (r.type === 'capa' && r.status === 'Implementation' && r.data.respPerson === ME.username) return true;
+    if (r.type === 'capa') {
+      const d = r.data;
+      if (r.status === 'Initiated' && r.created_by === ME.username) return true;
+      if (['HOD Pre-Approval', 'HOD Verification'].includes(r.status) && d.hodApprover === ME.username) return true;
+      if (r.status === 'Implementation' && (d.respPerson === ME.username || (!!ME.department && ME.department === d.respDept))) return true;
+    }
     if (r.type === 'investigations') {
       const d = r.data, mine = d.respPerson === ME.username || (!!ME.department && ME.department === d.respDept);
       if (['Initiation', 'Part A Update'].includes(r.status) && (r.created_by === ME.username || mine)) return true;
@@ -455,7 +460,7 @@ const uploadFile = async (id, file) => api('POST', `/api/records/${id}/attachmen
 function attachmentsTable(m, atts) {
   if (!atts.length) return '<p class="muted">No attachments. Files can be added at every stage; each is stored with a SHA-256 checksum that is verified on every download.</p>';
   const stages = [...new Set(atts.map(a => a.stage || ''))].sort((a, b) => m.states.indexOf(a) - m.states.indexOf(b));
-  return `<div class="table-wrap"><table class="t"><thead><tr><th>File</th><th>Size</th><th>SHA-256</th><th>Added</th></tr></thead><tbody>${stages.map(st => `<tr class="group-row"><td colspan="4">Stage: ${esc(st || 'Not recorded')}</td></tr>${atts.filter(a => (a.stage || '') === st).map(a => `<tr><td><a href="/api/attachments/${a.id}">${esc(a.name)}</a></td><td>${(a.size / 1024).toFixed(1)} KB</td><td class="mono small" title="${a.sha256}">${a.sha256.slice(0, 16)}…</td><td>${esc(userName(a.uploaded_by))}<br><span class="small muted">${dmyt(a.ts)}</span></td></tr>`).join('')}`).join('')}</tbody></table></div>`;
+  return `<div class="table-wrap"><table class="t"><thead><tr><th>File</th><th>Size</th><th>SHA-256</th><th>Added</th></tr></thead><tbody>${stages.map(st => `<tr class="group-row"><td colspan="4">Stage: ${esc(st || 'Not recorded')}</td></tr>${atts.filter(a => (a.stage || '') === st).map(a => `<tr><td><b>Attachment ${atts.indexOf(a) + 1}</b> – <a href="/api/attachments/${a.id}">${esc(a.name)}</a></td><td>${(a.size / 1024).toFixed(1)} KB</td><td class="mono small" title="${a.sha256}">${a.sha256.slice(0, 16)}…</td><td>${esc(userName(a.uploaded_by))}<br><span class="small muted">${dmyt(a.ts)}</span></td></tr>`).join('')}`).join('')}</tbody></table></div>`;
 }
 
 // ---------- record detail ----------

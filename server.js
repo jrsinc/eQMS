@@ -501,7 +501,7 @@ const CHECKS = {
   // deviations and complaints: Part A by the initiator or the responsible department, Part C by the responsible person / department,
   // Part D by the Head of the responsible department (from the organogram)
   isPartAOwner: (r, u) => { if (![r.created_by, r.data.respPerson].includes(u.username) && !(u.department && u.department === r.data.respDept) && !allAccess(u)) fail(403, 'Only the initiator, the responsible person or the responsible department submits Part A.'); },
-  isPartCOwner: (r, u) => { if (r.data.respPerson !== u.username && !(u.department && u.department === r.data.respDept) && !allAccess(u)) fail(403, 'Only the responsible person or the responsible department submits the investigation.'); },
+  isPartCOwner: (r, u) => { if (r.data.respPerson !== u.username && !(u.department && u.department === r.data.respDept) && !allAccess(u)) fail(403, 'Only the responsible person or the responsible department can do this step.'); },
   hodAvailable: (r) => need(hodFor(r.data.respDept, r.data.respPerson), `No Head of Department can approve for ${DEPTS[r.data.respDept] || 'the responsible department'}. Ask management or the Head of QA to set the Head in the organogram.`),
   // extension requests: the Head of the department responsible for the record being extended (organogram)
   erHod: (r, u) => {
@@ -597,13 +597,12 @@ const CHECKS = {
     for (const [k, done, date, label] of [['correction', 'corrDone', 'corrDate', 'Correction'], ['corrective', 'caDone', 'caDate', 'Corrective action'], ['preventive', 'paDone', 'paDate', 'Preventive action']])
       if (!blank(d[k])) need(!blank(d[done]) && d[date], `${label}: record what was done and the implementation date (Part C).`);
   },
-  respOrQa: (r, u) => { if (r.data.respPerson !== u.username && !u.roles.includes('qa')) fail(403, 'Only the CAPA responsible person (or QA) can record implementation.'); },
   ecDecision: (r) => {
     if (r.data.ecRequired === 'Not required') need(!blank(r.data.ecReason), 'Give the reason why no effectiveness check is required.');
     else need(ecMonths(r.data.ecDue), 'Select when the effectiveness check is due (3, 6, 9 or 12 months).');
   },
-  ecIsRequired: (r) => need(r.data.ecRequired === 'Required', 'No effectiveness check is required: use "QA close (no effectiveness check)".'),
-  ecNotRequired: (r) => need(r.data.ecRequired === 'Not required', 'An effectiveness check is required: use "QA close – effectiveness check pending".'),
+  ecIsRequired: (r) => need(r.data.ecRequired === 'Required', 'No effectiveness check is required: use "Close – CAPA completed".'),
+  ecNotRequired: (r) => need(r.data.ecRequired === 'Not required', 'An effectiveness check is required: use "Close – effectiveness check pending".'),
   ccDue90: (r) => { const from = r.data.dateOpened || today(); if (r.data.nature === 'Permanent') need(r.data.dueDate <= addDays(from, 90), `A permanent change must be due within 90 days (by ${addDays(from, 90)}).`); },
   ccTemp: (r) => { if (r.data.nature === 'Temporary') need(r.data.tempStart && r.data.tempEnd && r.data.tempEnd >= r.data.tempStart, 'Temporary change: enter the start and end dates (end on or after start).'); },
   ccRiskClass: (r) => { if (['Major', 'Critical'].includes(r.data.classification)) need(r.data.riskRequired === 'Required', `${r.data.classification} changes require a risk assessment (JRS/SOP/QAS/020).`); },
@@ -743,15 +742,19 @@ function qualifiedAuditor(username, scope) {
   return db.prepare("SELECT * FROM records WHERE type='auditors' AND status='Qualified' AND deleted=0").all().map(rowToRecord)
     .find(r => r.data.auditor === username && (r.data.scope || []).some(s => s.startsWith(scope)));
 }
+// the approving Head of Department comes from the organogram whenever a record reaches a Head of Department step
+function assignHod(u, r, ip) {
+  const old = r.data.hodApprover; r.data.hodApprover = hodFor(r.data.respDept, r.data.respPerson);
+  if (old !== r.data.hodApprover) audit(u, 'Approver assigned from the organogram', r, 'hodApprover', old, r.data.hodApprover, null, ip);
+}
 // Side effects after a state change, keyed "module:new state"
 const AFTER = {
   // the designated number generator assigns the record number once QA has approved the request
   'investigations:Initiation': (u, r, ip) => assignNumber(u, r, ip),
   // the approving Head of Department comes from the organogram when the investigation is submitted
-  'investigations:HOD Approval': (u, r, ip) => {
-    const old = r.data.hodApprover; r.data.hodApprover = hodFor(r.data.respDept, r.data.respPerson);
-    if (old !== r.data.hodApprover) audit(u, 'Approver assigned from the organogram', r, 'hodApprover', old, r.data.hodApprover, null, ip);
-  },
+  'investigations:HOD Approval': (u, r, ip) => assignHod(u, r, ip),
+  'capa:HOD Pre-Approval': (u, r, ip) => assignHod(u, r, ip),
+  'capa:HOD Verification': (u, r, ip) => assignHod(u, r, ip),
   'documents:Approved – Training': (u, r, ip) => { r.data.approvedOn = today(); assignDocTraining(u, r, ip); },
   'documents:Effective': (u, r, ip) => makeEffective(u, r, ip),
   'training:Assigned': (u, r) => { // retraining after an unsatisfactory assessment
@@ -769,10 +772,7 @@ const AFTER = {
   'tni:Certified': (u, r) => { r.data.certificateDate = today(); },
   'atreviews:Under Review': (u, r) => { r.data.summary = auditSummary(r.data.periodFrom, r.data.periodTo, r.data.scope || []); },
   'changes:RP Review': (u, r, ip) => assignNumber(u, r, ip),
-  'changes:HOD Approval': (u, r, ip) => {
-    const old = r.data.hodApprover; r.data.hodApprover = hodFor(r.data.respDept, r.data.respPerson);
-    if (old !== r.data.hodApprover) audit(u, 'Approver assigned from the organogram', r, 'hodApprover', old, r.data.hodApprover, null, ip);
-  },
+  'changes:HOD Approval': (u, r, ip) => assignHod(u, r, ip),
   'capa:Effectiveness Check': (u, r) => { r.data.ecDueDate = addMonths(today(), ecMonths(r.data.ecDue)); },
   'capa:Closed': (u, r, ip) => {
     if (r.data.effective !== 'No') return;
@@ -1622,7 +1622,7 @@ function reportZip(user, rec) {
   const trail = withAudit ? db.prepare('SELECT * FROM audit WHERE record_id=? ORDER BY id').all(rec.id) : [];
   const links = linked(rec.id).filter(r => canSee(user, r));
   const files = [], attRows = atts.map((a, i) => {
-    const p = `attachments/${String(i + 1).padStart(2, '0')} ${safeName(a.stage || 'Unknown stage')} - ${safeName(a.name)}`;
+    const p = `attachments/Attachment ${String(i + 1).padStart(2, '0')} - ${safeName(a.name)}`;
     files.push({ name: p, data: Buffer.from(a.blob) });
     return `<tr><td>${i + 1}</td><td>${esc(a.stage || '')}</td><td>${esc(a.name)}<br><small>${esc(p)}</small></td><td>${a.size}</td><td>${esc(userLabel(a.uploaded_by))}</td><td>${esc(a.ts.slice(0, 16).replace('T', ' '))}</td><td><small>${esc(a.sha256)}</small></td></tr>`;
   });
@@ -1685,7 +1685,8 @@ async function reportPdf(user, rec) {
     const t = pdfText(label); p.drawText(t, { x: W - M - FB.widthOfTextAtSize(t, 9.5), y: H - M - 2, size: 9.5, font: FB, color: blue });
     p.drawLine({ start: { x: M, y: H - M - 22 }, end: { x: W - M, y: H - M - 22 }, thickness: 0.8, color: blue });
   };
-  const newPage = (label = `${mod.name} – ${rec.number}`) => { page = doc.addPage([W, H]); head(page, label); y = H - M - 34; };
+  const own = new Set(), attPages = new Map(); // report pages carry the header; merged attachment pages get a numbered strip
+  const newPage = (label = `${mod.name} – ${rec.number}`) => { page = doc.addPage([W, H]); own.add(page); head(page, label); y = H - M - 34; };
   const ensure = (need) => { if (y - need < M + 16) newPage(); };
   const wrap = (s, font, size, width) => {
     const out = [];
@@ -1760,8 +1761,8 @@ async function reportPdf(user, rec) {
   // ----- attachments list and linked records -----
   heading(`Attachments (${atts.length})`);
   const merged = atts.map(a => ['pdf', 'png', 'jpg'].includes(kindOf(Buffer.from(a.blob))));
-  if (atts.length) table([{ label: '#', w: 22 }, { label: 'Stage', w: 80 }, { label: 'File', w: 170 }, { label: 'Added by', w: 100 }, { label: 'Added', w: 85 }, { label: 'In this PDF', w: 58 }],
-    atts.map((a, i) => [i + 1, a.stage || '', a.name, userLabel(a.uploaded_by), tsText(a.ts), merged[i] ? 'Yes' : 'No – open in eQMS']));
+  if (atts.length) table([{ label: 'No.', w: 62 }, { label: 'Stage', w: 70 }, { label: 'File', w: 140 }, { label: 'Added by', w: 100 }, { label: 'Added', w: 85 }, { label: 'In this PDF', w: 58 }],
+    atts.map((a, i) => [`Attachment ${i + 1}`, a.stage || '', a.name, userLabel(a.uploaded_by), tsText(a.ts), merged[i] ? 'Yes' : 'No – open in eQMS']));
   else text('No attachments.', { color: grey });
   heading('Linked records');
   if (links.length) table([{ label: 'Number', w: 120 }, { label: 'Module', w: 110 }, { label: 'Title', w: 200 }, { label: 'Status', w: 85 }], links.map(l => [l.number, MODULES[l.type].name, l.data.title || '', l.status]));
@@ -1769,13 +1770,13 @@ async function reportPdf(user, rec) {
 
   // ----- attachments: PDF pages and images merged in -----
   for (const [i, a] of atts.entries()) {
-    const buf = Buffer.from(a.blob), kind = kindOf(buf), label = `Attachment ${i + 1} of ${atts.length}: ${a.name} (stage ${a.stage || '–'})`;
+    const buf = Buffer.from(a.blob), kind = kindOf(buf), label = `Attachment ${i + 1} – ${a.name} (stage ${a.stage || '–'})`;
     try {
       if (kind === 'pdf') {
         const src = await PDFDocument.load(buf, { ignoreEncryption: true });
         if (src.isEncrypted) throw new Error('protected PDF');
         const pages = await doc.copyPages(src, src.getPageIndices());
-        for (const p of pages) { doc.addPage(p); const { height } = p.getSize(); p.drawRectangle({ x: 0, y: height - 14, width: 420, height: 14, color: rgb(1, 1, 1), opacity: 0.85 }); p.drawText(pdfText(label).slice(0, 100), { x: 6, y: height - 10, size: 7, font: FB, color: blue }); }
+        for (const p of pages) { doc.addPage(p); attPages.set(p, label); }
       } else if (kind === 'png' || kind === 'jpg') {
         const im = kind === 'png' ? await doc.embedPng(buf) : await doc.embedJpg(buf);
         newPage(label);
@@ -1798,7 +1799,17 @@ async function reportPdf(user, rec) {
   } else text('The audit trail is included in reports produced by QA, administrators and management.', { color: grey });
   // footer on every page
   const pages = doc.getPages(), stamp = `${rec.number} · ${CFG.orgName} · ${final ? 'Final report' : 'Interim report'} · ${tsText(now())}`;
-  pages.forEach((p, i) => { const { width } = p.getSize(); p.drawText(pdfText(stamp), { x: 18, y: 10, size: 6.5, font: F, color: grey }); const pn = `Page ${i + 1} of ${pages.length}`; p.drawText(pn, { x: width - 18 - F.widthOfTextAtSize(pn, 6.5), y: 10, size: 6.5, font: F, color: grey }); });
+  pages.forEach((p, i) => {
+    const { width, height } = p.getSize(), pn = `Page ${i + 1} of ${pages.length}`;
+    if (own.has(p)) p.drawText(pn, { x: width - M - F.widthOfTextAtSize(pn, 8), y: H - M - 16, size: 8, font: F, color: grey }); // header: logo, record, page number
+    else { // merged attachment page: strip with the attachment number, logo and page number
+      p.drawRectangle({ x: 0, y: height - 18, width, height: 18, color: rgb(1, 1, 1), opacity: 0.9 });
+      let x = 6; if (logo) { const lw = logo.width * 12 / logo.height; p.drawImage(logo, { x, y: height - 15, width: lw, height: 12 }); x += lw + 8; }
+      p.drawText(pdfText(`${rec.number} · ${attPages.get(p) || ''}`).slice(0, 110), { x, y: height - 12, size: 7, font: FB, color: blue });
+      p.drawText(pn, { x: width - 6 - F.widthOfTextAtSize(pn, 7), y: height - 12, size: 7, font: F, color: grey });
+    }
+    p.drawText(pdfText(stamp), { x: 18, y: 10, size: 6.5, font: F, color: grey });
+  });
   return Buffer.from(await doc.save());
 }
 route('GET', '/api/records/:id/report.pdf', async (ctx) => {
