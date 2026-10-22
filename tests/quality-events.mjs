@@ -219,13 +219,16 @@ ok((await qr.sig(k2.id,'Implementation')).ok,'second QA person approves');
 
 
 // ===== Extension requests – form JRS/FRM/QAS/045 =====
-const er=(documentId,requestedDate,extra={})=>op.call('POST','/api/records',{type:'extensions',data:{documentId,requestedDate,justification:'Awaiting vendor report',interimUpdate:'Investigation 70% complete',impactAssessment:'No product impact; stock on hold',...extra}});
+// extension requests are raised from the record (the "Request extension" button beside its due date)
+const idOf=async(no)=>((await qa.call('GET','/api/records'))._arr.find(r=>r.number===no)||{}).id;
+const er=async(documentId,requestedDate,extra={})=>op.call('POST','/api/records',{type:'extensions',linkFrom:await idOf(documentId),data:{documentId,requestedDate,justification:'Awaiting vendor report',interimUpdate:'Investigation 70% complete',impactAssessment:'No product impact; stock on hold',...extra}});
+ok((await op.call('POST','/api/records',{type:'extensions',data:{documentId:d2.number,requestedDate:addD(T,40),justification:'x',interimUpdate:'x',impactAssessment:'x'}})).s===400,'no separate extension form: it is requested from the record');
 ok((await er(d2.number,addD(T,40))).s===400,'extension refused while the record has no due date');
 await op.put(d2.id,{eventOrigin:'Labelling room',description:'Label count off by 2',immediate:'Labels quarantined'}); await op.sig(d2.id,'QA Review');
 await qa.put(d2.id,{criticality:'Major'});
 ok((await er(d2.number,addD(T,10))).s===400,'requested date must be later than the current due date');
 let e1=await er(d2.number,addD(T,45));
-ok(e1.number===`ER-${Y}-001`&&e1.data.recordType==='Deviation'&&e1.data.originalDue===addD(T,30),'extension request '+e1.number+' for '+d2.number);
+ok(e1.number===`ER-${Y}-001`&&e1.data.recordType==='Deviation'&&e1.data.originalDue===addD(T,30)&&e1.data.hodApprover==='hod.ops'&&e1.data.requesterDept==='OPS','extension request '+e1.number+' for '+d2.number+': numbered automatically, Head of Operation approves');
 ok((await er(d2.number,addD(T,50))).s===400,'only one extension per record');
 await op.sig(e1.id,'HOD Review');
 ok((await qa.sig(e1.id,'Head of Quality Approval')).s===403,'Head of Department signs before Head of Quality');

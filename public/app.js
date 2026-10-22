@@ -224,11 +224,11 @@ function shell(active, html) {
   const link = (href, label, key, count) => `<a href="#/${href}" class="${active === key ? 'active' : ''}">${esc(label)}${count ? `<span class="count">${count}</span>` : ''}</a>`;
   const isAdmin = ME.allAccess;
   $('#app').innerHTML = `<div class="shell"><nav class="nav" id="nav" aria-label="Main">
-    <div class="brand"><img class="brand-logo" src="/logo.png" alt="Jupiter Research Services"></div><div class="brand-sub">eQMS</div>
+    <div class="brand"><div>JRS eQMS<small>Quality Management System</small></div></div>
     ${link('dashboard', 'Dashboard', 'dashboard')}${link('tasks', 'My tasks', 'tasks')}${link('readiness', 'Inspection readiness', 'readiness')}
     ${Object.entries(groups).map(([g, list]) => `<h4>${esc(g)}</h4>${list.map(([k, m]) => link('m/' + k, m.name, k, openCount(k))).join('')}${g === 'Documents & training' ? link('matrix', 'Training matrix', 'matrix') : ''}`).join('')}
     <h4>System</h4>${auditAccess() ? link('audit', 'Audit trail', 'audit') : ''}${link('signatures', 'Signature register', 'signatures')}${link('sharepoint', 'SharePoint', 'sharepoint')}${link('departments', 'Departments', 'departments')}${ME.canEditOrg ? link('organogram', 'Organogram', 'organogram') : ''}${isAdmin ? link('users', 'Users and roles', 'users') : ''}${link('password', 'Change password', 'password')}
-    </nav><div class="main">${envBanner()}<header class="topbar"><button class="btn menu-btn" id="menu" aria-label="Menu">Menu</button>
+    </nav><div class="main">${envBanner()}<header class="topbar"><button class="btn menu-btn" id="menu" aria-label="Menu">Menu</button><a class="topbar-logo" href="#/dashboard" title="Dashboard"><img src="/logo.png" alt="Jupiter Research Services"></a>
     <form id="gs" role="search" style="flex:1;max-width:420px"><input type="search" name="q" placeholder="Search records by number or title"></form>
     <div class="who"><a class="btn bell" href="#/notifications" title="Notifications">Notifications<span class="count" id="ncount" hidden></span></a><span title="Automatic lock after inactivity">Lock in <span id="idle" class="mono">${Math.floor(idleLeft / 60)}:${String(idleLeft % 60).padStart(2, '0')}</span></span>
     <span><b>${esc(ME.fullname)}</b><br><span class="small muted">${esc([ME.department ? deptName(ME.department) : '', ...ME.roles.filter(r => r !== 'numgen').map(r => r === 'hod' ? 'Head of ' + ME.hodOf.join(', ') : CFG.ROLES[r].split(' (')[0])].filter(Boolean).join(' · '))}</span></span>
@@ -272,6 +272,8 @@ function myTasks() {
     if (r.type === 'training') return ['Trainer Evaluation', 'Failed'].includes(r.status) ? r.data.trainer === ME.username : r.data.trainee === ME.username;
     if (r.type === 'documents' && r.status === 'In Review' && r.data.reviewer === ME.username) return true;
     if (r.type === 'documents' && r.status === 'Draft' && r.created_by === ME.username) return true;
+    if (r.type === 'extensions' && r.status === 'HOD Review' && r.data.hodApprover === ME.username) return true;
+    if (r.type === 'extensions' && r.status === 'Draft' && r.created_by === ME.username) return true;
     if (r.type === 'capa') {
       const d = r.data;
       if (r.status === 'Initiated' && r.created_by === ME.username) return true;
@@ -334,10 +336,10 @@ function searchView(q = '') {
 function listView(type) {
   const m = MODS[type]; if (!m || !canSeeModule(m)) return dashboard();
   const rows = ALL.filter(r => r.type === type);
-  const canCreate = (type !== 'randomization' || hasRole(['unblinded'])) && !ME.roles.every(r => r === 'extaud');
+  const canCreate = !m.noCreate && (type !== 'randomization' || hasRole(['unblinded'])) && !ME.roles.every(r => r === 'extaud');
   shell(type, `<div class="spread"><div><h1>${esc(m.name)}</h1><p class="muted">${esc(m.intro)}</p></div>
     <div class="row">${canCreate ? `<a class="btn primary" href="#/new/${type}">New ${esc(singular(m))}</a>` : ''}<button class="btn" id="exp">Export CSV</button></div></div>
-    <div class="row no-print" style="margin-bottom:.8rem"><input type="search" id="flt" placeholder="Filter" style="max-width:280px">
+    ${type === 'extensions' ? extensionKpis(rows) : ''}<div class="row no-print" style="margin-bottom:.8rem"><input type="search" id="flt" placeholder="Filter" style="max-width:280px">
     <select id="st" style="max-width:220px"><option value="">All statuses</option>${m.states.map(s => `<option>${esc(s)}</option>`).join('')}</select>
     <label class="small"><input type="checkbox" id="od"> Overdue only</label></div><div id="lt"></div>`);
   const draw = () => {
@@ -346,6 +348,7 @@ function listView(type) {
     $('#lt').innerHTML = table(list, m.list, rows.length ? 'No records match the filter.' : `No ${m.name.toLowerCase()} yet.`); bindRows($('#lt'));
   };
   ['input', 'change'].forEach(ev => ['#flt', '#st', '#od'].forEach(s => $(s).addEventListener(ev, draw))); draw();
+  $$('[data-st]').forEach(a => a.addEventListener('click', (e) => { e.preventDefault(); $('#st').value = a.dataset.st; draw(); }));
   $('#exp').addEventListener('click', () => {
     const fs = dataFields(m);
     download(`${type}_${today()}.csv`, toCsv([['Number', 'Status', 'Created by', 'Created', ...fs.map(f => f.label)], ...rows.map(r => [r.number, r.status, r.created_by, r.created_at, ...fs.map(f => plain(f, r.data[f.k]))])]));
@@ -463,6 +466,52 @@ function attachmentsTable(m, atts) {
   return `<div class="table-wrap"><table class="t"><thead><tr><th>File</th><th>Size</th><th>SHA-256</th><th>Added</th></tr></thead><tbody>${stages.map(st => `<tr class="group-row"><td colspan="4">Stage: ${esc(st || 'Not recorded')}</td></tr>${atts.filter(a => (a.stage || '') === st).map(a => `<tr><td><b>Attachment ${atts.indexOf(a) + 1}</b> – <a href="/api/attachments/${a.id}">${esc(a.name)}</a></td><td>${(a.size / 1024).toFixed(1)} KB</td><td class="mono small" title="${a.sha256}">${a.sha256.slice(0, 16)}…</td><td>${esc(userName(a.uploaded_by))}<br><span class="small muted">${dmyt(a.ts)}</span></td></tr>`).join('')}`).join('')}</tbody></table></div>`;
 }
 
+// ---------- extension requests (JRS/FRM/QAS/045), raised from the due date they extend ----------
+const EXTENDABLE = { investigations: { dueDate: 'Overall due date' }, changes: { dueDate: 'Overall due date' }, selfinspections: { dueDate: 'Overall due date' },
+  capa: { dueDate: 'Overall due date', corrDue: 'Correction (CAPA)', caDue: 'Corrective action (CAPA)', paDue: 'Preventive action (CAPA)' } };
+const EXT_DONE = { dueDate: 'extendedDue', corrDue: 'corrExt', caDue: 'caExt', paDue: 'paExt' };
+function extensionButtons(rec) {
+  for (const [k, scope] of Object.entries(EXTENDABLE[rec.type] || {})) {
+    const due = rec.data[k], el = $(`#rf [name="${k}"], #rf [data-computed="${k}"]`), box = el && el.closest('.grid > div');
+    if (!due || !box) continue;
+    const er = ALL.filter(x => x.type === 'extensions' && x.data.documentId === rec.number && (x.data.scope || 'Overall due date') === scope).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+    let html = '';
+    if (er && er.status !== 'Rejected') html = `<a class="ext-link" href="#/r/${er.id}">Extension ${esc(er.number)} – ${esc(er.status)}${er.data.requestedDate ? ' (to ' + dmy(er.data.requestedDate) + ')' : ''}</a>`;
+    else if (!rec.data[EXT_DONE[k]] && today() <= due) html = `<button type="button" class="btn ext-btn" data-ext="${k}">Request extension</button>`;
+    if (html) box.insertAdjacentHTML('beforeend', `<div class="ext-row">${html}</div>`);
+  }
+  $$('[data-ext]').forEach(b => b.addEventListener('click', () => extensionDialog(rec, b.dataset.ext, EXTENDABLE[rec.type][b.dataset.ext])));
+}
+async function extensionDialog(rec, k, scope) {
+  if (!(await ensureEsigAccepted())) return;
+  let created = null;
+  const ok = await modal({
+    title: 'Request extension – ' + rec.number, ok: 'Sign and submit', okClass: 'primary sign', wide: true,
+    html: `<p class="muted small">Extension request (JRS/FRM/QAS/045). It goes to the Head of the record's department, then to the Head of Quality. Only one extension is allowed per due date, and it must be approved before ${dmy(rec.data[k])}.</p>
+      <div class="grid"><div><label class="f">Record</label><input type="text" value="${esc(rec.number)} – ${esc(MODS[rec.type].name)}" readonly></div><div><label class="f">Due date to extend</label><input type="text" value="${esc(scope)}: ${dmy(rec.data[k])}" readonly></div>
+      <div><label class="f">Requested extension date <span class="req">*</span></label><input type="date" name="requestedDate" min="${addDaysIso(rec.data[k], 1)}"></div><div><label class="f">Requester</label><input type="text" value="${esc(ME.fullname)}${ME.department ? ' – ' + esc(deptName(ME.department)) : ''}" readonly></div></div>
+      <div><label class="f">Justification of extension / delay <span class="req">*</span></label><textarea name="justification" rows="4"></textarea></div>
+      <div><label class="f">Interim update <span class="req">*</span></label><textarea name="interimUpdate" rows="3"></textarea></div>
+      <div><label class="f">Impact assessment (product quality, patient safety, regulatory compliance, business operations) <span class="req">*</span></label><textarea name="impactAssessment" rows="3"></textarea></div>
+      <div class="sig-statement">By signing you apply your electronic signature with the meaning <b>Requested</b>. Date and time are recorded by the server (${esc(tz)}).</div>
+      <div class="grid"><div><label class="f">User ID</label><input type="text" name="sigUsername" value="${esc(ME.username)}" autocomplete="username"></div><div><label class="f">Password</label><input type="password" name="password" autocomplete="current-password"></div></div>`,
+    onOk: async (f) => {
+      if (!f.password.value) throw new Error('Enter your password to sign.');
+      if (!created) created = await api('POST', '/api/records', { type: 'extensions', linkFrom: rec.id, data: { documentId: rec.number, scope, requestedDate: val(f, 'requestedDate'), justification: val(f, 'justification'), interimUpdate: val(f, 'interimUpdate'), impactAssessment: val(f, 'impactAssessment') } });
+      else await api('PUT', '/api/records/' + created.id, { data: { requestedDate: val(f, 'requestedDate'), justification: val(f, 'justification'), interimUpdate: val(f, 'interimUpdate'), impactAssessment: val(f, 'impactAssessment') }, reason: 'Corrected before submission' });
+      await api('POST', `/api/records/${created.id}/transition`, { to: 'HOD Review', sigUsername: val(f, 'sigUsername'), password: f.password.value });
+      return created;
+    }
+  });
+  if (ok) { toast(`${ok.number} submitted to the Head of Department`); route(); }
+  else if (created) { toast(`${created.number} saved as a draft – open it to submit`); route(); }
+}
+function extensionKpis(rows) {
+  const n = (f) => rows.filter(f).length, k = (label, v, st, cls = '') => `<a class="kpi ${cls}" href="#" data-st="${esc(st)}"><b>${v}</b>${esc(label)}</a>`;
+  return `<div class="kpis">${k('All extension requests', rows.length, '')}${k('Waiting for Head of Department', n(r => r.status === 'HOD Review'), 'HOD Review', n(r => r.status === 'HOD Review') ? 'warn' : 'ok')}
+    ${k('Waiting for Head of Quality', n(r => r.status === 'Head of Quality Approval'), 'Head of Quality Approval', n(r => r.status === 'Head of Quality Approval') ? 'warn' : 'ok')}${k('Approved', n(r => r.status === 'Approved'), 'Approved', 'ok')}${k('Rejected', n(r => r.status === 'Rejected'), 'Rejected')}${k('Drafts not submitted', n(r => r.status === 'Draft'), 'Draft')}</div>`;
+}
+
 // ---------- record detail ----------
 async function detailView(id) {
   const det = await api('GET', '/api/records/' + id), rec = det.record, m = MODS[rec.type], d = rec.data;
@@ -486,7 +535,6 @@ async function detailView(id) {
     if (['investigations', 'capa', 'extaudits'].includes(rec.type)) extraBtns.push(`<button class="btn" data-act="spawn" data-to="changes">Raise change control</button>`);
     if (['changes', 'investigations', 'capa'].includes(rec.type)) extraBtns.push(`<button class="btn" data-act="spawn" data-to="risks">Start risk assessment</button>`);
     if (rec.type === 'capa') extraBtns.push(`<button class="btn" data-act="spawn" data-to="training">Assign retraining</button>`);
-    if ((['investigations', 'capa', 'changes'].includes(rec.type) || (rec.type === 'selfinspections' && rec.status === 'Report Issued')) && open && d.dueDate && !d.extendedDue) extraBtns.push(`<button class="btn" data-act="spawn" data-to="extensions">Request extension</button>`);
     if (rec.type === 'mgmtreviews' && ['Planned', 'Data Compiled', 'Meeting Held'].includes(rec.status) && hasRole(['qa'])) extraBtns.push(`<button class="btn primary" data-act="compile">${d.metrics ? 'Re-compile QMR data' : 'Compile QMR data'}</button>`);
   }
 
@@ -558,6 +606,7 @@ async function detailView(id) {
     if (file.size > 25 * 1024 * 1024) return toast('Maximum file size is 25 MB in this build.');
     try { await uploadFile(id, file); toast('Attachment added'); route(); } catch (x) { toast(x.message); }
   });
+  if (canWrite && open) extensionButtons(rec);
   if (rec.type === 'labels') labelPanel(rec);
   if (rec.type === 'randomization' && det.randList) randPanel(rec, det.randList);
   if (m.deptApproval && (d[m.deptApproval.field] || []).length) optionalApprovalsPanel(rec);

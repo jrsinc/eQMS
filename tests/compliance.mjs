@@ -93,12 +93,12 @@ await qa.put(si2.id,{unscheduledTrigger:'Quality event / deviation'});
 await qa.go(si2.id,'Notified'); await qr.go(si2.id,'In Progress');
 await qr.put(si2.id,{auditDate:T,reportDate:T,summary:'x',observations:obs});
 await qr.sig(si2.id,'Report Issued');
-let e1=await op.create('extensions',{documentId:si2.number,requestedDate:addD(T,25),justification:'Auditee on leave',interimUpdate:'Draft CAPA plan prepared',impactAssessment:'None'});
+let e1=await op.create('extensions',{documentId:si2.number,requestedDate:addD(T,25),justification:'Auditee on leave',interimUpdate:'Draft CAPA plan prepared',impactAssessment:'None'},{linkFrom:si2.id});
 ok(e1.number&&e1.data.recordType==='Self-inspection response','extension request for the self-inspection response '+e1.number);
 await op.sig(e1.id,'HOD Review'); await hod.sig(e1.id,'Head of Quality Approval');
 ok((await qa.sig(e1.id,'Approved')).ok,'Head of Quality approves the extension');
 g=await qa.get(si2.id);ok(g.record.data.extendedDue===addD(T,25),'response due date extended to '+g.record.data.extendedDue);
-ok((await op.create('extensions',{documentId:si2.number,requestedDate:addD(T,40),justification:'x',interimUpdate:'x',impactAssessment:'x'})).s===400,'only one extension');
+ok((await op.create('extensions',{documentId:si2.number,requestedDate:addD(T,40),justification:'x',interimUpdate:'x',impactAssessment:'x'},{linkFrom:si2.id})).s===400,'only one extension');
 // confidentiality
 let il=await insp.call('GET','/api/records?type=selfinspections');ok(il._arr&&il._arr.length===0,'self-inspections hidden from external auditors');
 ok((await insp.get(si1.id)).s===404,'self-inspection report not viewable by external auditors');

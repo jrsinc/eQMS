@@ -1091,9 +1091,11 @@ route('GET', '/api/records/:id/versions/:no', (ctx) => {
 });
 route('POST', '/api/records', (ctx) => {
   const { type, data, linkFrom } = ctx.body;
+  const src = linkFrom ? getRecord(linkFrom) : null;
   if (!MODULES[type]) fail(400, 'Unknown module');
   if (hiddenFor(ctx.user, type)) fail(403, 'Your roles do not give access to this module.');
   if (type === 'randomization' && !hasRole(ctx.user, ['unblinded'])) fail(403, 'Only unblinded randomization officers can create randomization lists.');
+  if (type === 'extensions' && !linkFrom) fail(400, 'Request an extension with the "Request extension" button beside the due date on the record.');
   const clean = sanitize(type, data || {});
   // modules with a request section: only its fields are entered (and required) when the record is created
   const mod = MODULES[type], hasCreate = mod.fields.some(f => f.type === 'section' && f.create);
@@ -1115,9 +1117,16 @@ route('POST', '/api/records', (ctx) => {
   }
   if (type === 'extensions') {
     const { target, due } = erCheck(clean);
+    if (src && src.id !== target.id) fail(400, 'The extension must be requested from the record it extends.');
+    visibleRecord(ctx.user, target);
     clean.title = 'Extension of ' + target.number;
     clean.recordType = target.type === 'investigations' ? target.data.invType : target.type === 'selfinspections' ? 'Self-inspection response' : MODULES[target.type].name;
     clean.originalDue = due;
+    // the Head of the department responsible for the record approves first (organogram); never the requester
+    clean.requesterDept = ctx.user.department || '';
+    const dept = target.data.respDept || target.data.auditeeDept;
+    clean.hodApprover = dept ? hodFor(dept, ctx.user.username) : '';
+    if (!clean.hodApprover) fail(400, `No Head of Department in the organogram can approve an extension for ${target.number}${dept ? ' (' + (DEPTS[dept] || dept) + ')' : ''}. Ask management or the Head of QA to set one.`);
   }
   if (type === 'auditors') {
     if (db.prepare("SELECT * FROM records WHERE type='auditors' AND status<>'Withdrawn' AND deleted=0").all().map(rowToRecord).some(r => r.data.auditor === clean.auditor))
@@ -1140,7 +1149,6 @@ route('POST', '/api/records', (ctx) => {
       ...(prev.data.actions || []).map(a => ({ from: prev.number, recommendation: a.recommendation, responsibility: a.responsibility, target: a.target, update: '', status: 'Open' }))
     ].map(a => ({ ...a, update: '' }));
   }
-  const src = linkFrom ? getRecord(linkFrom) : null;
   const rec = createRecord(ctx.user, type, clean, ctx.ip);
   notifyStatus(ctx.user, rec, '', rec.status);
   if (src) link(ctx.user, src, rec, ctx.ip);
