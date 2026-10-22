@@ -161,7 +161,7 @@ g=await qa.get(ra.id);ok(g.record.data.fmea[0].prpn==='10'&&g.record.data.highes
 // ===== Management review – JRS/SOP/QAS/019 =====
 let dv=await op.create('investigations',{invType:'Deviation',site:'JRS INC',title:'Excursion in cold room 2',dateIdentified:T,requestDetails:'Logger alarm',respPerson:'operator1'});
 await qa.sig(dv.id,'Initiation');
-await op.put(dv.id,{description:'x',immediate:'x'}); await op.sig(dv.id,'QA Review');
+await op.put(dv.id,{eventOrigin:'Cold room 2',description:'x',immediate:'x'}); await op.sig(dv.id,'QA Review');
 await qa.put(dv.id,{tempRange:'Cold chain / refrigerated (+2 to +8 °C)'});
 const q=Math.floor(D(T).getUTCMonth()/3)+1, QQ='Q'+q;
 const att=[{name:'',designation:'Manager Quality Assurance',mandatory:'Yes',attendance:''},{name:'',designation:'Director International Business',mandatory:'Yes',attendance:''}];

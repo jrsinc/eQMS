@@ -71,6 +71,7 @@ ok((await qa.put(d1.id,{description:'x'})).s===403,'QA does not write Part A');
 ok((await tr.put(d1.id,{description:'x'})).s===404,'other departments cannot change the deviation');
 ok((await pk.put(d1.id,{criticality:'Major'})).s===403,'the responsible person cannot fill in Part B');
 ok((await pk.put(d1.id,{description:'Logger showed 9.1 °C for 40 min'},'Draft')).changes===1,'responsible person saves a Part A draft');
+let eo=await pk.sig(d1.id,'QA Review');ok(eo.s===400&&/Event origin/.test(eo.error),'Event origin is required before Part A is submitted');
 ok((await op.put(d1.id,{eventOrigin:'Cold room 2'},'Draft')).changes===1,'initiator adds to the Part A draft');
 ok((await pk.sig(d1.id,'QA Review')).s===400,'Part A needs the description and immediate action');
 await pk.put(d1.id,{immediate:'Stock quarantined, logger data saved'});
@@ -129,7 +130,7 @@ const want=['Request approved – QA (number assigned)','Part A submitted – in
 ok(want.every(m=>g.signatures.some(s=>s.meaning===m)),'every stage signed and dated: '+g.signatures.map(s=>s.fullname.split(' (')[0]+' – '+s.meaning.split(' – ')[0]).join('; '));
 
 // complaint with customer impact; the Head is the responsible person → the Head above approves
-await op.put(c1.id,{description:'Shipper crushed on arrival',immediate:'Site asked to quarantine kit',customer:'Sponsor A',receivedVia:'Email',customerNotified:T});
+await op.put(c1.id,{eventOrigin:'Investigator site',description:'Shipper crushed on arrival',immediate:'Site asked to quarantine kit',customer:'Sponsor A',receivedVia:'Email',customerNotified:T});
 await op.sig(c1.id,'QA Review');
 await qa.put(c1.id,{criticality:'Major',impactedAreas:['Distribution']});
 g=await qa.get(c1.id);ok(g.record.data.dueDate===addD(T,30),'Major event due in 30 calendar days: '+g.record.data.dueDate);
@@ -152,7 +153,7 @@ await qa.put(c1.id,{reportSent:addD(T,-50),followUp1:addD(T,-35),followUp2:addD(
 ok((await pm.sig(c1.id,'Closed')).ok,'deemed closure after 3 follow-ups and 45 days (Project Manager)');
 // a Head of Department never approves their own investigation: the Head of the parent department does
 let d4=await open(await req('Deviation','Carton print smudged',{respPerson:'cs.manager'},pk));
-await cs.put(d4.id,{description:'Smudged print on 20 cartons',immediate:'Cartons segregated'}); await cs.sig(d4.id,'QA Review');
+await cs.put(d4.id,{eventOrigin:'Packaging line 1',description:'Smudged print on 20 cartons',immediate:'Cartons segregated'}); await cs.sig(d4.id,'QA Review');
 await qa.put(d4.id,{criticality:'Minor',impactedAreas:['Packaging (kitting & assembly)']}); await qa.sig(d4.id,'Investigation');
 await cs.put(d4.id,{...inv,capaRequired:'No',capaJustification:'One-off'}); await cs.sig(d4.id,'HOD Approval');
 g=await qa.get(d4.id);ok(g.record.data.hodApprover==='hod.ops','Head of Packaging is the responsible person: Head of Operations (parent department) approves');
@@ -191,7 +192,7 @@ ok((await qr.sig(k2.id,'Implementation')).ok,'second QA person approves');
 // ===== Extension requests – form JRS/FRM/QAS/045 =====
 const er=(documentId,requestedDate,extra={})=>op.call('POST','/api/records',{type:'extensions',data:{documentId,requestedDate,justification:'Awaiting vendor report',interimUpdate:'Investigation 70% complete',impactAssessment:'No product impact; stock on hold',...extra}});
 ok((await er(d2.number,addD(T,40))).s===400,'extension refused while the record has no due date');
-await op.put(d2.id,{description:'Label count off by 2',immediate:'Labels quarantined'}); await op.sig(d2.id,'QA Review');
+await op.put(d2.id,{eventOrigin:'Labelling room',description:'Label count off by 2',immediate:'Labels quarantined'}); await op.sig(d2.id,'QA Review');
 await qa.put(d2.id,{criticality:'Major'});
 ok((await er(d2.number,addD(T,10))).s===400,'requested date must be later than the current due date');
 let e1=await er(d2.number,addD(T,45));
@@ -211,81 +212,108 @@ ok(e2.number===`ER-${Y}-002`&&e2.data.originalDue===addD(T,20),'CAPA action-leve
 // ===== Change control – JRS/SOP/QAS/007 =====
 const ROWS=['Subject / patient safety','Product quality / integrity','Data integrity (ALCOA+)','GMP / GCP / GDP compliance','Client requirement (client notification / approval required)','Regulatory filings','Validation / qualification','Cold chain','Labelling / packaging','Computer system (21 CFR Part 11)','Training requirement'];
 const check=(n)=>Object.fromEntries(ROWS.slice(0,n).map(r=>[r,{v:r==='Cold chain'?'Yes':'No',r:''}]));
-// request → QA approval (number assigned) → Part A (initiator) → Parts B + C (QA) → pre-approval (QA + RP) → optional approvals → implementation → Part D closure (QA + RP) → Part E
-const ccReq={title:'Add a second data logger to cold room 2',nature:'Permanent',requestDetails:'Install a second calibrated logger for monitoring redundancy'};
-const partA={respPerson:'author1',respDept:'OPS',dueDate:addD(T,60),changeType:['Equipment / instrument'],impactedAreas:['Storage (+2 to +8 °C)'],description:'Install a second calibrated logger',justification:'Monitoring redundancy'};
-let cc=await au.call('POST','/api/records',{type:'changes',data:{...ccReq,classification:'Minor'}});
-ok(/^REQ-CC-\d{4}-0001$/.test(cc.number)&&cc.status==='Requested'&&!cc.data.classification,'change request to QA gets a temporary request number '+cc.number);
-ok((await au.sig(cc.id,'Initiation')).s===403,'only QA approves the change request');
-ok((await qa.sig(cc.id,'Initiation')).ok,'QA approves the change request – number assigned');
-g=await qa.get(cc.id);
-ok(g.record.number===`CC-JRS-${Y}-001`&&g.record.data.requestNo===cc.number&&g.record.data.dateOpened===T,'change control number '+g.record.number+' (request '+cc.number+')');
-// Part A – initiator
-ok((await qa.put(cc.id,partA)).s===403,'Part A is completed by the initiator at this stage');
+// Part A (initiator, drafts) → Part B (QA: approve with number / reject) → responsible person → Head of the responsible department
+// → QA approval (effectiveness check, other departments) → other department approvals → implementation → change control report
+// (department) → QA review report → closed, or effectiveness check after the assigned period
+const partA={nature:'Permanent',respPerson:'operator1',dueDate:addD(T,60),changeType:['Equipment / instrument'],impactedAreas:['Storage (+2 to +8 °C)'],description:'Install a second calibrated logger',justification:'Monitoring redundancy'};
+let cc=await au.call('POST','/api/records',{type:'changes',data:{title:'Add a second data logger to cold room 2',nature:'Permanent',respPerson:'operator1',description:'Install a second calibrated logger',classification:'Minor'}});
+ok(/^REQ-CC-\d{4}-0001$/.test(cc.number)&&cc.status==='Draft'&&!cc.data.classification,'Part A saved as a draft with a request number '+cc.number+' (QA fields not taken)');
+ok(cc.data.respDept==='OPS','responsible department follows the responsible person (operator1 → OPS)');
+ok((await tr.get(cc.id)).record,'every department can view change controls');
+ok((await qa.put(cc.id,{justification:'x'})).s===403,'only the initiator writes Part A');
 ok((await au.put(cc.id,{classification:'Minor'})).s===403,'the initiator cannot fill in Part B');
-await au.put(cc.id,{...partA,dueDate:addD(T,95)});
-ok((await au.sig(cc.id,'QA Assessment')).s===400,'permanent change must be due within 90 days');
+await au.put(cc.id,{...partA,dueDate:addD(T,95)},'Draft');
+ok((await au.sig(cc.id,'QA Review')).s===400,'permanent change must be due within 90 days');
 await au.put(cc.id,{dueDate:addD(T,60)});
-ok((await op.sig(cc.id,'QA Assessment')).s===403,'only the initiator submits Part A');
-ok((await au.sig(cc.id,'QA Assessment')).ok,'initiator signs and submits Part A to QA');
-ok((await au.put(cc.id,{description:'changed'})).s===403,'initiator can no longer change Part A after submission');
-// Parts B and C – QA assessment
-const plan=[{activity:'Install logger',dept:'OPS',person:'author1',due:addD(T,20)},{activity:'Update SOP',dept:'QAS',person:'qa.reviewer',due:addD(T,30)}];
-await qa.put(cc.id,{impactCheck:check(5),impactSummary:'Cold chain monitoring only',classification:'Major',classRationale:'Affects GDP storage monitoring',riskRequired:'Not required',plan,clientPre:'Not required',clientPost:'Required',ecRequired:'Required',ecDue:'6 months',optionalDepts:['OPS','PKG']});
-ok((await qa.sig(cc.id,'Pre-Approval')).s===400,'submission blocked: impact checklist incomplete');
+ok((await op.sig(cc.id,'QA Review')).s===403,'only the initiator submits Part A');
+ok((await au.sig(cc.id,'QA Review')).ok,'initiator signs and submits Part A to QA');
+ok((await au.put(cc.id,{description:'changed'})).s===403,'Part A is locked once submitted');
+ok((await qa.go(cc.id,'Draft',{reason:'Add the logger model'})).ok,'QA returns Part A: need to update');
+await au.put(cc.id,{description:'Install a second calibrated logger (model TL-200)'},'QA request');
+ok((await au.sig(cc.id,'QA Review')).ok,'initiator updates and resubmits Part A');
+// Part B – QA
+const plan=[{activity:'Install logger',dept:'OPS',person:'operator1',due:addD(T,20)},{activity:'Update SOP',dept:'QAS',person:'qa.reviewer',due:addD(T,30)}];
+await qa.put(cc.id,{impactCheck:check(5),impactSummary:'Cold chain monitoring only',classification:'Major',classRationale:'Affects GDP storage monitoring',riskRequired:'Not required',plan,clientPre:'Not required',clientPost:'Required'});
+ok((await qa.sig(cc.id,'RP Review')).s===400,'Part B blocked: impact checklist incomplete');
 await qa.put(cc.id,{impactCheck:check(11)});
-ok((await qa.sig(cc.id,'Pre-Approval')).s===400,'Major change requires a risk assessment');
-ok((await qa.put(cc.id,{optionalDepts:['QAS','ITS','OPS','HRM','PKG']})).s===400,'at most 4 optional approval departments');
+ok((await qa.sig(cc.id,'RP Review')).s===400,'Major change requires a risk assessment');
 await qa.put(cc.id,{riskRequired:'Required'});
-ok((await qa.sig(cc.id,'Pre-Approval')).s===400,'a required risk assessment needs its reference');
+ok((await qa.sig(cc.id,'RP Review')).s===400,'a required risk assessment needs its reference');
 let rk=await qa.call('POST','/api/records',{type:'risks',data:{site:'JRS INC',title:'Logger failure undetected',fmea:[{id:'1',step:'Cold storage',mode:'Logger failure',s:'3',o:'2',d:'2'}]}});
 ok((await qa.put(cc.id,{riskRef:'RA/JRS/0000-999'})).s===400,'risk reference must be an existing risk assessment');
 await qa.put(cc.id,{riskRef:rk.number});
-ok((await qa.sig(cc.id,'Pre-Approval')).s===400,'client communication needs a responsible Project Manager');
+ok((await qa.sig(cc.id,'RP Review')).s===400,'client communication needs a responsible Project Manager');
 await qa.put(cc.id,{pm:'pm1'});
-ok((await qa.sig(cc.id,'Pre-Approval')).ok,'QA signs Parts B and C and submits for pre-approval');
-ok((await qa.put(cc.id,{classification:'Minor'})).s===403,'Parts B and C are locked once submitted for pre-approval');
-// pre-approval – QA and RP
-p=await qa.sig(cc.id,'Pre-Approval',{label:'Pre-approve – QA'});
-ok(p.status==='Pre-Approval'&&p.pending.join()==='Pre-approved – RP','QA pre-approval recorded; RP pre-approval pending');
-p=await rp.sig(cc.id,'Pre-Approval',{label:'Pre-approve – RP'});
-ok(p.status==='Optional Approvals','QA and RP pre-approved – optional departmental approvals next');
-ok((await au.put(cc.id,{title:'changed'})).s===409,'pre-approved change is locked against edits');
-ok((await au.call('POST',`/api/records/${cc.id}/transition`,{to:'Implementation'})).s===400,'implementation blocked until optional approvals are complete');
-const dept=(who,d)=>who.call('POST',`/api/records/${cc.id}/dept-approve`,{dept:d,comment:'No objection',sigUsername:who.u,password:PW});
-ok((await dept(op,'OPS')).s===403,'optional approval needs the Head of that department (organogram)');
-ok((await dept(cs,'OPS')).s===403,'the Head of Packaging cannot approve for Operations');
-ok((await dept(qa,'QAS')).s===400,'only departments named by QA can approve');
-ok((await dept(hod,'OPS')).ok,'OPS optional approval e-signed by the Head of Operations');
-ok((await dept(hod,'OPS')).s===409,'a department approves only once');
-ok((await dept(cs,'PKG')).ok,'PKG optional approval e-signed by the Head of Packaging');
-ok((await au.call('POST',`/api/records/${cc.id}/transition`,{to:'Implementation'})).ok,'implementation started');
-await au.put(cc.id,{finalImplDate:T,finalSummary:'Logger installed and SOP updated'});
-ok((await au.sig(cc.id,'Pending Closure')).s===400,'closure blocked while implementation activities are open');
-await au.put(cc.id,{plan:[{activity:'Install logger',dept:'OPS',person:'author1',due:addD(T,20),closed:T},{activity:'Update SOP',dept:'QAS',person:'qa.reviewer',due:addD(T,30),closed:T}]});
-ok((await op.sig(cc.id,'Pending Closure')).s===403,'only the initiator, responsible person or QA submits for closure');
-ok((await au.sig(cc.id,'Pending Closure')).ok,'all activities closed – responsible person submits for closure');
-// Part D closure – QA and RP
-await qa.put(cc.id,{clientCommunicated:'No'});
-ok((await qa.sig(cc.id,'Pending Closure',{label:'Approve closure – QA'})).s===400,'client post-communication must be confirmed');
-await pm.put(cc.id,{clientCommunicated:'Yes'});
-p=await qa.sig(cc.id,'Pending Closure',{label:'Approve closure – QA'});
-ok(p.status==='Pending Closure'&&p.pending.join()==='Closure approved – RP','QA closure approval recorded; RP approval pending');
-p=await rp.sig(cc.id,'Pending Closure',{label:'Approve closure – RP'});
-ok(p.status==='Closed – EC Pending','QA and RP approved closure – effectiveness check pending');
-g=await qa.get(cc.id);ok(g.record.data.ecDueDate===addM(T,6),'effectiveness check due 6 months after implementation: '+g.record.data.ecDueDate);
-ok(g.signatures.filter(s=>s.meaning.startsWith('Approved – optional approval')).length===2,'optional approvals recorded as e-signatures');
-// Part E
-await au.put(cc.id,{ecRespComment:'Second logger reporting since go-live'});
-await qa.put(cc.id,{effective:'Yes',ecQaComment:'Both loggers reporting'});
-ok((await qa.sig(cc.id,'Closed')).ok,'change control closed after effectiveness check');
+ok((await qa.sig(cc.id,'RP Review')).ok,'QA approves Part B');
 g=await qa.get(cc.id);
-const wantCC=['Request approved – QA (number assigned)','Initiated – change initiator','Assessed – QA (Parts B and C)','Pre-approved – QA','Pre-approved – RP','Implemented – responsible person','Closure approved – QA','Closure approved – RP','Effectiveness verified – QA'];
+ok(g.record.number===`CC-JRS-${Y}-001`&&g.record.data.requestNo===cc.number&&g.record.data.dateOpened===T,'number assigned on QA approval: '+g.record.number+' (request '+cc.number+')');
+ok((await qa.put(cc.id,{classification:'Minor'})).s===403,'Part B is locked once approved');
+// responsible person, then Head of the responsible department
+ok((await au.sig(cc.id,'HOD Approval')).s===403,'only the responsible person reviews');
+await op.put(cc.id,{rpComment:'Agreed; installation by OPS'});
+ok((await op.sig(cc.id,'HOD Approval')).ok,'responsible person reviews and approves Parts A and B');
+g=await qa.get(cc.id);ok(g.record.data.hodApprover==='hod.ops','approver from the organogram: Head of Operation');
+ok((await cs.sig(cc.id,'QA Approval')).s===403,'only the Head named on the record approves');
+ok((await hod.sig(cc.id,'QA Review')).s===400,'Head of Department rejection needs a reason');
+ok((await hod.sig(cc.id,'QA Review',{reason:'Add validation of the new logger to the plan'})).ok,'Head of Department rejects – back to QA');
+await qa.put(cc.id,{plan:[...plan,{activity:'Qualify logger',dept:'QAS',person:'qa.reviewer',due:addD(T,25)}]});
+await qa.sig(cc.id,'RP Review'); await op.sig(cc.id,'HOD Approval');
+ok((await qa.get(cc.id)).record.number===`CC-JRS-${Y}-001`,'number kept after the return');
+await hod.put(cc.id,{hodComment:'Approved'});
+ok((await hod.sig(cc.id,'QA Approval')).ok,'Head of Department approves');
+// QA approval: effectiveness check and other departments
+await qa.put(cc.id,{ecRequired:'Required'});
+ok((await qa.sig(cc.id,'Implementation')).s===400,'effectiveness check period must be assigned');
+ok((await qa.put(cc.id,{optionalDepts:['QAS','ITS','OPS','HRM','PKG']})).s===400,'at most 4 other departments');
+await qa.put(cc.id,{ecDue:'6 months',optionalDepts:['QAS','PKG']});
+ok((await qa.sig(cc.id,'Implementation')).s===400,'other departments named: their approval comes first');
+ok((await qa.sig(cc.id,'Optional Approvals')).ok,'QA approves and sends to the other departments');
+ok((await au.put(cc.id,{title:'changed'})).s===409,'pre-approved change cannot be edited');
+ok((await au.call('POST',`/api/records/${cc.id}/transition`,{to:'Implementation'})).s===400,'implementation blocked until the other departments approve');
+const dept=(who,d)=>who.call('POST',`/api/records/${cc.id}/dept-approve`,{dept:d,comment:'No objection',sigUsername:who.u,password:PW});
+ok((await dept(op,'QAS')).s===403,'department approval needs the Head of that department (organogram)');
+ok((await dept(hod,'QAS')).s===403,'the Head of Operation cannot approve for QA');
+ok((await dept(tr,'HRM')).s===400,'only departments named by QA approve');
+ok((await dept(qa,'QAS')).ok,'QA department approval e-signed by the Head of QA');
+ok((await dept(qa,'QAS')).s===409,'a department approves only once');
+ok((await dept(cs,'PKG')).ok,'Packaging approval e-signed by the Head of Packaging');
+ok((await au.call('POST',`/api/records/${cc.id}/transition`,{to:'Implementation'})).ok,'all pre-approvals signed – implementation starts');
+// implementation and the department's change control report
+const closedPlan=[...plan,{activity:'Qualify logger',dept:'QAS',person:'qa.reviewer',due:addD(T,25)}];
+await op.put(cc.id,{finalImplDate:addD(T,-200),finalSummary:'Logger TL-200 installed, qualified and SOP updated'});
+await pm.put(cc.id,{clientCommunicated:'Yes'});
+ok((await op.sig(cc.id,'QA Closure Review')).s===400,'report blocked while implementation activities are open');
+await op.put(cc.id,{plan:closedPlan.map(p=>({...p,closed:T}))});
+ok((await tr.sig(cc.id,'QA Closure Review')).s===403,'only the responsible person / department submits the report');
+ok((await op.sig(cc.id,'QA Closure Review')).ok,'responsible department signs the change control report');
+// QA review report and closure
+ok((await qa.sig(cc.id,'Closed – EC Pending')).s===400,'QA review report required');
+await qa.put(cc.id,{qaReport:'Implementation verified against the plan; records reviewed'});
+ok((await qa.sig(cc.id,'Closed')).s===400,'effectiveness check required: cannot close fully yet');
+ok((await qa.sig(cc.id,'Closed – EC Pending')).ok,'QA signs the review report – effectiveness check pending');
+g=await qa.get(cc.id);ok(g.record.data.ecDueDate===addM(addD(T,-200),6),'effectiveness check due 6 months after implementation: '+g.record.data.ecDueDate);
+ok(g.signatures.filter(s=>s.meaning.startsWith('Approved – optional approval')).length===2,'other department approvals recorded as e-signatures');
+await op.put(cc.id,{ecRespComment:'Second logger reporting since go-live'});
+await qa.put(cc.id,{effective:'Yes',ecQaComment:'Both loggers reporting'});
+ok((await qa.sig(cc.id,'Closed')).ok,'change control closed after the effectiveness check');
+g=await qa.get(cc.id);
+const wantCC=['Part A submitted – initiator','Part B approved – QA (number assigned)','Reviewed and approved – responsible person','Rejected – Head of Department','Approved – Head of Department','Pre-approved – QA','Change control report – responsible department','Closed – QA review report (effectiveness check pending)','Effectiveness verified – QA'];
 ok(wantCC.every(m=>g.signatures.some(s=>s.meaning===m)),'every stage signed and dated: '+g.signatures.map(s=>s.fullname.split(' (')[0]+' – '+s.meaning.split(' – ')[0]).join('; '));
-let cc2=await au.call('POST','/api/records',{type:'changes',data:{...ccReq,title:'Temporary storage in backup fridge',nature:'Temporary'}});
-await qa.sig(cc2.id,'Initiation'); cc2=(await qa.get(cc2.id)).record;
-await au.put(cc2.id,partA);
-ok((await au.sig(cc2.id,'QA Assessment')).s===400,'temporary change needs start and end dates');
+// effectiveness check cannot be recorded before its period has passed
+let cc3=await au.call('POST','/api/records',{type:'changes',data:{...partA,title:'Relabel freezer shelves'}});
+await au.sig(cc3.id,'QA Review');
+await qa.put(cc3.id,{impactCheck:check(11),impactSummary:'Labels only',classification:'Minor',classRationale:'No product impact',riskRequired:'Not required',plan:[{activity:'Relabel',dept:'OPS',person:'operator1',due:addD(T,5)}],clientPre:'Not required',clientPost:'Not required'});
+await qa.sig(cc3.id,'RP Review'); await op.sig(cc3.id,'HOD Approval'); await hod.sig(cc3.id,'QA Approval');
+await qa.put(cc3.id,{ecRequired:'Required',ecDue:'3 months'});
+ok((await qa.sig(cc3.id,'Implementation')).ok,'no other departments: QA approval completes the pre-approval');
+await op.put(cc3.id,{finalImplDate:T,finalSummary:'Shelves relabelled',plan:[{activity:'Relabel',dept:'OPS',person:'operator1',due:addD(T,5),closed:T}]});
+await op.sig(cc3.id,'QA Closure Review'); await qa.put(cc3.id,{qaReport:'Verified'}); await qa.sig(cc3.id,'Closed – EC Pending');
+await qa.put(cc3.id,{effective:'Yes',ecQaComment:'Too early'});
+ok((await qa.sig(cc3.id,'Closed')).s===400,'effectiveness check waits until the assigned period has passed');
+// temporary change
+let cc2=await au.call('POST','/api/records',{type:'changes',data:{title:'Temporary storage in backup fridge',nature:'Temporary'}});
+await au.put(cc2.id,{...partA,nature:'Temporary'});
+ok((await au.sig(cc2.id,'QA Review')).s===400,'temporary change needs start and end dates');
 ok((await er(cc2.number,addD(T,70),{scope:'Correction (CAPA)'})).s===400,'action-level extensions apply to CAPA only');
 
 let v=await qa.call('GET','/api/audit/verify');ok(v.ok,'audit chain intact, entries '+v.checked);

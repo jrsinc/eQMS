@@ -11,7 +11,7 @@ const zlib = require('node:zlib');
 const { DatabaseSync } = require('node:sqlite');
 const { MODULES, ROLES, DERIVED_ROLES, DEPTS, setDepartments, trainingScore, PASS_MARK, TRAINER_PARAMS, TRAINER_PASS, RETENTION } = require('./public/modules.js');
 // change control states from pre-approval onwards (the change may be implemented)
-const CC_APPROVED = ['Optional Approvals', 'Implementation', 'Pending Closure', 'Closed – EC Pending', 'Closed'];
+const CC_APPROVED = ['Optional Approvals', 'Implementation', 'QA Closure Review', 'Closed – EC Pending', 'Closed'];
 
 // ---------- configuration ----------
 loadEnv(path.join(__dirname, '.env'));
@@ -446,6 +446,7 @@ function visibleRecord(user, rec) { if (!canSee(user, rec)) fail(404, 'Record no
 // Derived values recalculated whenever a record is created, edited or moves state.
 const DERIVE = {
   // JRS/SOP/QAS/022: investigation complete within 30 calendar days of opening; Critical events within 10 working days
+  changes: (r) => { r.data.respDept = r.data.respPerson ? userDept(r.data.respPerson) : ''; },
   investigations: (r) => { const d = r.data; d.respDept = d.respPerson ? userDept(d.respPerson) : ''; d.dueDate = !d.criticality ? '' : d.criticality === 'Critical' ? addWorkingDays(d.dateOpened, 10) : addDays(d.dateOpened, 30); },
   // JRS/SOP/QAS/021: titles in capitals, "[GLB]" when the document applies to more than one site
   documents: (r) => { const d = r.data, base = String(d.title || '').replace(/^\[GLB\]\s*/i, '').toUpperCase(); d.title = ((d.sites || []).length > 1 ? '[GLB] ' : '') + base; }
@@ -581,7 +582,7 @@ const CHECKS = {
   },
   ecIsRequired: (r) => need(r.data.ecRequired === 'Required', 'No effectiveness check is required: use "QA close (no effectiveness check)".'),
   ecNotRequired: (r) => need(r.data.ecRequired === 'Not required', 'An effectiveness check is required: use "QA close – effectiveness check pending".'),
-  ccDue90: (r) => { if (r.data.nature === 'Permanent') need(r.data.dueDate <= addDays(r.data.dateOpened, 90), `A permanent change must be due within 90 days of the request (by ${addDays(r.data.dateOpened, 90)}).`); },
+  ccDue90: (r) => { const from = r.data.dateOpened || today(); if (r.data.nature === 'Permanent') need(r.data.dueDate <= addDays(from, 90), `A permanent change must be due within 90 days (by ${addDays(from, 90)}).`); },
   ccTemp: (r) => { if (r.data.nature === 'Temporary') need(r.data.tempStart && r.data.tempEnd && r.data.tempEnd >= r.data.tempStart, 'Temporary change: enter the start and end dates (end on or after start).'); },
   ccRiskClass: (r) => { if (['Major', 'Critical'].includes(r.data.classification)) need(r.data.riskRequired === 'Required', `${r.data.classification} changes require a risk assessment (JRS/SOP/QAS/020).`); },
   ccRiskRef: (r) => { if (r.data.riskRequired === 'Required') need(r.data.riskRef, 'Enter the risk assessment reference.'); },
@@ -590,6 +591,14 @@ const CHECKS = {
     const done = (r.data.deptApprovals || []).map(a => a.dept), open = (r.data.optionalDepts || []).filter(x => !done.includes(x));
     need(!open.length, 'Optional approvals outstanding: ' + open.join(', ') + '.');
   },
+  // change control: responsible person, Head of Department, department report, effectiveness check after its period
+  isRespPerson: (r, u) => { if (r.data.respPerson !== u.username && !allAccess(u)) fail(403, `Only the responsible person (${userLabel(r.data.respPerson)}) can review this step.`); },
+  isCcDept: (r, u) => { if (![r.created_by, r.data.respPerson].includes(u.username) && !(u.department && u.department === r.data.respDept) && !allAccess(u)) fail(403, 'Only the initiator, the responsible person or the responsible department submits the change control report.'); },
+  ccHasOptional: (r) => need((r.data.optionalDepts || []).length, 'No other departments are named: use "Approve – QA (pre-approval complete)".'),
+  ccNoOptional: (r) => need(!(r.data.optionalDepts || []).length, 'Other departments are named for approval: use "Approve – QA (send to other departments)".'),
+  ccNeedsEC: (r) => need(r.data.ecRequired === 'Required', 'No effectiveness check is required: use "Close – QA report".'),
+  ccNoEC: (r) => need(r.data.ecRequired !== 'Required', 'An effectiveness check is required: use "Close – effectiveness check pending".'),
+  ccEcDue: (r) => need(!r.data.ecDueDate || today() >= r.data.ecDueDate, `The effectiveness check is due on ${r.data.ecDueDate}, after the assigned period.`),
   ccPlanClosed: (r) => { const open = (r.data.plan || []).filter(p => !p.closed); need(!open.length, `${open.length} implementation activit${open.length === 1 ? 'y is' : 'ies are'} not closed yet.`); },
   ccClientComm: (r) => {
     if (r.data.clientPost === 'Required') need(r.data.clientCommunicated === 'Yes', 'Client post-communication is required: confirm the client was communicated.');
@@ -737,7 +746,11 @@ const AFTER = {
   },
   'tni:Certified': (u, r) => { r.data.certificateDate = today(); },
   'atreviews:Under Review': (u, r) => { r.data.summary = auditSummary(r.data.periodFrom, r.data.periodTo, r.data.scope || []); },
-  'changes:Initiation': (u, r, ip) => assignNumber(u, r, ip),
+  'changes:RP Review': (u, r, ip) => assignNumber(u, r, ip),
+  'changes:HOD Approval': (u, r, ip) => {
+    const old = r.data.hodApprover; r.data.hodApprover = hodFor(r.data.respDept, r.data.respPerson);
+    if (old !== r.data.hodApprover) audit(u, 'Approver assigned from the organogram', r, 'hodApprover', old, r.data.hodApprover, null, ip);
+  },
   'capa:Effectiveness Check': (u, r) => { r.data.ecDueDate = addMonths(today(), ecMonths(r.data.ecDue)); },
   'capa:Closed': (u, r, ip) => {
     if (r.data.effective !== 'No') return;
@@ -842,7 +855,9 @@ route('GET', '/api/health', () => ({ ok: true, org: CFG.orgName, envLabel: CFG.e
 
 route('POST', '/api/login', async (ctx) => {
   const { username, password } = ctx.body;
-  const u = db.prepare('SELECT * FROM users WHERE username=?').get(String(username || '').toLowerCase());
+  // sign in with the user ID or the email address
+  const id = String(username || '').toLowerCase().trim();
+  const u = db.prepare("SELECT * FROM users WHERE username=? OR (email<>'' AND lower(email)=?)").get(id, id);
   if (!u || !u.active) { audit(null, 'Login failed', null, 'username', null, username, 'Unknown or inactive user', ctx.ip); fail(401, 'User ID or password incorrect.'); }
   if (u.locked) fail(423, 'Account locked. Contact your administrator.');
   if (!checkPw(String(password || ''), u.pw_hash)) {
@@ -1551,7 +1566,7 @@ const server = http.createServer(async (req, res) => {
     send(res, e.code || 500, { error: e instanceof HttpError ? e.message : 'Unexpected server error' });
   }
 });
-const STATE_MAP = { investigations: { Initiated: 'Initiation', 'Number Assignment': 'Requested', 'QA Assessment': 'QA Review', 'Pre-Approval': 'QA Review', Evaluation: 'QA Evaluation' }, changes: { 'Number Assignment': 'Requested' } };
+const STATE_MAP = { investigations: { Initiated: 'Initiation', 'Number Assignment': 'Requested', 'QA Assessment': 'QA Review', 'Pre-Approval': 'QA Review', Evaluation: 'QA Evaluation' }, changes: { 'Number Assignment': 'Draft', Requested: 'Draft', Initiation: 'Draft', 'QA Assessment': 'QA Review', 'Pre-Approval': 'RP Review', 'Pending Closure': 'QA Closure Review' } };
 for (const [type, map] of Object.entries(STATE_MAP)) for (const r of db.prepare(`SELECT * FROM records WHERE type=? AND status IN (${Object.keys(map).map(() => '?').join(',')})`).all(type, ...Object.keys(map)).map(rowToRecord)) {
   const from = r.status; r.status = map[from]; r.data.stateEnteredAt = now();
   ACTOR = { user: null, reason: 'Workflow updated' }; if (DERIVE[type]) DERIVE[type](r); saveRecord(r);
@@ -1563,4 +1578,4 @@ for (const r of db.prepare('SELECT * FROM records WHERE id NOT IN (SELECT DISTIN
 }
 ACTOR = null;
 if (require.main === module) server.listen(CFG.port, CFG.host, () => console.log(`eQMS listening on http://${CFG.host}:${CFG.port}`));
-module.exports = { server, generateList };
+module.exports = { server, generateList, db, audit, hashPw, now, loadDepartments }; // internals for maintenance scripts (scripts/)

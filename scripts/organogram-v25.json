@@ -1,0 +1,284 @@
+{
+  "source": "JRS Organogram Version 25.0 (signed)",
+  "departments": [
+    {
+      "code": "MGT",
+      "name": "Management",
+      "hod": "devang.shah"
+    },
+    {
+      "code": "CSP",
+      "name": "Client Services and Project Management",
+      "parent": "MGT",
+      "hod": "pratik.shah"
+    },
+    {
+      "code": "CTS",
+      "name": "Clinical Trial Supply",
+      "parent": "MGT",
+      "hod": "mahendra.sannappa"
+    },
+    {
+      "code": "BDV",
+      "name": "Business Development",
+      "parent": "CTS",
+      "hod": "krishna.parikh"
+    },
+    {
+      "code": "PRC",
+      "name": "Procurement",
+      "parent": "CTS",
+      "hod": "sanket.patel"
+    },
+    {
+      "code": "OPS",
+      "name": "Operation",
+      "parent": "CSP",
+      "hod": "mayur.patni"
+    },
+    {
+      "code": "ITS",
+      "name": "IT",
+      "parent": "CSP",
+      "hod": "mayur.patni"
+    },
+    {
+      "code": "QAS",
+      "name": "QA",
+      "hod": "sachin.shah"
+    },
+    {
+      "code": "FIN",
+      "name": "Finance",
+      "parent": "MGT",
+      "hod": "arundhati.yadav"
+    },
+    {
+      "code": "HRM",
+      "name": "HR",
+      "parent": "MGT"
+    },
+    {
+      "code": "PKG",
+      "name": "Packaging",
+      "parent": "CTS"
+    }
+  ],
+  "users": [
+    {
+      "username": "devang.shah",
+      "fullname": "Devang Shah",
+      "designation": "Board Member / Management",
+      "department": "MGT",
+      "roles": [
+        "mgmt"
+      ]
+    },
+    {
+      "username": "malathi.karkala",
+      "fullname": "Malathi Karkala",
+      "designation": "Board Member / Management",
+      "department": "MGT",
+      "roles": [
+        "mgmt"
+      ]
+    },
+    {
+      "username": "pratik.shah",
+      "fullname": "Pratik Shah",
+      "designation": "Managing Director and Director – Client Services and Project Management",
+      "department": "CSP",
+      "roles": [
+        "mgmt"
+      ],
+      "reportsTo": "devang.shah",
+      "email": "pratiks@jrsllc.com"
+    },
+    {
+      "username": "mahendra.sannappa",
+      "fullname": "Mahendra Sannappa",
+      "designation": "Director – Clinical Trial Supply",
+      "department": "CTS",
+      "roles": [
+        "user"
+      ],
+      "reportsTo": "devang.shah",
+      "email": "mahendras@jrsllc.com"
+    },
+    {
+      "username": "arundhati.yadav",
+      "fullname": "Arundhati Yadav",
+      "designation": "Assistant Manager – Finance",
+      "department": "FIN",
+      "roles": [
+        "user"
+      ],
+      "reportsTo": "devang.shah"
+    },
+    {
+      "username": "mayur.patni",
+      "fullname": "Mayur Patni",
+      "designation": "Manager Operation and IT",
+      "department": "OPS",
+      "roles": [
+        "user"
+      ],
+      "reportsTo": "pratik.shah",
+      "email": "mayurp@jrsllc.com"
+    },
+    {
+      "username": "ved.nasit",
+      "fullname": "Ved Nasit",
+      "designation": "Specialist – Clinical Trial Supply",
+      "department": "CSP",
+      "roles": [
+        "user"
+      ],
+      "reportsTo": "pratik.shah",
+      "email": "vedn106@jrsllc.com"
+    },
+    {
+      "username": "krishna.parikh",
+      "fullname": "Krishna Parikh",
+      "designation": "Business Development Manager",
+      "department": "BDV",
+      "roles": [
+        "user"
+      ],
+      "reportsTo": "mahendra.sannappa",
+      "email": "krishnap102@jrsllc.com"
+    },
+    {
+      "username": "sanket.patel",
+      "fullname": "Sanket Patel",
+      "designation": "Procurement Manager",
+      "department": "PRC",
+      "roles": [
+        "user"
+      ],
+      "reportsTo": "mahendra.sannappa",
+      "email": "sanketp@jrsllc.com"
+    },
+    {
+      "username": "sachin.shah",
+      "fullname": "Sachin Shah",
+      "designation": "Global Head – Quality Assurance",
+      "department": "QAS",
+      "roles": [
+        "qa"
+      ],
+      "reportsTo": "malathi.karkala",
+      "email": "sachins107@jrsllc.com"
+    },
+    {
+      "username": "margi.shah",
+      "fullname": "Margi Shah",
+      "designation": "Manager Quality Assurance",
+      "department": "QAS",
+      "roles": [
+        "qa"
+      ],
+      "reportsTo": "sachin.shah",
+      "email": "margis@jrsllc.com"
+    },
+    {
+      "username": "divya.gadhiya",
+      "fullname": "Divya Gadhiya",
+      "designation": "Quality Associate – Clinical Trial Supply",
+      "department": "QAS",
+      "roles": [
+        "qa"
+      ],
+      "reportsTo": "sachin.shah",
+      "email": "divyag103@jrsllc.com"
+    },
+    {
+      "username": "vaibhav.vekariya",
+      "fullname": "Vaibhav Vekariya",
+      "designation": "IT and Operation Associate",
+      "department": "ITS",
+      "roles": [
+        "user"
+      ],
+      "reportsTo": "mayur.patni",
+      "email": "vaibhavv124@jrsllc.com"
+    },
+    {
+      "username": "drashti.savaliya",
+      "fullname": "Drashti Savaliya",
+      "designation": "Clinical Trial Specialist",
+      "department": "OPS",
+      "roles": [
+        "user"
+      ],
+      "reportsTo": "mayur.patni",
+      "email": "drashtis113@jrsllc.com"
+    },
+    {
+      "username": "aryan.jiyani",
+      "fullname": "Aryan Jiyani",
+      "designation": "Clinical Trial Specialist",
+      "department": "OPS",
+      "roles": [
+        "user"
+      ],
+      "reportsTo": "mayur.patni",
+      "email": "ajiyani112@jrsllc.com"
+    },
+    {
+      "username": "sakhi.patil",
+      "fullname": "Sakhi Patil",
+      "designation": "Specialist – Clinical Trial Supply (Business Development support team)",
+      "department": "PRC",
+      "roles": [
+        "user"
+      ],
+      "reportsTo": "sanket.patel",
+      "email": "spatil116@jrsllc.com"
+    },
+    {
+      "username": "shreya.thakur",
+      "fullname": "Shreya Thakur",
+      "designation": "Specialist – Clinical Trial Supply (Business Development support team)",
+      "department": "PRC",
+      "roles": [
+        "user"
+      ],
+      "reportsTo": "sanket.patel",
+      "email": "sthakur115@jrsllc.com"
+    },
+    {
+      "username": "shalmali.kulkarni",
+      "fullname": "Shalmali Kulkarni",
+      "designation": "Specialist – Clinical Trial Supply (Business Development support team)",
+      "department": "PRC",
+      "roles": [
+        "user"
+      ],
+      "reportsTo": "sanket.patel",
+      "email": "shalmalik123@jrsllc.com"
+    },
+    {
+      "username": "disha.zalavadiya",
+      "fullname": "Disha Zalavadiya",
+      "email": "dishaz125@jrsllc.com",
+      "designation": "",
+      "department": "",
+      "roles": [
+        "user"
+      ],
+      "note": "On the team list, not on organogram V25 – place in the organogram"
+    },
+    {
+      "username": "mansi.patel",
+      "fullname": "Mansi Patel",
+      "email": "mansi.patel114@jrsllc.com",
+      "designation": "",
+      "department": "",
+      "roles": [
+        "user"
+      ],
+      "note": "On the team list, not on organogram V25 – place in the organogram"
+    }
+  ]
+}

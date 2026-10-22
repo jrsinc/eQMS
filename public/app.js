@@ -148,7 +148,7 @@ function renderLogin(msg = '') {
   $('#app').innerHTML = `${envBanner()}<div class="login"><div class="side"><h1>Quality records you can stand behind in an inspection.</h1>
     <p>Documents, training, deviations and complaints, CAPA, change control, audits, suppliers and clinical supply — one validated system with a full audit trail and electronic signatures.</p></div>
     <form id="lf"><div class="brand" style="color:var(--ink);padding:0">${logo()}<div>QualiSuite eQMS<small class="muted">${esc(HEALTH.org || '')}</small></div></div>
-    <h2>Sign in</h2><div><label class="f" for="u">User ID</label><input id="u" type="text" autocomplete="username" required></div>
+    <h2>Sign in</h2><div><label class="f" for="u">User ID or email</label><input id="u" type="text" autocomplete="username" required></div>
     <div><label class="f" for="p">Password</label><input id="p" type="password" autocomplete="current-password" required></div>
     <div class="error" role="alert">${esc(msg)}</div><button class="btn primary">Sign in</button>
     <p class="small muted">Authorised users only. All activity is recorded in the audit trail.</p></form></div>`;
@@ -255,8 +255,14 @@ function myTasks() {
       if (r.status === 'Investigation' && mine) return true;
       if (r.status === 'HOD Approval' && d.hodApprover === ME.username) return true;
     }
-    if (r.type === 'changes' && r.status === 'Initiation' && r.created_by === ME.username) return true;
-    if (r.type === 'changes' && r.status === 'Implementation' && [r.created_by, r.data.respPerson].includes(ME.username)) return true;
+    if (r.type === 'changes') {
+      const d = r.data;
+      if (r.status === 'Draft' && r.created_by === ME.username) return true;
+      if (r.status === 'RP Review' && d.respPerson === ME.username) return true;
+      if (r.status === 'HOD Approval' && d.hodApprover === ME.username) return true;
+      if (r.status === 'Implementation' && ([r.created_by, d.respPerson].includes(ME.username) || (!!ME.department && ME.department === d.respDept))) return true;
+      if (r.status === 'Closed – EC Pending' && d.respPerson === ME.username) return true;
+    }
     if (r.type === 'changes' && r.status === 'Optional Approvals') return (r.data.optionalDepts || []).some(x => (ME.deptsUnder || []).includes(x) && !(r.data.deptApprovals || []).some(a => a.dept === x));
     if (r.type === 'selfinspections') {
       const d = r.data, auditor = [d.leadAuditor, d.coAuditor].includes(ME.username);
@@ -390,10 +396,10 @@ function liveCompute(root, m, base = {}) {
 }
 function newView(type) {
   const m = MODS[type]; if (!m || !canSeeModule(m)) return dashboard();
-  shell(type, `<div class="spread"><div><h1>New ${esc(singular(m))}</h1><p class="muted">${m.tempNumbering ? 'Your request goes to QA with a request number. When QA approves it the record number is assigned automatically; QA may also ask you to update the request, or reject it.' + (m.deptScoped ? ' The responsible department is the department of the responsible person.' : '') : 'The record number is assigned when you save.'} Fields marked * are required.</p></div></div>
+  shell(type, `<div class="spread"><div><h1>New ${esc(singular(m))}</h1><p class="muted">${m.createHelp ? esc(m.createHelp) : m.tempNumbering ? 'Your request goes to QA with a request number. When QA approves it the record number is assigned automatically; QA may also ask you to update the request, or reject it.' + (m.deptScoped ? ' The responsible department is the department of the responsible person.' : '') : 'The record number is assigned when you save.'} Fields marked * are required.</p></div></div>
    <form id="nf" class="panel"><div class="grid">${createFields(m).filter(f => f.type !== 'readonly').map(f => fieldHtml(f, undefined, false)).join('')}</div>
    ${m.tempNumbering ? '<div style="margin-top:1rem"><label class="f" for="natt">Attachments (optional)</label><input type="file" id="natt" multiple></div>' : ''}
-   <div class="error" style="margin-top:1rem"></div><div class="row"><button class="btn primary">${m.tempNumbering ? 'Submit request to QA' : 'Save record'}</button><a class="btn" href="#/m/${type}">Cancel</a></div></form>`);
+   <div class="error" style="margin-top:1rem"></div><div class="row"><button class="btn primary">${m.createLabel ? esc(m.createLabel) : m.tempNumbering ? 'Submit request to QA' : 'Save record'}</button><a class="btn" href="#/m/${type}">Cancel</a></div></form>`);
   const form = $('#nf');
   if (type === 'investigations') { const o = $('[name=dateIdentified]', form); if (o) o.value = today(); }
   liveCompute(form, m, type === 'investigations' ? { qaNotified: today() } : {});
@@ -435,7 +441,7 @@ async function detailView(id) {
   }
   const open = !DONE.has(rec.status) && !rec.status.startsWith('Closed');
   const canWrite = !ME.roles.every(r => r === 'extaud');
-  const isRequest = ['investigations', 'changes'].includes(rec.type) && ['Requested', 'Request Update', 'Rejected'].includes(rec.status);
+  const isRequest = (rec.type === 'investigations' && ['Requested', 'Request Update', 'Rejected'].includes(rec.status)) || (rec.type === 'changes' && ['Draft', 'QA Review', 'Rejected', 'Cancelled'].includes(rec.status));
   if (canWrite && !isRequest) {
     if (['investigations', 'selfinspections', 'extaudits'].includes(rec.type)) extraBtns.push(`<button class="btn" data-act="spawn" data-to="capa">Raise CAPA</button>`, `<button class="btn" data-act="spawn" data-to="rca">Start RCA</button>`);
     if (['investigations', 'capa', 'extaudits'].includes(rec.type)) extraBtns.push(`<button class="btn" data-act="spawn" data-to="changes">Raise change control</button>`);
@@ -538,7 +544,7 @@ function qmrPanel(rec) {
 const canEditSection = (s, rec) => !s || !s.edit || (ME.allAccess && (s.edit[rec.status] || []).length > 0) || (s.edit[rec.status] || []).some(r =>
   r === 'initiator' ? rec.created_by === ME.username : r === 'responsible' ? rec.data.respPerson === ME.username
     : r === 'respdept' ? !!ME.department && ME.department === rec.data.respDept : r === 'depthead' ? rec.data.hodApprover === ME.username : ME.roles.includes(r));
-const WHO_BY_CHECK = { isInitiator: 'Initiator', isResponsible: 'Initiator / responsible person', isPartAOwner: 'Initiator / responsible person / department', isPartCOwner: 'Responsible person / department', isHodApprover: 'Head of Department (organogram)' };
+const WHO_BY_CHECK = { isRespPerson: 'Responsible person', isCcDept: 'Responsible person / department', isInitiator: 'Initiator', isResponsible: 'Initiator / responsible person', isPartAOwner: 'Initiator / responsible person / department', isPartCOwner: 'Responsible person / department', isHodApprover: 'Head of Department (organogram)' };
 // Sign-offs expected for a section, taken from the workflow (transitions with the same "part"), each with the
 // latest signature: name and date, or pending. Changing the workflow in modules.js changes these blocks automatically.
 function expectedSignoffs(m, s) {

@@ -80,7 +80,7 @@ ok((await tr.get(d.id)).s===404&&(await tr.attach(d.id,'x.txt','x')).s===404,'us
 ok((await insp.get(d.id)).record,'read-only inspector can see the deviation');
 ok((await dir.get(d.id)).record,'management sees every department');
 await pk.attach(d.id,'pallet-label.txt','label');
-await pk.put(d.id,{description:'Wrap torn on one side',immediate:'Pallet re-wrapped'}); await pk.sig(d.id,'QA Review');
+await pk.put(d.id,{eventOrigin:'Goods-in',description:'Wrap torn on one side',immediate:'Pallet re-wrapped'}); await pk.sig(d.id,'QA Review');
 await qa.put(d.id,{criticality:'Minor',impactedAreas:['Receipt']}); await qa.sig(d.id,'Investigation');
 await pk.attach(d.id,'investigation-notes.txt','notes');
 let det=await qa.get(d.id);
@@ -113,7 +113,7 @@ await dir.call('POST','/api/departments',{code:'LAB',name:'Laboratory',reason:'N
 await dir.call('PUT','/api/organogram/users/trainer1',{department:'LAB',reportsTo:'',reason:'Lab start-up'});
 let d2=await op.call('POST','/api/records',{type:'investigations',data:{invType:'Deviation',site:'JRS INC',title:'Balance out of calibration',dateIdentified:T,requestDetails:'Daily check failed',respPerson:'trainer1'}});
 ok(d2.data.respDept==='LAB','responsible department LAB from the responsible person');
-await qa.sig(d2.id,'Initiation'); await tr.put(d2.id,{description:'x',immediate:'x'}); await tr.sig(d2.id,'QA Review');
+await qa.sig(d2.id,'Initiation'); await tr.put(d2.id,{eventOrigin:'Lab',description:'x',immediate:'x'}); await tr.sig(d2.id,'QA Review');
 await qa.put(d2.id,{criticality:'Minor',impactedAreas:['Storage']}); await qa.sig(d2.id,'Investigation');
 await tr.put(d2.id,{investigation:'x',rootCause:'x',riskAssessment:'x',conclusion:'x',capaRequired:'No',capaJustification:'x'});
 let nh=await tr.sig(d2.id,'HOD Approval');
