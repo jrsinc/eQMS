@@ -8,6 +8,25 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
+import { inflateSync } from 'node:zlib';
+// reads a PDF protected with the standard security handler (RC4 128-bit, empty user password): permissions and page 1 content
+const PAD=Buffer.from('28BF4E5E4E758A4164004E56FFFA01082E2E00B6D0683E802F0CA9FE6453697A','hex');
+const rc4=(key,data)=>{const s=[...Array(256).keys()];let j=0;for(let i=0;i<256;i++){j=(j+s[i]+key[i%key.length])&255;[s[i],s[j]]=[s[j],s[i]];}const o=Buffer.alloc(data.length);let i=0;j=0;for(let k=0;k<data.length;k++){i=(i+1)&255;j=(j+s[i])&255;[s[i],s[j]]=[s[j],s[i]];o[k]=data[k]^s[(s[i]+s[j])&255];}return o;};
+async function readLocked(buf){
+  const PL=createRequire(import.meta.url)('../vendor/pdf-lib.min.js');
+  let refused=false; try{await PL.PDFDocument.load(buf);}catch(e){refused=/encrypt/i.test(e.message);}
+  const d=await PL.PDFDocument.load(buf,{ignoreEncryption:true}), ctx=d.context, enc=ctx.lookup(ctx.trailerInfo.Encrypt);
+  const g=(k)=>enc.get(PL.PDFName.of(k)), P=g('P').asNumber(), O=Buffer.from(g('O').asBytes()), id0=Buffer.from(ctx.trailerInfo.ID.get(0).asBytes());
+  const md5=(b)=>crypto.createHash('md5').update(b).digest(), pb=Buffer.alloc(4); pb.writeInt32LE(P);
+  let key=md5(Buffer.concat([PAD,O,pb,id0])); for(let i=0;i<50;i++) key=md5(key);
+  const pref=d.getPage(0).node.get(PL.PDFName.of('Contents')), refs=pref instanceof PL.PDFArray?pref.asArray():[pref];
+  let raw='', plain='';
+  for(const r of refs){const s=ctx.lookup(r), b=Buffer.alloc(5); b.writeUIntLE(r.objectNumber,0,3); b.writeUInt16LE(r.generationNumber,3);
+    const k=md5(Buffer.concat([key,b])), dec=rc4(k,Buffer.from(s.contents));
+    try{raw+=inflateSync(Buffer.from(s.contents)).toString('latin1');}catch{} plain+=inflateSync(dec).toString('latin1');}
+  return {refused, filter:String(g('Filter')), V:g('V').asNumber(), R:g('R').asNumber(), P, raw, plain};
+}
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const { PDFDocument } = createRequire(import.meta.url)('../vendor/pdf-lib.min.js');
 const PORT = 27000 + Math.floor(Math.random() * 1000);
@@ -27,7 +46,7 @@ const T=new Date().toISOString().slice(0,10), Y=T.slice(0,4);
 const addD=(d,n)=>{const x=new Date(d+'T00:00:00Z');x.setUTCDate(x.getUTCDate()+n);return x.toISOString().slice(0,10)};
 const addM=(d,n)=>{const x=new Date(d+'T00:00:00Z');x.setUTCMonth(x.getUTCMonth()+n);return x.toISOString().slice(0,10)};
 const file=(name,text)=>({name,mime:'text/plain',base64:Buffer.from(text).toString('base64')});
-const req=(who,title,extra={})=>who.call('POST','/api/records',{type:'vendors',data:{title,reason:'New requirement – comparator sourcing for study ABC-301',sites:['JRS INC'],services:'Comparator procurement services',address:'135 Duryea Rd, Melville NY',contactPerson:'J Doe',contactPhone:'+1 631 000 0000',contactEmail:'jdoe@supplier.test',...extra},attachments:[file('company-profile.pdf','profile')]});
+const req=(who,title,extra={})=>who.call('POST','/api/records',{type:'vendors',data:{title,reason:'New requirement – comparator sourcing for study ABC-301',sites:['JRS INC'],services:'Comparator procurement services',address:'135 Duryea Rd, Melville NY',contactPerson:'J Doe',contactPhone:'+1 6310000000',contactEmail:'jdoe@supplier.test',...extra},attachments:[file('company-profile.pdf','profile')]});
 
 const op=await login('operator1'), pk=await login('packer1'), qa=await login('qa.lead'), qr=await login('qa.reviewer'), hod=await login('hod.ops'), cs=await login('cs.manager');
 // QA submits the risk assessment; the Head of the requesting department approves it
@@ -43,6 +62,13 @@ ok((await op.get(s1.id)).attachments.length===1,'documents attached with the req
 ok((await qa.call('GET','/api/notifications')).items.some(n=>n.record_id===s1.id),'QA is notified of the request');
 ok((await op.put(s1.id,{services:'changed'})).s===403&&(await op.put(s1.id,{severity:'3'})).s===403,'the requester cannot change the request or the risk assessment');
 ok((await op.call('POST',`/api/records/${s1.id}/attachments`,file('late.pdf','x'))).s===403,'only QA adds documents after the request');
+const bad=(extra)=>req(op,'Validation Ltd',extra).then(r=>r.s);
+ok(await bad({contactPhone:'6315551234'})===400,'contact number without a country code is refused');
+ok(await bad({contactPhone:'+1 631555123'})===400,'contact number with 9 digits is refused');
+ok(await bad({contactPhone:'+1 63155512345'})===400,'contact number with 11 digits is refused');
+ok(await bad({contactEmail:'jdoe@supplier'})===400&&await bad({contactEmail:'jdoe.supplier.test'})===400,'invalid e-mail addresses are refused');
+let pv=await req(op,'Phone Ltd',{contactPhone:' +91-9876543210 '});ok(pv.data&&pv.data.contactPhone==='+91-9876543210','country code + 10-digit number accepted (trimmed)');
+await qa.sig(pv.id,'Rejected',{reason:'Validation test'});
 
 // ===== risk assessment (JRS/FRM/QAS/042): only severity, occurrence, detection =====
 ok((await qa.sig(s1.id,'HOD Review')).s===400,'the three scores are required');
@@ -151,7 +177,12 @@ await hod.put(s3.id,{hodComment:'Agreed'},'Review'); await hod.sig(s3.id,'Under 
 ok((await op.raw(`/api/forms/vendors?record=${s3.id}`)).s===403,'only QA issues the questionnaire');
 let qf=await qa.raw(`/api/forms/vendors?record=${s3.id}`);
 const orig=await PDFDocument.load(fs.readFileSync(join(root,'forms','JRS-FRM-QAS-004 v3.0 Vendor qualification checklist.pdf')));
-let pdf=await PDFDocument.load(qf.buf);
+ok(orig.getPageCount()===5,'the questionnaire is the Word form JRS/FRM/QAS/004 v3.0 converted to PDF (5 pages)');
+const lk=await readLocked(qf.buf);
+ok(lk.refused&&lk.filter==='/Standard'&&lk.V===2&&lk.R===3,'issued questionnaire is encrypted (standard security handler, 128-bit)');
+ok((lk.P&4)&&!(lk.P&16)&&!(lk.P&8)&&!(lk.P&32)&&!(lk.P&512),'permissions: printing allowed; copying text, editing and annotating not allowed (P '+lk.P+')');
+ok(!lk.raw.includes('Tj')&&!lk.raw.includes('TJ')&&lk.plain.includes('<495353554544'),'page content cannot be read without the key; with it, the issue stamp is there');
+let pdf=await PDFDocument.load(qf.buf,{ignoreEncryption:true});
 ok(qf.s===200&&/JRS-FRM-QAS-004 FI-\d{4}-\d{3}/.test(qf.disp),'QA issues the questionnaire as a numbered issued copy');
 ok(pdf.getPageCount()===orig.getPageCount()&&pdf.getPages().every((p,i)=>JSON.stringify(p.getSize())===JSON.stringify(orig.getPage(i).getSize())),'the controlled JRS/FRM/QAS/004 PDF is issued unchanged ('+orig.getPageCount()+' pages) with the issue stamp');
 let reg=await qa.call('GET','/api/form-issues');

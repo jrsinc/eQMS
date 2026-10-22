@@ -740,7 +740,7 @@
         { k: 'mode', label: 'Mode', type: 'select', options: ['On-site', 'Virtual (video)'] },
         { k: 'auditorName', label: 'Name of auditor', type: 'text' },
         { k: 'auditorCompany', label: 'Auditor company', type: 'text' },
-        { k: 'auditorEmail', label: 'Auditor e-mail', type: 'text' },
+        { k: 'auditorEmail', label: 'Auditor e-mail', type: 'email' },
         { k: 'auditorContact', label: 'Auditor contact details', type: 'text' },
         { k: 'auditStart', label: 'Date of external audit (start)', type: 'date' },
         { k: 'auditEnd', label: 'Date of external audit (end)', type: 'date' },
@@ -787,7 +787,7 @@
       attachHint: 'attach any documents you already have (company profile, licences, certificates); after the request only QA can add documents',
       createHelp: 'Any department can request a supplier qualification (JRS/SOP/QAS/005 §5.1). Give the supplier, why it is needed, the sites and services, and the contact details; attach any documents you already have. QA then completes the risk assessment and evaluation.',
       // one issued copy per supplier and qualification cycle; later downloads return the same file
-      issueForm: { file: 'JRS-FRM-QAS-004 v3.0 Vendor qualification checklist.pdf', code: 'JRS/FRM/QAS/004', label: 'Supplier questionnaire (JRS/FRM/QAS/004)', roles: ['qa'], fromRecordOnly: true, oncePerCycle: true, inSection: true, when: (d, status) => ['Under Quality Review', 'On Hold'].includes(status) && /uestionnaire/.test(d.auditType || '') },
+      issueForm: { file: 'JRS-FRM-QAS-004 v3.0 Vendor qualification checklist.pdf', code: 'JRS/FRM/QAS/004', label: 'Supplier questionnaire (JRS/FRM/QAS/004)', roles: ['qa'], fromRecordOnly: true, oncePerCycle: true, inSection: true, lockCopy: true, when: (d, status) => ['Under Quality Review', 'On Hold'].includes(status) && /uestionnaire/.test(d.auditType || '') },
       fields: [
         sec('Supplier qualification request (any department)', { create: true, edit: { 'Risk Assessment': ['qa'], 'Under Quality Review': ['qa'], Approved: ['qa'], 'On Hold': ['qa'] } }),
         { k: 'title', label: 'Supplier name', type: 'text', req: true, full: true },
@@ -796,8 +796,8 @@
         { k: 'services', label: 'Services / materials provided', type: 'text', req: true, full: true },
         { k: 'address', label: 'Supplier address', type: 'textarea', req: true, full: true },
         { k: 'contactPerson', label: 'Contact person', type: 'text', req: true },
-        { k: 'contactPhone', label: 'Contact number', type: 'text' },
-        { k: 'contactEmail', label: 'Contact e-mail', type: 'text', req: true },
+        { k: 'contactPhone', label: 'Contact number (country code + 10-digit number, e.g. +1 6315551234)', type: 'phone' },
+        { k: 'contactEmail', label: 'Contact e-mail', type: 'email', req: true },
         { k: 'requesterDept', label: 'Requesting department', type: 'readonly', optionLabels: DEPTS },
         sec('Supplier risk assessment (JRS/FRM/QAS/042) – QA', { part: 'R', edit: { 'Risk Assessment': ['qa'] } }),
         { type: 'guide', label: 'Scoring criteria (JRS/SOP/QAS/005 Attachment 1)', rows: SUP_GUIDE },
@@ -1112,6 +1112,8 @@
   MODULES.atreviews.fields.find(f => f.k === 'scope').optionLabels = Object.fromEntries([...Object.entries(MODULES).map(([k, m]) => [k, m.name]), ['system', 'System events (sign-ins, users, settings)']]);
 
   // Enrich: every transition from any open state to "Reopened" is not allowed; closures are final.
-  const api = { supRisk, ROLES, MAIN_ROLES, DERIVED_ROLES, MODULES, SITES, DEPTS, DEPT_CODES, setDepartments, rpnLevel, fmeaRow, trainingScore, PASS_MARK, TRAINER_PARAMS, TRAINER_PASS, RETENTION };
+  // phone: country code and a 10-digit number (+1 6315551234, +91-9876543210); e-mail: name@domain.tld
+  const PHONE_RE = /^\+\d{1,3}[ -]?\d{10}$/, EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
+  const api = { PHONE_RE, EMAIL_RE, supRisk, ROLES, MAIN_ROLES, DERIVED_ROLES, MODULES, SITES, DEPTS, DEPT_CODES, setDepartments, rpnLevel, fmeaRow, trainingScore, PASS_MARK, TRAINER_PARAMS, TRAINER_PASS, RETENTION };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.QMS_CONFIG = api;
 })(typeof window !== 'undefined' ? window : globalThis);

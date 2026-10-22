@@ -386,6 +386,8 @@ function fieldHtml(f, v, disabled) {
       const hit = v && ALL.find(r => r.number === v && f.refTypes.includes(r.type));
       input = `<input id="${id}" type="text" name="${f.k}" value="${esc(v)}" list="dl_${f.k}" autocomplete="off" ${d}><datalist id="dl_${f.k}">${ALL.filter(r => f.refTypes.includes(r.type)).slice(0, 300).map(r => `<option value="${esc(r.number)}">${esc(r.data.title || '')}</option>`).join('')}</datalist>${hit ? ` <a class="small" href="#/r/${hit.id}">Open ${esc(hit.number)}</a>` : ''}`; break;
     }
+    case 'phone': input = `<input id="${id}" type="tel" name="${f.k}" value="${esc(v)}" placeholder="+1 6315551234" pattern="\\+\\d{1,3}[ \\-]?\\d{10}" title="Country code and 10-digit number, e.g. +1 6315551234" ${d}>`; break;
+    case 'email': input = `<input id="${id}" type="email" name="${f.k}" value="${esc(v)}" placeholder="name@company.com" ${d}>`; break;
     case 'url': input = `<input id="${id}" type="url" name="${f.k}" value="${esc(v)}" placeholder="https://" ${d}>${/^https?:\/\//i.test(v) ? ` <a class="small" href="${esc(v)}" target="_blank" rel="noopener noreferrer">Open link</a>` : ''}`; break;
     default: input = `<input id="${id}" type="${f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}" name="${f.k}" value="${esc(v)}" ${d}>`;
   }
