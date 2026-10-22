@@ -102,7 +102,8 @@ ok((await op.create('extensions',{documentId:si2.number,requestedDate:addD(T,40)
 // confidentiality
 let il=await insp.call('GET','/api/records?type=selfinspections');ok(il._arr&&il._arr.length===0,'self-inspections hidden from external auditors');
 ok((await insp.get(si1.id)).s===404,'self-inspection report not viewable by external auditors');
-let ia=await insp.call('GET','/api/audit?q='+encodeURIComponent(si1.number));ok(ia._arr&&ia._arr.length===0,'self-inspection audit trail hidden from external auditors');
+let ia=await insp.call('GET','/api/audit?q='+encodeURIComponent(si1.number));ok(ia.s===403,'audit trail not available to external auditors (QA and admin only)');
+let qaAudit=(await qa.call('GET','/api/audit?record='+encodeURIComponent(si1.number)))._arr;ok(qaAudit.length>0&&qaAudit.every(a=>a.record_type==='selfinspections'),'QA sees the self-inspection audit trail');
 ok((await insp.create('extaudits',{title:'x',auditType:'Regulatory inspection',planned:'Planned'})).s===403,'external auditors have read-only access');
 
 // ===== External audit – JRS/SOP/QAS/002 =====

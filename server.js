@@ -73,6 +73,10 @@ CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit BEGIN SELECT
 CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit BEGIN SELECT RAISE(ABORT, 'audit trail is read-only'); END;
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS links (a TEXT NOT NULL, b TEXT NOT NULL, created_by TEXT NOT NULL, ts TEXT NOT NULL, PRIMARY KEY (a, b));
+CREATE TABLE IF NOT EXISTS versions (record_id TEXT NOT NULL, no INTEGER NOT NULL, ts TEXT NOT NULL, username TEXT, fullname TEXT,
+  status TEXT NOT NULL, number TEXT, data TEXT NOT NULL, reason TEXT, PRIMARY KEY (record_id, no));
+CREATE TRIGGER IF NOT EXISTS versions_no_update BEFORE UPDATE ON versions BEGIN SELECT RAISE(ABORT, 'version history is read-only'); END;
+CREATE TRIGGER IF NOT EXISTS versions_no_delete BEFORE DELETE ON versions BEGIN SELECT RAISE(ABORT, 'version history is read-only'); END;
 `);
 // register of signatures (JRS/SOP/QAS/009) – columns added to existing databases
 for (const col of ['designation', 'department', 'initials', 'inactive_date']) { try { db.exec(`ALTER TABLE users ADD COLUMN ${col} TEXT`); } catch { /* already present */ } }
@@ -282,6 +286,15 @@ function sign(user, rec, meaning, from, to) {
 }
 function saveRecord(rec) {
   db.prepare('UPDATE records SET title=?, status=?, data=?, updated_at=? WHERE id=?').run(rec.data.title || '', rec.status, JSON.stringify(rec.data), now(), rec.id);
+  snapshot(rec);
+}
+// ---------- version history: a read-only copy of the record each time its content, status or number changes ----------
+let ACTOR = null; // signed-in user and reason of the request being handled (set by the HTTP handler)
+function snapshot(rec, user = ACTOR && ACTOR.user) {
+  const data = JSON.stringify(rec.data), last = db.prepare('SELECT no, status, number, data FROM versions WHERE record_id=? ORDER BY no DESC LIMIT 1').get(rec.id);
+  if (last && last.status === rec.status && last.number === rec.number && last.data === data) return;
+  db.prepare('INSERT INTO versions (record_id,no,ts,username,fullname,status,number,data,reason) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(rec.id, last ? last.no + 1 : 1, now(), user ? user.username : 'system', user ? user.fullname : 'System', rec.status, rec.number, data, (ACTOR && ACTOR.reason) || null);
 }
 function createRecord(user, type, data, ip, reasonText) {
   const mod = MODULES[type];
@@ -297,8 +310,9 @@ function createRecord(user, type, data, ip, reasonText) {
   db.prepare('INSERT INTO records (id,type,number,title,status,data,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)')
     .run(rec.id, type, rec.number, data.title || '', rec.status, JSON.stringify(data), user.username, now(), now());
   rec.created_by = user.username;
+  snapshot(rec, user);
   audit(user, 'Record created', rec, 'status', null, rec.status, reasonText, ip);
-  for (const [k, v] of Object.entries(data)) if (v !== '' && v != null && !(Array.isArray(v) && !v.length)) audit(user, 'Field set', rec, k, null, fmt(v), null, ip);
+  for (const [k, v] of Object.entries(data)) if (k !== 'stateEnteredAt' && v !== '' && v != null && !(Array.isArray(v) && !v.length)) audit(user, 'Field set', rec, k, null, fmt(v), null, ip);
   linkRefs(user, rec, ip);
   return rec;
 }
@@ -330,9 +344,17 @@ function linkRefs(user, rec, ip) {
 function sectionOf(mod, k) { let s = null; for (const f of mod.fields) { if (f.type === 'section') s = f; else if (f.k === k) return s; } return null; }
 const canEditSection = (s, rec, user) => !s || !s.edit || (s.edit[rec.status] || []).some(r =>
   r === 'initiator' ? rec.created_by === user.username : r === 'responsible' ? rec.data.respPerson === user.username : hasRole(user, [r]));
-// Confidential modules (hideFrom) are invisible to users whose roles are all listed there, e.g. external auditors
-const hiddenFor = (user, type) => { const h = MODULES[type] && MODULES[type].hideFrom; return !!h && user.roles.every(r => h.includes(r)); };
-const HIDEABLE = Object.keys(MODULES).filter(k => MODULES[k].hideFrom);
+// Confidential modules: hideFrom = invisible to users whose roles are all listed (e.g. external auditors);
+// visibleTo = visible only to users holding one of the listed roles (e.g. audit trail reviews: QA and admin)
+const hiddenFor = (user, type) => {
+  const m = MODULES[type]; if (!m) return false;
+  if (m.visibleTo && !user.roles.some(r => m.visibleTo.includes(r))) return true;
+  return !!m.hideFrom && user.roles.every(r => m.hideFrom.includes(r));
+};
+const HIDEABLE = Object.keys(MODULES).filter(k => MODULES[k].hideFrom || MODULES[k].visibleTo);
+// The audit trail, record history and version history are visible to QA and administrators only
+const canSeeAudit = (user) => user.roles.includes('qa') || user.roles.includes('admin');
+const needAudit = (user) => { if (!canSeeAudit(user)) fail(403, 'The audit trail and version history are visible to QA and administrators only.'); };
 function visibleRecord(user, rec) { if (hiddenFor(user, rec.type)) fail(404, 'Record not found'); return rec; }
 
 // ---------- SOP business rules ----------
@@ -368,6 +390,9 @@ function erCheck(d, selfId) {
 // Named checks referenced by transitions in modules.js (opts.checks)
 const CHECKS = {
   isInitiator: (r, u) => { if (r.created_by !== u.username) fail(403, 'Only the initiator completes and submits this part.'); },
+  // audit trail review
+  atrPeriod: (r) => need(r.data.periodFrom <= r.data.periodTo && r.data.periodTo <= today(), 'The review period must end today or earlier, and start before it ends.'),
+  atrOutcome: (r) => { if (String(r.data.anomalies).startsWith('Anomalies')) need(r.data.investigationRef, 'Anomalies found: raise a deviation or CAPA and enter its number.'); },
   // JRS/SOP/QAS/021 – documents
   docRevisionCC: (r) => {
     if (!String(r.data.revisionType).startsWith('Revision')) return;
@@ -560,6 +585,24 @@ const CHECKS = {
     (d.actions || []).forEach((a, i) => need(a.recommendation && a.responsibility && a.target, `Action ${i + 1}: enter the recommendation, responsibility and target date.`));
   }
 };
+// Audit trail review (EU GMP Annex 11 §9, data integrity): what happened in the period, and the events a reviewer looks at first
+function auditSummary(from, to, scope) {
+  const types = scope.filter(s => s !== 'system'), system = !scope.length || scope.includes('system');
+  const rows = db.prepare('SELECT a.*, r.type AS record_type FROM audit a LEFT JOIN records r ON r.id = a.record_id WHERE a.ts >= ? AND a.ts < ? ORDER BY a.id')
+    .all(from, addDays(to, 1)).filter(a => !scope.length || (a.record_type ? types.includes(a.record_type) : system));
+  const top = (key) => { const m = new Map(); for (const a of rows) m.set(a[key] || '—', (m.get(a[key] || '—') || 0) + 1); return [...m].sort((x, y) => y[1] - x[1]).slice(0, 20); };
+  const flags = [
+    ['Failed sign-ins', /^Login failed/], ['Accounts locked', /^Account locked/], ['Failed e-signatures', /^E-signature failed/],
+    ['User accounts created or changed (roles, activation, password resets)', /^User (created|roles changed|activated|deactivated|unlocked)|^Password reset/],
+    ['Field changes (each with a reason)', /^Field changed/], ['Records exported or printed', /^Record (exported|printed)/],
+    ['Attachments downloaded', /^Attachment downloaded/], ['Unblinded randomization lists viewed', /^Unblinded list viewed/],
+    ['Audit trail exported, printed or viewed per record', /^Audit trail (exported|report printed)|^Version history viewed/]
+  ].map(([label, re]) => [label, rows.filter(a => re.test(a.action)).length]);
+  const chain = verifyAudit();
+  return { generatedAt: now(), period: { from, to }, scope: scope.length ? scope : ['All modules and system events'], total: rows.length,
+    records: new Set(rows.map(a => a.record_id).filter(Boolean)).size, byUser: top('fullname'), byAction: top('action'), flags,
+    chain: { ok: chain.ok, checked: chain.checked, brokenAt: chain.brokenAt || null } };
+}
 function assignNumber(u, r, ip) {
   if (!r.number.startsWith('REQ-')) return; // already numbered (e.g. returned to the initiator and re-submitted)
   const old = r.number;
@@ -592,6 +635,7 @@ const AFTER = {
     }
   },
   'tni:Certified': (u, r) => { r.data.certificateDate = today(); },
+  'atreviews:Under Review': (u, r) => { r.data.summary = auditSummary(r.data.periodFrom, r.data.periodTo, r.data.scope || []); },
   'changes:Initiation': (u, r, ip) => assignNumber(u, r, ip),
   'capa:Effectiveness Check': (u, r) => { r.data.ecDueDate = addMonths(today(), ecMonths(r.data.ecDue)); },
   'capa:Closed': (u, r, ip) => {
@@ -782,17 +826,38 @@ route('GET', '/api/records/:id', (ctx) => {
   const rec = visibleRecord(ctx.user, getRecord(ctx.params.id)), h = contentHash(rec);
   const sigs = db.prepare('SELECT * FROM signatures WHERE record_id=? ORDER BY id').all(rec.id).map(s => ({ ...s, current: s.content_hash === h }));
   const atts = db.prepare('SELECT id,name,mime,size,sha256,uploaded_by,ts FROM attachments WHERE record_id=? ORDER BY ts').all(rec.id);
-  const trail = db.prepare('SELECT * FROM audit WHERE record_id=? ORDER BY id DESC').all(rec.id);
+  const auditAccess = canSeeAudit(ctx.user);
+  const trail = auditAccess ? db.prepare('SELECT * FROM audit WHERE record_id=? ORDER BY id DESC').all(rec.id) : [];
   const rl = rec.type === 'randomization' ? db.prepare('SELECT generated_by, ts FROM rand_lists WHERE record_id=?').get(rec.id) : null;
   const mod = MODULES[rec.type];
   const editable = EDITABLE_ALWAYS.has(rec.type) || !LOCKED.has(rec.status);
   const transitions = mod.transitions.filter(t => t.from === rec.status).map(t => ({ ...t, allowed: hasRole(ctx.user, t.roles) }));
   const links = linked(rec.id).filter(r => !hiddenFor(ctx.user, r.type)).map(r => ({ id: r.id, number: r.number, type: r.type, title: r.data.title || '', status: r.status }));
-  return { record: rec, signatures: sigs, attachments: atts, audit: trail, transitions, editable, randList: rl, links };
+  const versionCount = auditAccess ? db.prepare('SELECT COUNT(*) AS n FROM versions WHERE record_id=?').get(rec.id).n : 0;
+  return { record: rec, signatures: sigs, attachments: atts, audit: trail, auditAccess, versionCount, transitions, editable, randList: rl, links };
+});
+// Version history of one record (QA and admin): every saved version, and one version's full content
+route('GET', '/api/records/:id/versions', (ctx) => {
+  needAudit(ctx.user);
+  const rec = visibleRecord(ctx.user, getRecord(ctx.params.id));
+  const versions = db.prepare('SELECT no, ts, username, fullname, status, number, reason FROM versions WHERE record_id=? ORDER BY no DESC').all(rec.id);
+  // controlled documents also have issued versions (1.0, 2.0 …) as separate records under the same number
+  const docVersions = rec.type === 'documents' ? db.prepare("SELECT * FROM records WHERE type='documents' AND number=? AND deleted=0 ORDER BY created_at DESC").all(rec.number).map(rowToRecord)
+    .map(r => ({ id: r.id, version: r.data.version, status: r.status, revisionType: r.data.revisionType, changeControl: r.data.changeControl, summary: r.data.revisionSummary,
+      approvedOn: r.data.approvedOn, effectiveDate: r.data.effectiveDate, supersededOn: r.data.supersededOn, author: r.created_by })) : [];
+  audit(ctx.user, 'Version history viewed', rec, null, null, null, null, ctx.ip);
+  return { versions, docVersions };
+});
+route('GET', '/api/records/:id/versions/:no', (ctx) => {
+  needAudit(ctx.user);
+  const rec = visibleRecord(ctx.user, getRecord(ctx.params.id));
+  const v = db.prepare('SELECT * FROM versions WHERE record_id=? AND no=?').get(rec.id, +ctx.params.no); if (!v) fail(404, 'Version not found');
+  return { ...v, data: JSON.parse(v.data) };
 });
 route('POST', '/api/records', (ctx) => {
   const { type, data, linkFrom } = ctx.body;
   if (!MODULES[type]) fail(400, 'Unknown module');
+  if (hiddenFor(ctx.user, type)) fail(403, 'Your roles do not give access to this module.');
   if (type === 'randomization' && !hasRole(ctx.user, ['unblinded'])) fail(403, 'Only unblinded randomization officers can create randomization lists.');
   const clean = sanitize(type, data || {});
   // modules with a request section: only its fields are entered (and required) when the record is created
@@ -845,7 +910,7 @@ route('POST', '/api/records', (ctx) => {
   return rec;
 });
 route('PUT', '/api/records/:id', (ctx) => {
-  const rec = getRecord(ctx.params.id), mod = MODULES[rec.type];
+  const rec = visibleRecord(ctx.user, getRecord(ctx.params.id)), mod = MODULES[rec.type];
   if (!EDITABLE_ALWAYS.has(rec.type) && LOCKED.has(rec.status)) fail(409, `Record is ${rec.status} and cannot be edited. Raise a change or revision.`);
   if (rec.type === 'randomization' && !hasRole(ctx.user, ['unblinded'])) fail(403, 'Unblinded role required.');
   const reason = String(ctx.body.reason || '').trim(); if (!reason) fail(400, 'Reason for change is required.');
@@ -984,7 +1049,7 @@ function coSign(ctx, rec, mod, t) {
   return { ok: true, status: rec.status, pending: group.meanings.filter(m => !given().some(s => s.meaning === m)) };
 }
 route('POST', '/api/records/:id/transition', (ctx) => {
-  const rec = getRecord(ctx.params.id), mod = MODULES[rec.type];
+  const rec = visibleRecord(ctx.user, getRecord(ctx.params.id)), mod = MODULES[rec.type];
   // several sign-offs can share a from/to pair (co-signatures); the label picks the one meant
   const cands = mod.transitions.filter(x => x.from === rec.status && x.to === ctx.body.to);
   const t = cands.length > 1 ? cands.find(x => x.label === ctx.body.label) : cands[0];
@@ -1158,18 +1223,38 @@ route('POST', '/api/records/:id/print', (ctx) => {
 });
 
 // audit trail
+// Audit trail (QA and admin). Filters: from / to (dates), user, type (module), record (number), action, q (any text), limit.
+function auditQuery(user, f) {
+  const where = [], args = [];
+  const hidden = HIDEABLE.filter(t => hiddenFor(user, t));
+  if (hidden.length) { where.push(`(r.type IS NULL OR r.type NOT IN (${hidden.map(() => '?').join(',')}))`); args.push(...hidden); }
+  if (f.from) { where.push('a.ts >= ?'); args.push(String(f.from).slice(0, 10)); }
+  if (f.to) { where.push('a.ts < ?'); args.push(addDays(String(f.to).slice(0, 10), 1)); }
+  if (f.user) { where.push('a.username = ?'); args.push(f.user); }
+  if (f.type === 'system') where.push('a.record_id IS NULL');
+  else if (f.type) { where.push('r.type = ?'); args.push(f.type); }
+  if (f.record) { where.push('(a.record_number LIKE ? OR r.number LIKE ?)'); args.push(`%${f.record}%`, `%${f.record}%`); }
+  if (f.action) { where.push('a.action LIKE ?'); args.push(`%${f.action}%`); }
+  if (f.q) { where.push('(a.username LIKE ? OR a.fullname LIKE ? OR a.action LIKE ? OR a.record_number LIKE ? OR a.field LIKE ? OR a.new_value LIKE ? OR a.reason LIKE ?)'); args.push(...Array(7).fill(`%${f.q}%`)); }
+  const lim = Math.min(+f.limit || 1000, 10000);
+  return db.prepare(`SELECT a.*, r.type AS record_type FROM audit a LEFT JOIN records r ON r.id = a.record_id ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY a.id DESC LIMIT ?`).all(...args, lim);
+}
 route('GET', '/api/audit', (ctx) => {
-  const lim = Math.min(+ctx.query.get('limit') || 500, 5000), q = ctx.query.get('q');
-  const hidden = HIDEABLE.filter(t => hiddenFor(ctx.user, t));
-  const hide = hidden.length ? ` AND (record_id IS NULL OR record_id NOT IN (SELECT id FROM records WHERE type IN (${hidden.map(() => '?').join(',')})))` : '';
-  return q ? db.prepare(`SELECT * FROM audit WHERE (username LIKE ? OR action LIKE ? OR record_number LIKE ? OR field LIKE ?)${hide} ORDER BY id DESC LIMIT ?`).all(...Array(4).fill('%' + q + '%'), ...hidden, lim)
-    : db.prepare(`SELECT * FROM audit WHERE 1=1${hide} ORDER BY id DESC LIMIT ?`).all(...hidden, lim);
+  needAudit(ctx.user);
+  return auditQuery(ctx.user, Object.fromEntries(['from', 'to', 'user', 'type', 'record', 'action', 'q', 'limit'].map(k => [k, ctx.query.get(k) || ''])));
 });
-route('GET', '/api/audit/verify', (ctx) => { const r = verifyAudit(); audit(ctx.user, 'Audit trail integrity verified', null, null, null, r.ok ? 'Intact' : 'BROKEN at ' + r.brokenAt, null, ctx.ip); return r; });
+route('GET', '/api/audit/verify', (ctx) => { needAudit(ctx.user); const r = verifyAudit(); audit(ctx.user, 'Audit trail integrity verified', null, null, null, r.ok ? 'Intact' : 'BROKEN at ' + r.brokenAt, null, ctx.ip); return r; });
+route('POST', '/api/audit/report', (ctx) => { // logs that a filtered audit trail was exported or printed
+  needAudit(ctx.user);
+  audit(ctx.user, 'Audit trail ' + (ctx.body.kind === 'print' ? 'report printed' : 'exported'), null, 'filters', null, String(ctx.body.filters || 'none').slice(0, 500), null, ctx.ip);
+  return { ok: true };
+});
 route('GET', '/api/export/:id', (ctx) => {
   const rec = visibleRecord(ctx.user, getRecord(ctx.params.id));
   audit(ctx.user, 'Record exported', rec, null, null, 'JSON', null, ctx.ip);
-  return { record: rec, signatures: db.prepare('SELECT * FROM signatures WHERE record_id=?').all(rec.id), audit: db.prepare('SELECT * FROM audit WHERE record_id=? ORDER BY id').all(rec.id), exportedBy: ctx.user.username, exportedAt: now() };
+  const out = { record: rec, signatures: db.prepare('SELECT * FROM signatures WHERE record_id=?').all(rec.id), exportedBy: ctx.user.username, exportedAt: now() };
+  if (canSeeAudit(ctx.user)) out.audit = db.prepare('SELECT * FROM audit WHERE record_id=? ORDER BY id').all(rec.id);
+  return out;
 });
 
 // SharePoint
@@ -1211,6 +1296,7 @@ const server = http.createServer(async (req, res) => {
         fail(403, 'Read-only access: external auditors and inspectors cannot change records.');
     }
     if (req.method === 'POST' || req.method === 'PUT') ctx.body = await readBody(req);
+    ACTOR = { user: ctx.user || null, reason: String(ctx.body.reason || '').slice(0, 500) };
     const out = await r.handler(ctx);
     const headers = ctx.setCookie ? { 'Set-Cookie': ctx.setCookie } : {};
     if (out && out.__raw) return send(res, 200, out.__raw, { ...out.headers, ...headers });
@@ -1220,5 +1306,10 @@ const server = http.createServer(async (req, res) => {
     send(res, e.code || 500, { error: e instanceof HttpError ? e.message : 'Unexpected server error' });
   }
 });
+// records that existed before version history was introduced get a baseline version 1 (once)
+for (const r of db.prepare('SELECT * FROM records WHERE id NOT IN (SELECT DISTINCT record_id FROM versions)').all().map(rowToRecord)) {
+  ACTOR = { user: null, reason: 'Baseline – version history started for an existing record' }; snapshot(r);
+}
+ACTOR = null;
 if (require.main === module) server.listen(CFG.port, CFG.host, () => console.log(`eQMS listening on http://${CFG.host}:${CFG.port}`));
 module.exports = { server, generateList };

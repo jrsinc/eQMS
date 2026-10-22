@@ -15,7 +15,7 @@ and the Validation Summary Report is approved.
 | Compliance | Self-inspections with annual schedule and qualified-auditor list (JRS/SOP/QAS/004) · External audits and inspections (JRS/SOP/QAS/002, QAS/008) · Risk assessments – FMEA, S×O×D 1–5 (JRS/SOP/QAS/020) · Quarterly management review with data compiled from the eQMS (JRS/SOP/QAS/019) · Inspection readiness dashboard and inspection-pack export |
 | Supply chain | Vendors (qualification, risk score) · Customers (GDP bona fides, sanctions check) |
 | Clinical supply | Comparator sourcing · Secondary packaging (line clearance, label reconciliation, QP certification) · Label design and controlled printing (PDF, ZPL) · Kit randomization (seeded block lists, blinded/unblinded views, dual approval) |
-| System | Users and roles · Hash-chained audit trail with integrity check · Electronic signatures · SharePoint publishing (Microsoft Graph) |
+| System | Users and roles · Hash-chained audit trail with integrity check, filters, CSV and printed report, quarterly audit trail review (QA and admin only) · Version history of every record with comparison · Electronic signatures · SharePoint publishing (Microsoft Graph) |
 
 ## Technology
 
@@ -30,7 +30,7 @@ git clone <repo-url> qms && cd qms
 cp .env.example .env            # set HOST=127.0.0.1, COOKIE_SECURE=false for local http
 npm run demo                    # starts with demo users (password Demo-Pass-2026)
 # open http://localhost:8080
-npm test                        # end-to-end checks: tests/e2e.mjs (core), tests/quality-events.mjs and tests/compliance.mjs (SOP rules)
+npm test                        # end-to-end checks: tests/e2e.mjs (core) plus quality-events, compliance, documents-training and audit-trail suites
 ```
 
 Demo users (development only): `qa.lead`, `qa.reviewer`, `author1`, `cs.manager`, `stat1` (unblinded), `rp1`,

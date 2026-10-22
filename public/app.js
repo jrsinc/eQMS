@@ -1,7 +1,7 @@
 /* QualiSuite eQMS — browser application (no framework, CSP-safe: no inline handlers). */
 'use strict';
 const CFG = window.QMS_CONFIG, MODS = CFG.MODULES;
-let ME = null, USERS = [], HEALTH = {}, ALL = [], idleTimer = null, idleLeft = 0;
+let ME = null, USERS = [], HEALTH = {}, ALL = [], idleTimer = null, idleLeft = 0, QS = new URLSearchParams();
 
 // ---------- utilities ----------
 const $ = (s, r = document) => r.querySelector(s);
@@ -42,6 +42,30 @@ function dueOf(r) {
 const isOverdue = (r) => { const v = dueOf(r); return !!v && !DONE.has(r.status) && v < today(); };
 const dataFields = (m) => m.fields.filter(f => f.k);
 const singular = (m) => m.single || m.name.toLowerCase().replace(/s$/, '');
+// The audit trail, record history and version history are for QA and administrators only (the server enforces it too)
+const auditAccess = () => !!ME && (ME.roles.includes('qa') || ME.roles.includes('admin'));
+const canSeeModule = (m) => !(m.visibleTo && !ME.roles.some(r => m.visibleTo.includes(r))) && !(m.hideFrom && ME.roles.every(r => m.hideFrom.includes(r)));
+const NO_AUDIT_ACCESS = '<div class="panel"><h2>Audit trail</h2><p>The audit trail and version history are visible to QA and administrators only.</p></div>';
+// Readable audit entries: field labels instead of internal keys, names instead of user IDs, dates as DD-MMM-YYYY
+function fieldLabel(type, key) {
+  if (!key) return '';
+  if (key === 'status') return 'Status';
+  if (key === 'stateEnteredAt') return 'Stage entered at (system)';
+  const f = MODS[type] && MODS[type].fields.find(x => x.k === key);
+  return f ? f.label : key;
+}
+function auditValue(type, key, v) {
+  if (v == null || v === '') return '';
+  if (key === 'stateEnteredAt' && /^\d{4}-\d{2}-\d{2}T/.test(v)) return dmyt(v);
+  const f = MODS[type] && MODS[type].fields.find(x => x.k === key);
+  if (!f) return v;
+  if (f.type === 'user') return userName(v);
+  if ((f.type === 'date' || f.fmt === 'date') && /^\d{4}-\d{2}-\d{2}/.test(v)) return dmy(v);
+  if (f.type === 'checklist' || f.type === 'table') { try { return plain(f, JSON.parse(v)); } catch { return v; } }
+  if (f.optionLabels && f.optionLabels[v]) return f.optionLabels[v];
+  return v;
+}
+const recordLabel = (a) => a.record_type && MODS[a.record_type] ? MODS[a.record_type].name : a.record_id ? '' : 'System';
 // Fields on the new-record form: only the request section(s) when the module has them, otherwise all fields
 function createFields(m) {
   if (!m.fields.some(f => f.type === 'section' && f.create)) return m.fields;
@@ -168,7 +192,7 @@ function resetIdle() { if (ME) idleLeft = (ME.idleMinutes || 15) * 60; }
 const logo = () => `<svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="6" fill="#1E6B52"/><path d="M9 16.5l4.5 4.5L23 11" stroke="#fff" stroke-width="3" fill="none"/></svg>`;
 function shell(active, html) {
   const groups = {};
-  for (const [k, m] of Object.entries(MODS)) (groups[m.group] ||= []).push([k, m]);
+  for (const [k, m] of Object.entries(MODS)) if (canSeeModule(m)) (groups[m.group] ||= []).push([k, m]);
   const openCount = (k) => ALL.filter(r => r.type === k && !DONE.has(r.status)).length;
   const link = (href, label, key, count) => `<a href="#/${href}" class="${active === key ? 'active' : ''}">${esc(label)}${count ? `<span class="count">${count}</span>` : ''}</a>`;
   const isAdmin = ME.roles.includes('admin');
@@ -176,7 +200,7 @@ function shell(active, html) {
     <div class="brand">${logo()}<div>QualiSuite eQMS<small>${esc(HEALTH.org || '')}</small></div></div>
     ${link('dashboard', 'Dashboard', 'dashboard')}${link('tasks', 'My tasks', 'tasks')}${link('readiness', 'Inspection readiness', 'readiness')}
     ${Object.entries(groups).map(([g, list]) => `<h4>${esc(g)}</h4>${list.map(([k, m]) => link('m/' + k, m.name, k, openCount(k))).join('')}${g === 'Documents & training' ? link('matrix', 'Training matrix', 'matrix') : ''}`).join('')}
-    <h4>System</h4>${link('audit', 'Audit trail', 'audit')}${link('signatures', 'Signature register', 'signatures')}${link('sharepoint', 'SharePoint', 'sharepoint')}${isAdmin ? link('users', 'Users and roles', 'users') : ''}${link('password', 'Change password', 'password')}
+    <h4>System</h4>${auditAccess() ? link('audit', 'Audit trail', 'audit') : ''}${link('signatures', 'Signature register', 'signatures')}${link('sharepoint', 'SharePoint', 'sharepoint')}${isAdmin ? link('users', 'Users and roles', 'users') : ''}${link('password', 'Change password', 'password')}
     </nav><div class="main">${envBanner()}<header class="topbar"><button class="btn menu-btn" id="menu" aria-label="Menu">Menu</button>
     <form id="gs" role="search" style="flex:1;max-width:420px"><input type="search" name="q" placeholder="Search records by number or title"></form>
     <div class="who"><span title="Automatic lock after inactivity">Lock in <span id="idle" class="mono">${Math.floor(idleLeft / 60)}:${String(idleLeft % 60).padStart(2, '0')}</span></span>
@@ -191,10 +215,12 @@ function shell(active, html) {
 window.addEventListener('hashchange', route);
 async function route() {
   if (!ME) return;
-  const [view, a] = location.hash.slice(2).split('/').map(decodeURIComponent);
+  const [path, query] = location.hash.slice(2).split('?');
+  const [view, a] = path.split('/').map(decodeURIComponent);
+  QS = new URLSearchParams(query || ''); // e.g. #/audit?from=2026-07-01&to=2026-09-30
   try {
     ALL = await api('GET', '/api/records');
-    const views = { dashboard, tasks, readiness, matrix, audit: auditView, signatures: signatureRegister, users: usersView, sharepoint: spView, password: () => renderPasswordChange(false), m: listView, new: newView, r: detailView, search: searchView, verify: verifyView };
+    const views = { dashboard, tasks, readiness, matrix, audit: auditView, history: historyView, signatures: signatureRegister, users: usersView, sharepoint: spView, password: () => renderPasswordChange(false), m: listView, new: newView, r: detailView, search: searchView, verify: verifyView };
     await (views[view] || dashboard)(a);
     window.scrollTo(0, 0);
   } catch (x) { if (ME) { shell('', `<div class="panel"><h2>Something went wrong</h2><p>${esc(x.message)}</p></div>`); } }
@@ -258,7 +284,7 @@ function searchView(q = '') {
 
 // ---------- module list ----------
 function listView(type) {
-  const m = MODS[type]; if (!m) return dashboard();
+  const m = MODS[type]; if (!m || !canSeeModule(m)) return dashboard();
   const rows = ALL.filter(r => r.type === type);
   const canCreate = (type !== 'randomization' || hasRole(['unblinded'])) && !ME.roles.every(r => r === 'extaud');
   shell(type, `<div class="spread"><div><h1>${esc(m.name)}</h1><p class="muted">${esc(m.intro)}</p></div>
@@ -351,7 +377,7 @@ function liveCompute(root, m, base = {}) {
   root.addEventListener('input', run); root.addEventListener('change', run); run();
 }
 function newView(type) {
-  const m = MODS[type]; if (!m) return dashboard();
+  const m = MODS[type]; if (!m || !canSeeModule(m)) return dashboard();
   shell(type, `<div class="spread"><div><h1>New ${esc(singular(m))}</h1><p class="muted">${m.tempNumbering ? 'Your request gets a request number now. After QA approves it, the designated number generator assigns the record number and you complete Part 1.' : 'The record number is assigned when you save.'} Fields marked * are required.</p></div></div>
    <form id="nf" class="panel"><div class="grid">${createFields(m).filter(f => f.type !== 'readonly').map(f => fieldHtml(f, undefined, false)).join('')}</div>
    <div class="error" style="margin-top:1rem"></div><div class="row"><button class="btn primary">${m.tempNumbering ? 'Submit request to QA' : 'Save record'}</button><a class="btn" href="#/m/${type}">Cancel</a></div></form>`);
@@ -416,8 +442,9 @@ async function detailView(id) {
     </div><aside class="rail">
       <div class="panel"><h3>Lifecycle</h3><ol class="lifecycle">${m.states.map((s, i) => `<li class="${s === rec.status ? 'now' : i < idx ? 'past' : ''}">${esc(s)}</li>`).join('')}</ol></div>
       <div class="panel"><h3>Electronic signatures</h3>${det.signatures.length ? det.signatures.map(s => `<div class="stamp ${s.current ? '' : 'stale'}"><div class="meaning">${esc(s.meaning)}</div><div class="name">${esc(s.fullname)}</div><div class="when">${dmyt(s.ts)} ${esc(tz)}</div><div class="small muted">${esc(s.from_state || '')} → ${esc(s.to_state || '')}</div>${s.current ? '' : '<div class="note">Signed an earlier version of this record; later changes are in the audit trail.</div>'}</div>`).join('') : '<p class="muted small">No signatures yet.</p>'}</div>
-      <div class="panel"><h3>Audit trail</h3><div class="trail">${det.audit.slice(0, 80).map(a => `<div><div class="t">${dmyt(a.ts)} · ${esc(a.username)}</div><b>${esc(a.action)}</b>${a.field ? ` <span class="muted">${esc(a.field)}</span>` : ''}
-        ${a.old_value != null || a.new_value != null ? `<div class="diff">${a.old_value != null ? `<del>${esc(a.old_value).slice(0, 160)}</del> ` : ''}<ins>${esc(a.new_value ?? '').slice(0, 160)}</ins></div>` : ''}${a.reason ? `<div class="muted">Reason: ${esc(a.reason)}</div>` : ''}</div>`).join('')}</div></div>
+      ${det.auditAccess ? `<div class="panel"><div class="spread" style="margin-bottom:.4rem"><h3 style="margin:0">Audit trail</h3><a class="btn" href="#/history/${rec.id}">Full history · ${det.versionCount} version${det.versionCount === 1 ? '' : 's'}</a></div>
+        <div class="trail">${det.audit.slice(0, 60).map(a => `<div><div class="t">${dmyt(a.ts)} · ${esc(a.fullname || a.username)}</div><b>${esc(a.action)}</b>${a.field ? ` <span class="muted">${esc(fieldLabel(rec.type, a.field))}</span>` : ''}
+        ${a.old_value != null || a.new_value != null ? `<div class="diff">${a.old_value != null ? `<del>${esc(String(auditValue(rec.type, a.field, a.old_value)).slice(0, 160))}</del> ` : ''}<ins>${esc(String(auditValue(rec.type, a.field, a.new_value ?? '')).slice(0, 160))}</ins></div>` : ''}${a.reason ? `<div class="muted">Reason: ${esc(a.reason)}</div>` : ''}</div>`).join('')}</div></div>` : ''}
     </aside></div>`);
 
   const form = $('#rf'); liveCompute(form, m, d);
@@ -466,6 +493,7 @@ async function detailView(id) {
   if (rec.type === 'randomization' && det.randList) randPanel(rec, det.randList);
   if (m.deptApproval && (d[m.deptApproval.field] || []).length) optionalApprovalsPanel(rec);
   if (rec.type === 'mgmtreviews') qmrPanel(rec);
+  if (rec.type === 'atreviews') atrPanel(rec);
   act('compile', async () => { try { await api('POST', `/api/records/${id}/compile`); toast('QMR data compiled'); route(); } catch (x) { toast(x.message); } });
 }
 
@@ -626,6 +654,13 @@ function randPanel(rec, meta) {
 }
 
 // ---------- readiness ----------
+// quarterly audit trail review (QA and admin only): when the last approved review period ended
+function atrTile() {
+  if (!auditAccess()) return '';
+  const last = ALL.filter(r => r.type === 'atreviews' && r.status === 'Approved').sort((a, b) => b.data.periodTo.localeCompare(a.data.periodTo))[0];
+  const due = !last || last.data.periodTo < addDaysIso(today(), -92);
+  return `<a class="kpi ${due ? 'alert' : 'ok'}" href="#/m/atreviews"><b>${last ? dmy(last.data.periodTo) : 'None'}</b>Audit trail reviewed up to (quarterly review${due ? ' overdue' : ''})</a>`;
+}
 function readiness() {
   const in90 = new Date(Date.now() + 90 * 864e5).toISOString().slice(0, 10), t = today();
   const docsOverdue = ALL.filter(r => r.type === 'documents' && r.status === 'Effective' && r.data.nextReview && r.data.nextReview < t);
@@ -651,10 +686,10 @@ function readiness() {
     ['Archived records not returned within 7 working days', ALL.filter(r => r.type === 'archives' && isOverdue(r))],    ['Vendor / customer licences expiring within 90 days', licences]
   ];
   shell('readiness', `<div class="spread"><div><h1>Inspection readiness</h1><p class="muted">Items an inspector is likely to ask about first. Each list links to the records.</p></div></div>
-    <div class="kpis"><div class="kpi ${compliance >= 95 ? 'ok' : 'alert'}"><b>${compliance}%</b>Training compliance (target 95%)</div>${items.map(([l, list], i) => `<a class="kpi ${list.length ? 'alert' : 'ok'}" href="#/readiness" data-scroll="r${i}"><b>${list.length}</b>${esc(l)}</a>`).join('')}</div>
+    <div class="kpis"><div class="kpi ${compliance >= 95 ? 'ok' : 'alert'}"><b>${compliance}%</b>Training compliance (target 95%)</div>${atrTile()}${items.map(([l, list], i) => `<a class="kpi ${list.length ? 'alert' : 'ok'}" href="#/readiness" data-scroll="r${i}"><b>${list.length}</b>${esc(l)}</a>`).join('')}</div>
     <div class="panel no-print"><h2>Inspection pack</h2><p class="muted small">Export record lists for a period — for the front room / back room during an inspection.</p>
       <div class="row"><label>From <input type="date" id="pf" value="${new Date(Date.now() - 365 * 864e5).toISOString().slice(0, 10)}"></label><label>To <input type="date" id="pt" value="${t}"></label>
-      <select id="pm" style="max-width:240px">${Object.entries(MODS).map(([k, m]) => `<option value="${k}">${esc(m.name)}</option>`).join('')}</select><button class="btn primary" id="pe">Export list</button></div></div>
+      <select id="pm" style="max-width:240px">${Object.entries(MODS).filter(([, m]) => canSeeModule(m)).map(([k, m]) => `<option value="${k}">${esc(m.name)}</option>`).join('')}</select><button class="btn primary" id="pe">Export list</button></div></div>
     ${items.map(([l, list], i) => `<h2 id="r${i}" style="margin-top:1.5rem">${esc(l)}</h2>${table(list, ['number', 'module', 'title', 'status'], 'None.')}`).join('')}`);
   bindRows();
   $$('[data-scroll]').forEach(el => el.addEventListener('click', (e) => { e.preventDefault(); document.getElementById(el.dataset.scroll).scrollIntoView({ behavior: 'smooth' }); }));
@@ -684,20 +719,103 @@ function matrix() {
 }
 
 // ---------- audit trail ----------
+const AUDIT_FILTERS = [['from', 'From'], ['to', 'To'], ['user', 'User'], ['type', 'Module'], ['record', 'Record no.'], ['action', 'Action'], ['q', 'Text']];
+const filterText = (f) => AUDIT_FILTERS.filter(([k]) => f[k]).map(([k, l]) => `${l}: ${k === 'user' ? userName(f[k]) : k === 'type' ? (MODS[f[k]] ? MODS[f[k]].name : 'System events') : k === 'from' || k === 'to' ? dmy(f[k]) : f[k]}`).join(' · ') || 'No filters (latest entries)';
 async function auditView() {
-  shell('audit', `<div class="spread"><div><h1>Audit trail</h1><p class="muted">System-wide, append-only and hash-chained. Entries cannot be edited or deleted.</p></div>
-    <div class="row"><button class="btn" id="av">Verify integrity</button><button class="btn" id="ax">Export CSV</button></div></div>
-    <form id="aq" class="row" style="margin-bottom:.8rem"><input type="search" name="q" placeholder="User, action, record number or field" style="max-width:360px"><button class="btn">Search</button></form><div id="al"></div>`);
-  let rows = [];
-  const load = async (q = '') => {
-    rows = await api('GET', '/api/audit?limit=1000' + (q ? '&q=' + encodeURIComponent(q) : ''));
-    $('#al').innerHTML = `<div class="table-wrap"><table class="t"><thead><tr><th>#</th><th>Date / time</th><th>User</th><th>Action</th><th>Record</th><th>Field</th><th>Old</th><th>New</th><th>Reason</th></tr></thead><tbody>
-      ${rows.map(a => `<tr><td class="mono small">${a.id}</td><td class="mono small">${dmyt(a.ts)}</td><td>${esc(a.username)}</td><td>${esc(a.action)}</td><td class="mono small">${a.record_id ? `<a href="#/r/${a.record_id}">${esc(a.record_number)}</a>` : ''}</td><td>${esc(a.field || '')}</td><td>${esc((a.old_value || '').slice(0, 80))}</td><td>${esc((a.new_value || '').slice(0, 80))}</td><td>${esc(a.reason || '')}</td></tr>`).join('')}</tbody></table></div>`;
-  };
-  $('#aq').addEventListener('submit', (e) => { e.preventDefault(); load(e.target.q.value); });
+  if (!auditAccess()) return shell('audit', NO_AUDIT_ACCESS);
+  const f = Object.fromEntries(AUDIT_FILTERS.map(([k]) => [k, QS.get(k) || '']));
+  shell('audit', `<div class="spread"><div><h1>Audit trail</h1><p class="muted">System-wide, append-only and hash-chained: entries cannot be edited or deleted. Times in ${esc(tz)}. Visible to QA and administrators only.</p></div>
+    <div class="row no-print"><button class="btn" id="av">Verify integrity</button><button class="btn" id="ax">Export CSV</button><button class="btn" id="ap">Print report</button></div></div>
+    <form id="aq" class="panel no-print" style="margin-bottom:.8rem"><div class="grid audit-filters">
+      <div><label class="f">From</label><input type="date" name="from" value="${esc(f.from)}"></div>
+      <div><label class="f">To</label><input type="date" name="to" value="${esc(f.to)}"></div>
+      <div><label class="f">User</label><select name="user"><option value="">All users</option>${USERS.map(u => `<option value="${esc(u.username)}" ${u.username === f.user ? 'selected' : ''}>${esc(u.fullname)}</option>`).join('')}</select></div>
+      <div><label class="f">Module</label><select name="type"><option value="">All modules</option>${Object.entries(MODS).filter(([, m]) => canSeeModule(m)).map(([k, m]) => `<option value="${k}" ${k === f.type ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}<option value="system" ${f.type === 'system' ? 'selected' : ''}>System events (sign-ins, users)</option></select></div>
+      <div><label class="f">Record no.</label><input type="text" name="record" value="${esc(f.record)}" placeholder="e.g. JRS-DEVN-2026-001"></div>
+      <div><label class="f">Action</label><input type="text" name="action" value="${esc(f.action)}" placeholder="e.g. Field changed, Login failed"></div>
+      <div class="full"><label class="f">Text anywhere (user, value, reason)</label><input type="search" name="q" value="${esc(f.q)}"></div></div>
+      <div class="row" style="margin-top:.6rem"><button class="btn primary">Apply filters</button><a class="btn" href="#/audit">Clear</a></div></form>
+    <div id="al"></div>`);
+  const rows = await api('GET', '/api/audit?limit=2000&' + new URLSearchParams(Object.entries(f).filter(([, v]) => v)).toString());
+  const view = rows.map(a => ({ ...a, module: recordLabel(a), fieldName: fieldLabel(a.record_type, a.field), oldV: String(auditValue(a.record_type, a.field, a.old_value) ?? ''), newV: String(auditValue(a.record_type, a.field, a.new_value) ?? '') }));
+  $('#al').innerHTML = `<p class="small muted">${view.length} entr${view.length === 1 ? 'y' : 'ies'}${view.length === 2000 ? ' (latest 2,000 – narrow the filters to see older entries)' : ''} · ${esc(filterText(f))}</p>
+    <div class="table-wrap"><table class="t audit-table"><thead><tr><th>#</th><th>Date / time</th><th>User</th><th>Action</th><th>Record</th><th>Field</th><th>Old value</th><th>New value</th><th>Reason</th></tr></thead><tbody>
+    ${view.map(a => `<tr><td class="mono small">${a.id}</td><td class="mono small">${dmyt(a.ts)}</td><td>${esc(a.fullname || a.username)}<br><span class="small muted mono">${esc(a.username || '')}</span></td><td>${esc(a.action)}</td>
+      <td>${a.record_id ? `<a class="mono small" href="#/r/${a.record_id}">${esc(a.record_number)}</a><br><span class="small muted">${esc(a.module)}</span>` : '<span class="small muted">System</span>'}</td>
+      <td>${esc(a.fieldName)}</td><td class="small">${esc(a.oldV.slice(0, 160))}</td><td class="small">${esc(a.newV.slice(0, 160))}</td><td class="small">${esc(a.reason || '')}</td></tr>`).join('') || '<tr><td colspan="9" class="muted">No entries match.</td></tr>'}</tbody></table></div>`;
+  $('#aq').addEventListener('submit', (e) => { e.preventDefault(); const p = new URLSearchParams([...new FormData(e.target)].filter(([, v]) => v)); location.hash = '#/audit' + (p.toString() ? '?' + p : ''); });
   $('#av').addEventListener('click', async () => { const r = await api('GET', '/api/audit/verify'); modal({ title: 'Audit trail integrity', cancel: '', ok: 'Close', html: r.ok ? `<p><span class="pill done">Intact</span> ${r.checked} entries verified. The hash chain is unbroken.</p>` : `<p><span class="pill bad">Broken</span> Chain fails at entry #${r.brokenAt}. Escalate to QA and IT as a data-integrity incident.</p>` }); });
-  $('#ax').addEventListener('click', () => download(`audit_trail_${today()}.csv`, toCsv([['ID', 'Timestamp (UTC)', 'User', 'Name', 'Action', 'Record', 'Field', 'Old value', 'New value', 'Reason', 'IP', 'Hash'], ...rows.map(a => [a.id, a.ts, a.username, a.fullname, a.action, a.record_number, a.field, a.old_value, a.new_value, a.reason, a.ip, a.hash])])));
-  await load();
+  $('#ax').addEventListener('click', () => {
+    api('POST', '/api/audit/report', { kind: 'csv', filters: filterText(f) }).catch(() => {});
+    download(`audit_trail_${today()}.csv`, toCsv([['ID', 'Date / time (UTC)', 'User ID', 'Name', 'Action', 'Record', 'Module', 'Field', 'Old value', 'New value', 'Reason', 'IP', 'Hash'],
+      ...view.map(a => [a.id, a.ts, a.username, a.fullname, a.action, a.record_number, a.module, a.fieldName, a.oldV, a.newV, a.reason, a.ip, a.hash])]));
+  });
+  $('#ap').addEventListener('click', async () => {
+    const w = window.open('', '_blank'); if (!w) return toast('Allow pop-ups to print.');
+    const chain = await api('GET', '/api/audit/verify');
+    api('POST', '/api/audit/report', { kind: 'print', filters: filterText(f) }).catch(() => {});
+    w.document.write(`<!doctype html><title>Audit trail report</title><style>body{font:9.5pt Arial,sans-serif;margin:12mm}h1{font-size:14pt;margin:0}table{border-collapse:collapse;width:100%;margin-top:4mm}td,th{border:1px solid #999;padding:2px 4px;text-align:left;vertical-align:top}th{background:#eee}thead{display:table-header-group}.meta{margin:2mm 0;color:#333}</style>
+      <h1>Audit trail report – ${esc(HEALTH.org || '')}</h1>
+      <div class="meta">Filters: ${esc(filterText(f))}<br>Entries: ${view.length} · Integrity: ${chain.ok ? `intact (${chain.checked} entries verified)` : `BROKEN at entry #${chain.brokenAt}`}<br>Printed ${dmyt(new Date().toISOString())} ${esc(tz)} by ${esc(ME.fullname)}</div>
+      <table><thead><tr><th>#</th><th>Date / time</th><th>User</th><th>Action</th><th>Record</th><th>Field</th><th>Old</th><th>New</th><th>Reason</th></tr></thead><tbody>
+      ${view.map(a => `<tr><td>${a.id}</td><td>${dmyt(a.ts)}</td><td>${esc(a.fullname || a.username)}</td><td>${esc(a.action)}</td><td>${esc(a.record_number || 'System')}</td><td>${esc(a.fieldName)}</td><td>${esc(a.oldV)}</td><td>${esc(a.newV)}</td><td>${esc(a.reason || '')}</td></tr>`).join('')}</tbody></table>`);
+    w.document.close(); w.focus(); w.print();
+  });
+}
+
+// ---------- record history: every change grouped by save, saved versions and comparison (QA and admin) ----------
+async function historyView(id) {
+  if (!auditAccess()) return shell('', NO_AUDIT_ACCESS);
+  const [det, vh] = await Promise.all([api('GET', '/api/records/' + id), api('GET', `/api/records/${id}/versions`)]);
+  const rec = det.record, m = MODS[rec.type];
+  const groups = [];
+  for (const a of det.audit.slice().reverse()) { // oldest first, then shown newest first
+    const key = `${a.username}|${a.ts.slice(0, 19)}|${a.reason || ''}`, last = groups[groups.length - 1];
+    if (last && last.key === key) last.items.push(a); else groups.push({ key, ts: a.ts, user: a.fullname || a.username, reason: a.reason, items: [a] });
+  }
+  groups.reverse();
+  shell(rec.type, `<div class="spread"><div><p class="muted small"><a href="#/r/${rec.id}">${esc(rec.number)}</a> · ${esc(m.name)}</p><h1>History of <span class="mono">${esc(rec.number)}</span></h1>
+    <p class="muted">${esc(rec.data.title || '')} · Times in ${esc(tz)} · Visible to QA and administrators only.</p></div><a class="btn" href="#/r/${rec.id}">Back to record</a></div>
+    ${vh.docVersions.length ? `<div class="panel"><h3>Document versions</h3><div class="table-wrap"><table class="t"><thead><tr><th>Version</th><th>Status</th><th>Revision type</th><th>Change control</th><th>Approved</th><th>Effective</th><th>Superseded</th><th>Reason / summary</th></tr></thead><tbody>
+      ${vh.docVersions.map(v => `<tr class="click" data-go="#/history/${v.id}"><td class="mono">${esc(v.version)}</td><td>${pill(v.status)}</td><td>${esc(v.revisionType || '')}</td><td class="mono small">${esc(v.changeControl || '')}</td><td>${dmy(v.approvedOn)}</td><td>${dmy(v.effectiveDate)}</td><td>${dmy(v.supersededOn)}</td><td class="small">${esc(v.summary || '')}</td></tr>`).join('')}</tbody></table></div></div>` : ''}
+    <div class="panel"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Saved versions</h3><button class="btn" id="cmp">Compare selected</button></div>
+      <p class="small muted">A read-only copy of the record is kept each time its content, status or number changes. Tick two versions to compare them.</p>
+      <div class="table-wrap"><table class="t"><thead><tr><th></th><th>Version</th><th>Saved</th><th>By</th><th>Status</th><th>Number</th><th>Reason</th><th></th></tr></thead><tbody>
+      ${vh.versions.map(v => `<tr><td><input type="checkbox" data-v="${v.no}" aria-label="Select version ${v.no}"></td><td class="mono">${v.no}</td><td class="small">${dmyt(v.ts)}</td><td>${esc(v.fullname || v.username)}</td><td>${pill(v.status)}</td><td class="mono small">${esc(v.number || '')}</td><td class="small">${esc(v.reason || '')}</td><td><button class="btn" data-view="${v.no}">View</button></td></tr>`).join('')}</tbody></table></div>
+      <div id="vcmp"></div></div>
+    <div class="panel"><h3>Change history</h3><p class="small muted">${det.audit.length} audit trail entries, grouped by save.</p>
+      ${groups.map(g => `<div class="hist-group"><div class="hist-head"><b>${dmyt(g.ts)}</b> · ${esc(g.user)}${g.reason ? ` · <span class="muted">Reason: ${esc(g.reason)}</span>` : ''}</div>
+        <table class="t"><tbody>${g.items.map(a => `<tr><td style="width:24%">${esc(a.action)}</td><td style="width:22%">${esc(fieldLabel(rec.type, a.field))}</td><td class="small"><del>${esc(String(auditValue(rec.type, a.field, a.old_value) ?? '').slice(0, 300))}</del></td><td class="small"><ins>${esc(String(auditValue(rec.type, a.field, a.new_value) ?? '').slice(0, 300))}</ins></td></tr>`).join('')}</tbody></table></div>`).join('')}</div>`);
+  bindRows();
+  const getV = (no) => api('GET', `/api/records/${id}/versions/${no}`);
+  const shown = (f, v) => f.type === 'user' ? userName(v) : f.fmt === 'date' || f.type === 'date' ? dmy(v) : String(plain(f, v) ?? '');
+  $$('[data-view]').forEach(b => b.addEventListener('click', async () => {
+    const v = await getV(b.dataset.view);
+    modal({ title: `${rec.number} – version ${v.no}`, wide: true, cancel: '', ok: 'Close', html: `<p class="small muted">Saved ${dmyt(v.ts)} by ${esc(v.fullname || v.username)} · Status ${esc(v.status)}</p>
+      <div class="table-wrap" style="max-height:60vh"><table class="t"><tbody>${dataFields(m).map(f => `<tr><th style="width:35%">${esc(f.label)}</th><td style="white-space:pre-wrap">${esc(shown(f, v.data[f.k]))}</td></tr>`).join('')}</tbody></table></div>` });
+  }));
+  $('#cmp').addEventListener('click', async () => {
+    const sel = $$('[data-v]:checked').map(x => +x.dataset.v).sort((x, y) => x - y);
+    if (sel.length !== 2) return toast('Tick exactly two versions to compare.');
+    const [a, b] = await Promise.all(sel.map(getV));
+    const rows = [['Status', a.status, b.status], ['Number', a.number, b.number], ...dataFields(m).map(f => [f.label, shown(f, a.data[f.k]), shown(f, b.data[f.k])])].filter(([, x, y]) => String(x ?? '') !== String(y ?? ''));
+    $('#vcmp').innerHTML = `<h4 style="margin-top:1rem">Version ${a.no} → version ${b.no}: ${rows.length} difference${rows.length === 1 ? '' : 's'}</h4>
+      <div class="table-wrap"><table class="t"><thead><tr><th>Field</th><th>Version ${a.no} (${dmyt(a.ts)})</th><th>Version ${b.no} (${dmyt(b.ts)})</th></tr></thead><tbody>
+      ${rows.map(([l, x, y]) => `<tr><td>${esc(l)}</td><td class="small" style="white-space:pre-wrap"><del>${esc(String(x ?? ''))}</del></td><td class="small" style="white-space:pre-wrap"><ins>${esc(String(y ?? ''))}</ins></td></tr>`).join('') || '<tr><td colspan="3" class="muted">No differences.</td></tr>'}</tbody></table></div>`;
+  });
+}
+
+// audit trail review: the summary compiled from the audit trail when the review started
+function atrPanel(rec) {
+  const s = rec.data.summary;
+  if (!s) { $('#special').innerHTML = '<div class="panel"><h3>Audit trail summary</h3><p class="muted">Compiled when the review starts.</p></div>'; return; }
+  const tbl = (head, rows) => `<div class="table-wrap" style="margin-bottom:.8rem"><table class="t"><thead><tr>${head.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+  const link = `#/audit?from=${s.period.from}&to=${s.period.to}`;
+  $('#special').innerHTML = `<div class="panel"><div class="spread"><h3 style="margin:0">Audit trail summary ${dmy(s.period.from)} – ${dmy(s.period.to)}</h3><a class="btn" href="${link}">Open the audit trail for this period</a></div>
+    <p class="small muted">Compiled ${dmyt(s.generatedAt)} · Scope: ${esc(s.scope.map(k => MODS[k] ? MODS[k].name : k === 'system' ? 'System events' : k).join(', '))}</p>
+    <div class="kpis"><div class="kpi"><b>${s.total}</b>Audit trail entries</div><div class="kpi"><b>${s.records}</b>Records touched</div><div class="kpi ${s.chain.ok ? 'ok' : 'alert'}"><b>${s.chain.ok ? 'Intact' : 'BROKEN'}</b>Hash chain (${s.chain.checked} entries)</div></div>
+    <h4>Events to look at first</h4>${tbl(['Event', 'Count'], s.flags)}
+    <div class="two"><div><h4>By user</h4>${tbl(['User', 'Entries'], s.byUser)}</div><div><h4>By action</h4>${tbl(['Action', 'Entries'], s.byAction)}</div></div></div>`;
 }
 
 // ---------- register of signatures (JRS/SOP/QAS/009) ----------

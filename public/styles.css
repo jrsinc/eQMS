@@ -179,3 +179,10 @@ table.t tr.click:hover td { background: var(--surface-2); }
   .print-only { display: block !important; }
 }
 .print-only { display: none; }
+/* audit trail and record history */
+.audit-filters { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 760px) { .audit-filters { grid-template-columns: minmax(0, 1fr); } }
+table.audit-table td { font-size: .86rem; }
+.hist-group { margin-top: .9rem; }
+.hist-head { padding: .35rem .6rem; background: var(--surface-2); border: 1px solid var(--line-2); border-bottom: 0; border-radius: var(--radius-s) var(--radius-s) 0 0; font-size: .9rem; }
+.hist-group table.t td { font-size: .86rem; }
