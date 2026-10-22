@@ -58,9 +58,11 @@ await cs.call('PUT',`/api/records/${pk.id}`,{data:{returned:1},reason:'found 1 l
 ok((await cs.sig(pk.id,'Reconciled')).ok,'balanced reconciliation');
 ok((await qa.sig(pk.id,'QP Certified')).ok,'QP certified');
 // customer sanctions
-let cu=await qa.call('POST','/api/records',{type:'customers',data:{title:'Pharma Wholesale Ltd',customerType:'Wholesaler',licenceNo:'WDA(H) 1234',verifiedIn:'MHRA register'}});
+let cu=await op.call('POST','/api/records',{type:'customers',data:{title:'Pharma Wholesale Ltd',customerType:'Wholesaler / distributor',country:'United Kingdom',requestReason:'Comparator supply'}});
+await qa.call('PUT',`/api/records/${cu.id}`,{data:{licenceNo:'WDA(H) 1234',issuingAuthority:'MHRA',licenceExpiry:'2099-01-01',verifiedIn:'MHRA register',notes:'Checked'},reason:'QA review'});
 const rp=await login('rp1');
-ok((await rp.sig(cu.id,'Qualified')).s===400,'qualification blocked without sanctions clear');
+ok((await rp.sig(cu.id,'Qualified')).s===403,'only QA qualifies customers');
+ok((await qa.sig(cu.id,'Qualified')).s===400,'qualification blocked without sanctions clear');
 // audit trail
 let v=await qa.call('GET','/api/audit/verify');ok(v.ok,'audit chain intact, entries '+v.checked);
 let det=await qa.call('GET',`/api/records/${rn.id}`);ok(det.signatures.length===2,'randomization signatures '+det.signatures.length);

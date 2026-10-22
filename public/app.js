@@ -338,7 +338,7 @@ function listView(type) {
   const rows = ALL.filter(r => r.type === type);
   const canCreate = !m.noCreate && (type !== 'randomization' || hasRole(['unblinded'])) && !ME.roles.every(r => r === 'extaud');
   shell(type, `<div class="spread"><div><h1>${esc(m.name)}</h1><p class="muted">${esc(m.intro)}</p></div>
-    <div class="row">${canCreate ? `<a class="btn primary" href="#/new/${type}">New ${esc(singular(m))}</a>` : ''}<button class="btn" id="exp">Export CSV</button></div></div>
+    <div class="row">${canCreate ? `<a class="btn primary" href="#/new/${type}">${type === 'customers' ? 'Request customer qualification' : 'New ' + esc(singular(m))}</a>` : ''}${m.issueForm ? `<a class="btn" href="/api/forms/${type}" download title="Fillable PDF with an issue stamp; every issue is numbered and logged">Download ${esc(m.issueForm.label)}</a>` : ''}<button class="btn" id="exp">Export CSV</button></div></div>
     ${type === 'extensions' ? extensionKpis(rows) : ''}<div class="row no-print" style="margin-bottom:.8rem"><input type="search" id="flt" placeholder="Filter" style="max-width:280px">
     <select id="st" style="max-width:220px"><option value="">All statuses</option>${m.states.map(s => `<option>${esc(s)}</option>`).join('')}</select>
     <label class="small"><input type="checkbox" id="od"> Overdue only</label></div><div id="lt"></div>`);
@@ -438,9 +438,9 @@ function liveCompute(root, m, base = {}) {
 }
 function newView(type) {
   const m = MODS[type]; if (!m || !canSeeModule(m)) return dashboard();
-  shell(type, `<div class="spread"><div><h1>New ${esc(singular(m))}</h1><p class="muted">${m.createHelp ? esc(m.createHelp) : m.tempNumbering ? 'Your request goes to QA with a request number. When QA approves it the record number is assigned automatically; QA may also ask you to update the request, or reject it.' + (m.deptScoped ? ' The responsible department is the department of the responsible person.' : '') : 'The record number is assigned when you save.'} Fields marked * are required.</p></div></div>
+  shell(type, `<div class="spread"><div><h1>${esc(m.createTitle || 'New ' + singular(m))}</h1><p class="muted">${m.createHelp ? esc(m.createHelp) : m.tempNumbering ? 'Your request goes to QA with a request number. When QA approves it the record number is assigned automatically; QA may also ask you to update the request, or reject it.' + (m.deptScoped ? ' The responsible department is the department of the responsible person.' : '') : 'The record number is assigned when you save.'} Fields marked * are required.</p></div></div>
    <form id="nf" class="panel"><div class="grid">${createFields(m).filter(f => f.type !== 'readonly').map(f => fieldHtml(f, undefined, false)).join('')}</div>
-   ${m.tempNumbering ? '<div style="margin-top:1rem"><label class="f" for="natt">Attachments (optional)</label><input type="file" id="natt" multiple></div>' : ''}
+   ${m.tempNumbering || m.attachOnRequestOnly ? `<div style="margin-top:1rem"><label class="f" for="natt">Attachments${m.attachOnRequestOnly ? ' – attach the completed form and licence copies now; after the request only QA can add documents' : ' (optional)'}</label><input type="file" id="natt" multiple></div>` : ''}
    <div class="error" style="margin-top:1rem"></div><div class="row"><button class="btn primary">${m.createLabel ? esc(m.createLabel) : m.tempNumbering ? 'Submit request to QA' : 'Save record'}</button><a class="btn" href="#/m/${type}">Cancel</a></div></form>`);
   const form = $('#nf');
   if (type === 'investigations') { const o = $('[name=dateIdentified]', form); if (o) o.value = today(); }
@@ -449,8 +449,8 @@ function newView(type) {
     e.preventDefault();
     try {
       const files = [...($('#natt', form)?.files || [])]; if (files.some(f => f.size > 25 * 1024 * 1024)) throw new Error('Maximum file size is 25 MB in this build.');
-      const rec = await api('POST', '/api/records', { type, data: readForm(form, m) });
-      for (const f of files) await uploadFile(rec.id, f);
+      const attachments = await Promise.all(files.map(async f => ({ name: f.name, mime: f.type, base64: await fileB64(f) })));
+      const rec = await api('POST', '/api/records', { type, data: readForm(form, m), attachments });
       toast(`${rec.number} created${files.length ? ` with ${files.length} attachment(s)` : ''}`); location.hash = '#/r/' + rec.id;
     }
     catch (x) { $('.error', form).textContent = x.message; markMissing(form, x.missing); }
@@ -545,7 +545,7 @@ async function detailView(id) {
     <div class="record"><div>
       <div class="panel no-print"><h3>Next steps</h3><div class="row">
         ${trans.length ? trans.map((t, i) => `<button class="btn ${t.sign ? 'primary sign' : ''}" data-act="tr" data-i="${i}" ${t.allowed ? '' : 'disabled title="Your roles do not permit this step"'}>${esc(t.label)}</button>`).join('') : extraBtns.length ? '' : '<span class="muted">No workflow steps available from this status.</span>'}
-        ${extraBtns.join('')}<a class="btn" href="/api/records/${rec.id}/report.pdf" download title="One PDF: every part, signatures, all PDF and image attachments${det.auditAccess ? ', audit trail' : ''}">Download report (PDF)</a><a class="btn" href="/api/records/${rec.id}/report.pdf?inline=1" target="_blank" rel="noopener">Print report</a><a class="btn" href="/api/records/${rec.id}/report" download title="Original attachment files in a ZIP">Files (ZIP)</a></div></div>
+        ${extraBtns.join('')}${m.issueForm ? `<a class="btn" href="/api/forms/${rec.type}?record=${rec.id}" download title="Fillable PDF with an issue stamp">Download form (issued copy)</a>` : ''}<a class="btn" href="/api/records/${rec.id}/report.pdf" download title="One PDF: every part, signatures, all PDF and image attachments${det.auditAccess ? ', audit trail' : ''}">Download report (PDF)</a><a class="btn" href="/api/records/${rec.id}/report.pdf?inline=1" target="_blank" rel="noopener">Print report</a><a class="btn" href="/api/records/${rec.id}/report" download title="Original attachment files in a ZIP">Files (ZIP)</a></div></div>
       <form class="panel" id="rf"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Record details</h3>${det.editable ? '<span class="small muted">Changes need a reason and are recorded in the audit trail.</span>' : '<span class="pill grey">Read-only in this status</span>'}</div>
         <div class="grid">${(() => { let s = null; return m.fields.map(f => {
           if (f.type === 'section') { s = f; return fieldHtml(f) + sectionSignatures(m, f, det.signatures); }
@@ -557,7 +557,7 @@ async function detailView(id) {
         <form id="lk" class="row no-print"><input type="text" name="number" placeholder="Record number, e.g. CAPA/QAS/001/26" list="dl_links" style="max-width:260px" aria-label="Record number to link">
         <datalist id="dl_links">${ALL.filter(r => r.id !== rec.id).slice(0, 300).map(r => `<option value="${esc(r.number)}">${esc(r.data.title || '')}</option>`).join('')}</datalist><button class="btn">Link</button></form></div>
         ${det.links.length ? table(det.links.map(l => ALL.find(r => r.id === l.id) || { ...l, data: { title: l.title } }), ['number', 'module', 'title', 'status']) : '<p class="muted small">No linked records. CAPA, RCA, change controls and extension requests raised from this record are linked automatically.</p>'}</div>
-      <div class="panel"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Attachments</h3>${canWrite && (open || hasRole(['qa'])) ? `<label class="btn no-print">Add file (stage: ${esc(rec.status)})<input type="file" id="att" hidden></label>` : ''}</div>
+      <div class="panel"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Attachments</h3>${canWrite && (open || hasRole(['qa'])) && (!m.attachOnRequestOnly || hasRole(['qa'])) ? `<label class="btn no-print">Add file (stage: ${esc(rec.status)})<input type="file" id="att" hidden></label>` : m.attachOnRequestOnly ? '<span class="small muted">Documents can be added by QA only.</span>' : ''}</div>
         ${attachmentsTable(m, det.attachments)}</div>
     </div><aside class="rail">
       <div class="panel"><h3>Lifecycle</h3><ol class="lifecycle">${m.states.map((s, i) => `<li class="${s === rec.status ? 'now' : i < idx ? 'past' : ''}">${esc(s)}</li>`).join('')}</ol></div>

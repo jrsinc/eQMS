@@ -279,7 +279,7 @@ function readBody(req, limit = 30 * 1024 * 1024) {
 }
 function rowToRecord(r) { return r && { ...r, data: JSON.parse(r.data) }; }
 function getRecord(id) { const r = rowToRecord(db.prepare('SELECT * FROM records WHERE id=? AND deleted=0').get(id)); if (!r) fail(404, 'Record not found'); return r; }
-const contentHash = (rec) => { const { printLog, deptApprovals, stateEnteredAt, ...d } = rec.data; return sha256(JSON.stringify({ id: rec.id, data: d })); };
+const contentHash = (rec) => { const { printLog, deptApprovals, stateEnteredAt, formIssues, ...d } = rec.data; return sha256(JSON.stringify({ id: rec.id, data: d })); };
 // Record numbers: module-specific format from modules.js (e.g. JRS-DEVN-2026-001, CAPA/QAS/001/26), default PREFIX-YYYY-NNNN
 function nextNumber(type, data, format) {
   const mod = MODULES[type], y = new Date().getFullYear(), fn = format || mod.numbering;
@@ -613,6 +613,9 @@ const CHECKS = {
     need(!open.length, 'Optional approvals outstanding: ' + open.join(', ') + '.');
   },
   // change control: responsible person, Head of Department, department report, effectiveness check after its period
+  // customers (JRS/FRM/QAS/010)
+  custLicenceValid: (r) => need(r.data.licenceExpiry >= today(), `The licence expired on ${r.data.licenceExpiry}. Obtain the current licence before qualification.`),
+  custDocuments: (r) => need(db.prepare('SELECT 1 FROM attachments WHERE record_id=? LIMIT 1').get(r.id), 'Attach the completed customer form and the licence copies before qualification.'),
   isRespPerson: (r, u) => { if (r.data.respPerson !== u.username && !allAccess(u)) fail(403, `Only the responsible person (${userLabel(r.data.respPerson)}) can review this step.`); },
   isCcDept: (r, u) => { if (![r.created_by, r.data.respPerson].includes(u.username) && !(u.department && u.department === r.data.respDept) && !allAccess(u)) fail(403, 'Only the initiator, the responsible person or the responsible department can do this step.'); },
   ccHasOptional: (r) => need((r.data.optionalDepts || []).length, 'No other departments are named: use "Approve – QA (pre-approval complete)".'),
@@ -1115,6 +1118,7 @@ route('POST', '/api/records', (ctx) => {
     clean.title = doc.data.title; clean.docVersion = doc.data.version;
     if (!(+clean.copies >= 1 && +clean.copies <= 100)) fail(400, 'Copies must be between 1 and 100.');
   }
+  if (type === 'customers') clean.requesterDept = ctx.user.department || '';
   if (type === 'extensions') {
     const { target, due } = erCheck(clean);
     if (src && src.id !== target.id) fail(400, 'The extension must be requested from the record it extends.');
@@ -1152,6 +1156,7 @@ route('POST', '/api/records', (ctx) => {
   const rec = createRecord(ctx.user, type, clean, ctx.ip);
   notifyStatus(ctx.user, rec, '', rec.status);
   if (src) link(ctx.user, src, rec, ctx.ip);
+  for (const a of (Array.isArray(ctx.body.attachments) ? ctx.body.attachments : []).slice(0, 20)) addAttachment(ctx, rec, a);
   return rec;
 });
 route('PUT', '/api/records/:id', (ctx) => {
@@ -1349,15 +1354,20 @@ route('POST', '/api/records/:id/revise', (ctx) => {
   return rev;
 });
 // Attachments can be added at every stage; each file keeps the stage it was added at. Closed records take files from QA only.
+function addAttachment(ctx, rec, file) {
+  const buf = Buffer.from(String(file.base64 || ''), 'base64'); if (!buf.length) fail(400, 'Empty file');
+  if (buf.length > 25 * 1024 * 1024) fail(413, 'Maximum file size is 25 MB.');
+  const id = uid(), h = crypto.createHash('sha256').update(buf).digest('hex');
+  db.prepare('INSERT INTO attachments (id,record_id,name,mime,size,sha256,blob,uploaded_by,ts,stage) VALUES (?,?,?,?,?,?,?,?,?,?)')
+    .run(id, rec.id, String(file.name || 'file').slice(0, 200), String(file.mime || ''), buf.length, h, buf, ctx.user.username, now(), rec.status);
+  audit(ctx.user, 'Attachment added', rec, 'attachment', null, `${file.name} (stage ${rec.status}; SHA-256 ${h.slice(0, 16)}…)`, file.reason || ctx.body.reason, ctx.ip);
+  return { id, sha256: h };
+}
 route('POST', '/api/records/:id/attachments', (ctx) => {
   const rec = visibleRecord(ctx.user, getRecord(ctx.params.id));
   if (LOCKED.has(rec.status) && !EDITABLE_ALWAYS.has(rec.type) && !hasRole(ctx.user, ['qa'])) fail(409, `Record is ${rec.status}. Only QA can add attachments now.`);
-  const buf = Buffer.from(String(ctx.body.base64 || ''), 'base64'); if (!buf.length) fail(400, 'Empty file');
-  const id = uid(), h = crypto.createHash('sha256').update(buf).digest('hex');
-  db.prepare('INSERT INTO attachments (id,record_id,name,mime,size,sha256,blob,uploaded_by,ts,stage) VALUES (?,?,?,?,?,?,?,?,?,?)')
-    .run(id, rec.id, String(ctx.body.name).slice(0, 200), String(ctx.body.mime || ''), buf.length, h, buf, ctx.user.username, now(), rec.status);
-  audit(ctx.user, 'Attachment added', rec, 'attachment', null, `${ctx.body.name} (stage ${rec.status}; SHA-256 ${h.slice(0, 16)}…)`, ctx.body.reason, ctx.ip);
-  return { id, sha256: h };
+  if (MODULES[rec.type].attachOnRequestOnly && !hasRole(ctx.user, ['qa'])) fail(403, 'Documents are attached with the request. After that only QA can add documents.');
+  return addAttachment(ctx, rec, ctx.body);
 });
 route('GET', '/api/attachments/:id', (ctx) => {
   const a = db.prepare('SELECT * FROM attachments WHERE id=?').get(ctx.params.id); if (!a) fail(404, 'Not found');
@@ -1661,6 +1671,38 @@ ${body}
     ...trail.map(a => [a.id, a.ts, a.username, a.fullname, a.action, a.field, a.old_value, a.new_value, a.reason, a.hash])].map(r => r.map(csvCell).join(',')).join('\r\n') });
   return zipFiles(files);
 }
+// ---------- issued copies of controlled forms (stamp on every page, fields stay fillable) ----------
+const FORMS_DIR = path.join(__dirname, 'forms');
+function nextIssueNo() {
+  const y = new Date().getFullYear(), key = 'formIssue:' + y, cur = +((db.prepare('SELECT value FROM settings WHERE key=?').get(key) || {}).value || 0) + 1;
+  db.prepare('INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, String(cur));
+  return `FI-${y}-${String(cur).padStart(3, '0')}`;
+}
+route('GET', '/api/forms/:type', async (ctx) => {
+  const mod = MODULES[ctx.params.type], cfg = mod && mod.issueForm; if (!cfg) fail(404, 'No controlled form for this module.');
+  if (hiddenFor(ctx.user, ctx.params.type)) fail(404, 'Not found');
+  const rec = ctx.query.get('record') ? visibleRecord(ctx.user, getRecord(ctx.query.get('record'))) : null;
+  if (rec && rec.type !== ctx.params.type) fail(400, 'The record does not belong to this module.');
+  const { PDFDocument, StandardFonts, rgb } = PDFLib;
+  const doc = await PDFDocument.load(fs.readFileSync(path.join(FORMS_DIR, cfg.file)));
+  const F = await doc.embedFont(StandardFonts.HelveticaBold), F2 = await doc.embedFont(StandardFonts.Helvetica);
+  if (rec) { const form = doc.getForm(); for (const [field, k] of Object.entries(cfg.prefill || {})) { try { form.getTextField(field).setText(pdfText(rec.data[k] || '')); } catch { /* field not in this form version */ } } }
+  const no = nextIssueNo(), who = `${ctx.user.fullname}${ctx.user.department ? ' (' + ctx.user.department + ')' : ''}`;
+  const lines = [`ISSUED COPY – ${no}`, `Issued to ${who} on ${tsText(now())}`, rec ? `For ${rec.number} – ${rec.data.title || ''}` : 'Blank form – not valid without the issue number'];
+  const red = rgb(0.75, 0.1, 0.1);
+  for (const p of doc.getPages()) {
+    const { width } = p.getSize(), w = 250, x = width - w - 18, y = 6;
+    p.drawRectangle({ x, y, width: w, height: 34, borderColor: red, borderWidth: 1.2, color: rgb(1, 1, 1), opacity: 0.92, borderOpacity: 1 });
+    lines.forEach((l, i) => p.drawText(pdfText(l).slice(0, 62), { x: x + 6, y: y + 24 - i * 9.5, size: i ? 6.5 : 8, font: i ? F2 : F, color: red }));
+  }
+  doc.setTitle(`${cfg.code} – issued copy ${no}`);
+  const buf = Buffer.from(await doc.save());
+  if (rec) { (rec.data.formIssues ||= []).push({ no, by: ctx.user.username, ts: now() }); saveRecord(rec); }
+  audit(ctx.user, `Controlled form issued (${no})`, rec, null, null, `${cfg.code} issued to ${who}`, null, ctx.ip);
+  const name = `${cfg.code.replace(/\//g, '-')} ${no}.pdf`;
+  return { __raw: buf, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${name}"` } };
+});
+
 // ---------- merged PDF report ----------
 // Standard PDF fonts use the Windows-1252 character set: map the few other characters used in the forms
 const WINANSI = '€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ';
@@ -1890,7 +1932,7 @@ const server = http.createServer(async (req, res) => {
     send(res, e.code || 500, { error: e instanceof HttpError ? e.message : 'Unexpected server error', ...(e instanceof HttpError && e.extra ? e.extra : {}) });
   }
 });
-const STATE_MAP = { investigations: { Initiated: 'Initiation', 'Number Assignment': 'Requested', 'QA Assessment': 'QA Review', 'Pre-Approval': 'QA Review', Evaluation: 'QA Evaluation' }, changes: { 'Number Assignment': 'Draft', Requested: 'Draft', Initiation: 'Draft', 'QA Assessment': 'QA Review', 'Pre-Approval': 'RP Review', 'Pending Closure': 'QA Closure Review' } };
+const STATE_MAP = { customers: { Pending: 'Requested', Blocked: 'On Hold' }, investigations: { Initiated: 'Initiation', 'Number Assignment': 'Requested', 'QA Assessment': 'QA Review', 'Pre-Approval': 'QA Review', Evaluation: 'QA Evaluation' }, changes: { 'Number Assignment': 'Draft', Requested: 'Draft', Initiation: 'Draft', 'QA Assessment': 'QA Review', 'Pre-Approval': 'RP Review', 'Pending Closure': 'QA Closure Review' } };
 for (const [type, map] of Object.entries(STATE_MAP)) for (const r of db.prepare(`SELECT * FROM records WHERE type=? AND status IN (${Object.keys(map).map(() => '?').join(',')})`).all(type, ...Object.keys(map)).map(rowToRecord)) {
   const from = r.status; r.status = map[from]; r.data.stateEnteredAt = now();
   ACTOR = { user: null, reason: 'Workflow updated' }; if (DERIVE[type]) DERIVE[type](r); saveRecord(r);

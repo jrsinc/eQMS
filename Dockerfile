@@ -4,6 +4,7 @@ WORKDIR /app
 COPY package.json server.js ./
 COPY public ./public
 COPY vendor ./vendor
+COPY forms ./forms
 COPY scripts ./scripts
 RUN useradd --system --uid 10001 qms && mkdir -p /data && chown qms /data
 USER qms
