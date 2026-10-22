@@ -6,12 +6,16 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { inflateSync } from 'node:zlib';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const { PDFDocument } = createRequire(import.meta.url)('../vendor/pdf-lib.min.js');
+const PL = createRequire(import.meta.url)('../vendor/pdf-lib.min.js'), { PDFDocument } = PL;
+// rectangles drawn by pdf-lib on a page (x, y, w, h), from its content streams
+const rects=(doc,p)=>{const look=(x)=>x instanceof PL.PDFRef?doc.context.lookup(x):x;const c=look(p.node.get(PL.PDFName.of('Contents')));const parts=c instanceof PL.PDFArray?c.asArray().map(look):[c];
+  return parts.flatMap(s=>{let b=Buffer.from(s.contents);if(String(s.dict.get(PL.PDFName.of('Filter'))||'').includes('Flate'))b=inflateSync(b);return [...b.toString('latin1').matchAll(/1 0 0 1 ([-\d.]+) ([-\d.]+) cm\s+(?:1 0 0 1 0 0 cm\s+)*0 0 m\s+0 ([-\d.]+) l\s+([-\d.]+) [-\d.]+ l/g)].map(m=>[+m[1],+m[2],+m[4],+m[3]]);});};
 const PORT = 26000 + Math.floor(Math.random() * 1000);
 const srv = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], { cwd: root, env: { ...process.env, DATA_DIR: mkdtempSync(join(tmpdir(), 'qms-cu-')), PORT: String(PORT), HOST: '127.0.0.1', SEED_DEMO: 'true', SMTP_HOST: '' }, stdio: 'ignore' });
 const B = 'http://127.0.0.1:' + PORT;
-for (let i = 0; i < 50; i++) { try { await fetch(B + '/api/health'); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
+for (let i = 0; i < 150; i++) { try { await fetch(B + '/api/health'); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
 let failed = 0;
 async function login(u,p='Demo-Pass-2026'){const r=await fetch(B+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});const j=await r.json();if(!r.ok)throw new Error(u+': '+j.error);const c=r.headers.get('set-cookie').split(';')[0];
  const call=async(m,url,b)=>{const r=await fetch(B+url,{method:m,headers:{'Content-Type':'application/json',cookie:c,'X-CSRF-Token':j.csrf},body:b?JSON.stringify(b):undefined});const o=await r.json().catch(()=>({}));return {s:r.status,_arr:Array.isArray(o)?o:null,...(Array.isArray(o)?{}:o)}};
@@ -27,49 +31,51 @@ const file=(name,text)=>({name,mime:'text/plain',base64:Buffer.from(text).toStri
 
 const op=await login('operator1'), pk=await login('packer1'), qa=await login('qa.lead'), qr=await login('qa.reviewer'), rp=await login('rp1');
 
-// ===== request by any department, with documents =====
-ok((await op.call('POST','/api/records',{type:'customers',data:{title:'Pharma Wholesale Ltd'}})).s===400,'business activity, country and reason are required');
-let c=await op.call('POST','/api/records',{type:'customers',data:{title:'Pharma Wholesale Ltd',customerType:'Wholesaler / distributor',country:'United Kingdom',requestReason:'Comparator supply for study ABC-301',licenceNo:'not taken from the requester',notes:'x'},attachments:[file('customer-form.pdf','form'),file('wda-licence.pdf','licence')]});
-ok(/^CUS-\d{4}-001$/.test(c.number)&&c.status==='Requested','customer qualification requested: '+c.number);
-ok(c.data.requesterDept==='OPS'&&!c.data.licenceNo&&!c.data.notes,'only the request fields are taken from the requester; requesting department recorded');
+// ===== request by any department: customer name, ship-to address, licence no., expiry, verification link, review date + documents =====
+ok((await op.call('POST','/api/records',{type:'customers',data:{title:'Pharma Wholesale Ltd'}})).s===400,'ship-to address, licence no. and expiry are required');
+ok((await op.call('POST','/api/records',{type:'customers',data:{title:'X',address:'Y',licenceNo:'Z',licenceExpiry:addD(T,30),licenceLink:'not a link'}})).s===400,'the verification link must be a web address');
+let c=await op.call('POST','/api/records',{type:'customers',data:{title:'Pharma Wholesale Ltd',address:'1 Dock Rd, London',licenceNo:'WDA(H) 1234',licenceExpiry:addD(T,-1),licenceLink:'https://cms.mhra.gov.uk/mhra/wda/1234'},attachments:[file('customer-form.pdf','form'),file('wda-licence.pdf','licence')]});
+ok(/^CUS-\d{4}-001$/.test(c.number)&&c.status==='Under QA Review','customer number generated automatically: '+c.number+', status Under QA Review');
+ok(c.data.requesterDept==='OPS'&&c.data.licenceLink==='https://cms.mhra.gov.uk/mhra/wda/1234','requesting department and licence verification link recorded');
 let g=await op.get(c.id);
-ok(g.attachments.length===2&&g.attachments.every(a=>a.stage==='Requested'),'documents attached with the request');
+ok(g.attachments.length===2&&g.attachments.every(a=>a.stage==='Under QA Review'),'documents attached with the request');
 ok((await pk.get(c.id)).record,'every department can read the customer');
 // ===== after the request: read-only for everyone except QA =====
-ok((await op.put(c.id,{requestReason:'changed'})).s===403,'the requester cannot change the request afterwards');
-ok((await pk.put(c.id,{billTo:'x'})).s===403,'other departments cannot change the customer');
+ok((await op.put(c.id,{address:'changed'})).s===403,'the requester cannot change the request afterwards');
+ok((await pk.put(c.id,{licenceNo:'x'})).s===403,'other departments cannot change the customer');
 ok((await op.call('POST',`/api/records/${c.id}/attachments`,file('late.pdf','late'))).s===403,'the requester cannot add documents after the request');
-ok((await qa.put(c.id,{requestReason:'Comparator supply for studies ABC-301 and ABC-302',billTo:'1 Main St, London',businessType:'Limited liability company',contacts:[{dept:'Quality',person:'J Smith',phone:'+44 20 0000',email:'qa@pwl.test'}]},'Form details')).changes===4,'QA completes and corrects the details');
 ok((await qa.call('POST',`/api/records/${c.id}/attachments`,file('register-check.pdf','check'))).sha256,'QA adds documents');
-// ===== QA review: licence, sanctions, documents =====
+// ===== QA review =====
 ok((await op.sig(c.id,'Qualified')).s===403&&(await rp.sig(c.id,'Qualified')).s===403,'only QA qualifies a customer');
 let q=await qa.sig(c.id,'Qualified');
-ok(q.s===400&&q.missing.length>=4,'qualification needs the licence, issuing authority, validity, register check and QA remarks: '+q.error);
-await qa.put(c.id,{licenceNo:'WDA(H) 1234',issuingAuthority:'MHRA',licenceExpiry:addD(T,-1),verifiedIn:'MHRA register',notes:'Form complete; licence checked'});
-ok((await qa.sig(c.id,'Qualified')).s===400,'sanctions screening must be clear');
-await qa.put(c.id,{sanctions:'Clear'});
+ok(q.s===400&&q.missing.join()==='reviewDate','qualification needs the review date: '+q.error);
+await qa.put(c.id,{reviewDate:addD(T,365)},'Review date set');
 ok((await qa.sig(c.id,'Qualified')).s===400,'an expired licence blocks qualification');
-await qa.put(c.id,{licenceExpiry:addD(T,365)});
+await qa.put(c.id,{licenceExpiry:addD(T,400)},'Current licence received');
 ok((await qa.sig(c.id,'On Hold')).s===400,'putting on hold needs a reason');
 ok((await qa.sig(c.id,'On Hold',{reason:'Waiting for the parent company form'})).ok,'QA puts the customer on hold');
 ok((await qa.sig(c.id,'Qualified')).ok,'QA qualifies the customer');
 ok((await qa.put(c.id,{licenceExpiry:addD(T,700)},'Licence renewed')).changes===1,'QA keeps the licence details up to date');
 ok((await op.put(c.id,{licenceExpiry:addD(T,800)})).s===403,'others cannot change a qualified customer');
 ok((await qa.sig(c.id,'On Hold',{reason:'Licence under review'})).ok,'a qualified customer can be put on hold');
-let c2=await pk.call('POST','/api/records',{type:'customers',data:{title:'Unknown Trader',customerType:'Others',country:'X',requestReason:'Enquiry'}});
+let c2=await pk.call('POST','/api/records',{type:'customers',data:{title:'Unknown Trader',address:'Unknown',licenceNo:'none',licenceExpiry:addD(T,10)}});
+ok(/^CUS-\d{4}-002$/.test(c2.number),'next customer number '+c2.number);
 ok((await qa.sig(c2.id,'Customer rejected')).s===409,'unknown step refused');
 ok((await qa.sig(c2.id,'Rejected',{reason:'No valid licence'})).ok,'QA rejects a customer');
-ok((await qa.put(c2.id,{notes:'x'})).s===409||(await qa.put(c2.id,{notes:'x'})).s===403,'a rejected customer is closed');
+ok([403,409].includes((await qa.put(c2.id,{licenceNo:'x'})).s),'a rejected customer is closed');
 
 // ===== issued copy of the fillable customer form =====
 let f1=await op.raw('/api/forms/customers');
 ok(f1.s===200&&f1.type==='application/pdf'&&/FI-\d{4}-001/.test(f1.disp),'blank form downloaded as issued copy FI-'+Y+'-001');
 let pdf=await PDFDocument.load(f1.buf);
+const stamps=pdf.getPages().map(p=>rects(pdf,p).find(r=>r[2]===250));
+ok(stamps.every(r=>r&&r[1]>=756&&r[1]+r[3]<=792),'issue stamp in the top margin of every page, above the form header and clear of the page number ('+stamps.map(r=>r&&r[1]).join(', ')+')');
 ok(pdf.getForm().getFields().length>=60,'the issued form stays fillable ('+pdf.getForm().getFields().length+' fields)');
 let f2=await op.raw(`/api/forms/customers?record=${c.id}`);
 pdf=await PDFDocument.load(f2.buf);
-ok(/FI-\d{4}-002/.test(f2.disp)&&pdf.getForm().getTextField('NAME OF CUSTOMER COMPANYORGANIZATION').getText()==='Pharma Wholesale Ltd','issued copy for a customer is numbered and pre-filled with the company name');
-ok((await op.raw('/api/forms/vendors')).s===404,'modules without a controlled form have no download');
+const tf=(n)=>pdf.getForm().getTextField(n).getText();
+ok(/FI-\d{4}-002/.test(f2.disp)&&tf('NAME OF CUSTOMER COMPANYORGANIZATION')==='Pharma Wholesale Ltd'&&tf('SHIP TO ADDRESS')==='1 Dock Rd, London'&&tf('LICENSE')==='WDA(H) 1234'&&tf('CUSTOMER ACCOUNT NUMBER')===c.number,'issued copy for a customer is numbered and pre-filled with name, ship-to address, licence and customer number');
+ok((await op.raw('/api/forms/capa')).s===404,'modules without a controlled form have no download');
 let au=await qa.call('GET','/api/audit?action='+encodeURIComponent('Controlled form issued'));
 ok(au._arr.length===2&&au._arr.some(a=>a.record_id===c.id),'every issued copy is in the audit trail');
 g=await qa.get(c.id);ok((g.record.data.formIssues||[]).length===1,'issued copies are listed on the customer');

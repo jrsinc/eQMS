@@ -13,7 +13,7 @@ const tls = require('node:tls');
 const { DatabaseSync } = require('node:sqlite');
 // pdf-lib 1.17.1 (MIT, vendor/pdf-lib.LICENSE.md) – builds the merged PDF report; vendored so the app still installs no npm packages
 const PDFLib = require('./vendor/pdf-lib.min.js');
-const { MODULES, ROLES, DERIVED_ROLES, DEPTS, setDepartments, trainingScore, PASS_MARK, TRAINER_PARAMS, TRAINER_PASS, RETENTION } = require('./public/modules.js');
+const { MODULES, ROLES, DERIVED_ROLES, DEPTS, setDepartments, supRisk, trainingScore, PASS_MARK, TRAINER_PARAMS, TRAINER_PASS, RETENTION } = require('./public/modules.js');
 // change control states from pre-approval onwards (the change may be implemented)
 const CC_APPROVED = ['Optional Approvals', 'Implementation', 'QA Closure Review', 'Closed – EC Pending', 'Closed'];
 
@@ -333,6 +333,7 @@ function sanitize(mod, input) {
       if (v && !byNumber(v, f.refTypes)) fail(400, `${f.label}: no ${f.refTypes.map(t => MODULES[t].name.toLowerCase()).join(' / ')} record with number ${v}.`);
     } else v = v == null ? '' : String(v).slice(0, 20000);
     if (f.type === 'select' && v && !f.options.includes(v)) fail(400, `Invalid value for ${f.label}`);
+    if (f.type === 'url' && v && !/^https?:\/\/[^\s]+$/i.test(v)) fail(400, `${f.label}: enter a web address starting with http:// or https://.`);
     out[f.k] = v;
   }
   return out;
@@ -615,6 +616,32 @@ const CHECKS = {
   // change control: responsible person, Head of Department, department report, effectiveness check after its period
   // customers (JRS/FRM/QAS/010)
   custLicenceValid: (r) => need(r.data.licenceExpiry >= today(), `The licence expired on ${r.data.licenceExpiry}. Obtain the current licence before qualification.`),
+  // suppliers (JRS/SOP/QAS/005): the evaluation required by the risk assessment is complete
+  supEvaluationDone: (r) => {
+    const d = r.data, a = supRisk(d).audit;
+    need(a, 'Complete the risk assessment first.');
+    if (/Certificate/.test(a)) {
+      const c = d.certificates || [];
+      need(c.length, 'Certificate verification: record the certificates received.');
+      const old = c.filter(x => !x.validUntil || x.validUntil < today());
+      need(!old.length, `Certificate verification: ${old.length} certificate(s) without a valid "valid until" date.`);
+      need(!blank(d.certReview), 'Certificate verification: record the QA review of the certificates.');
+    }
+    if (/uestionnaire/.test(a)) {
+      need(d.qReceivedOn && !blank(d.qReview), 'Supplier questionnaire: record when the completed questionnaire was received and the QA verification.');
+      need(db.prepare('SELECT 1 FROM attachments WHERE record_id=? LIMIT 1').get(r.id), 'Supplier questionnaire: attach the completed questionnaire.');
+    }
+    if (/ite audit/.test(a)) {
+      need(d.auditDate && d.leadAuditor && (d.agenda || []).length, 'Site audit: complete the audit plan (date, lead auditor and agenda).');
+      need(d.auditReportDate && !blank(d.auditConclusion), 'Site audit: record the audit report date and the audit conclusion.');
+      const obs = d.observations || [];
+      need(!obs.some(o => o.category === 'Critical'), 'Site audit: a critical observation was cited – the supplier cannot be approved and shall be disqualified (JRS/SOP/QAS/005 §5.5.8.4).');
+      const open = obs.filter(o => o.status !== 'Closed');
+      need(!open.length, `Site audit: ${open.length} observation(s) still open – evaluate the supplier's compliance report first.`);
+      if (obs.length) need(d.complianceReceived, 'Site audit: record when the compliance report was received.');
+    }
+  },
+  custReviewDate: (r) => need(r.data.reviewDate > today(), 'Set the next review date (after today).'),
   custDocuments: (r) => need(db.prepare('SELECT 1 FROM attachments WHERE record_id=? LIMIT 1').get(r.id), 'Attach the completed customer form and the licence copies before qualification.'),
   isRespPerson: (r, u) => { if (r.data.respPerson !== u.username && !allAccess(u)) fail(403, `Only the responsible person (${userLabel(r.data.respPerson)}) can review this step.`); },
   isCcDept: (r, u) => { if (![r.created_by, r.data.respPerson].includes(u.username) && !(u.department && u.department === r.data.respDept) && !allAccess(u)) fail(403, 'Only the initiator, the responsible person or the responsible department can do this step.'); },
@@ -756,6 +783,8 @@ const AFTER = {
   'investigations:Initiation': (u, r, ip) => assignNumber(u, r, ip),
   // the approving Head of Department comes from the organogram when the investigation is submitted
   'investigations:HOD Approval': (u, r, ip) => assignHod(u, r, ip),
+  // approved supplier list: requalification due from the risk assessment frequency
+  'vendors:Approved': (u, r) => { if (!r.data.approvedOn || r.data.requalDate < today()) { r.data.approvedOn = today(); r.data.requalDate = addMonths(today(), supRisk(r.data).months || 12); } },
   'capa:HOD Pre-Approval': (u, r, ip) => assignHod(u, r, ip),
   'capa:HOD Verification': (u, r, ip) => assignHod(u, r, ip),
   'documents:Approved – Training': (u, r, ip) => { r.data.approvedOn = today(); assignDocTraining(u, r, ip); },
@@ -1118,7 +1147,7 @@ route('POST', '/api/records', (ctx) => {
     clean.title = doc.data.title; clean.docVersion = doc.data.version;
     if (!(+clean.copies >= 1 && +clean.copies <= 100)) fail(400, 'Copies must be between 1 and 100.');
   }
-  if (type === 'customers') clean.requesterDept = ctx.user.department || '';
+  if (type === 'customers' || type === 'vendors') clean.requesterDept = ctx.user.department || '';
   if (type === 'extensions') {
     const { target, due } = erCheck(clean);
     if (src && src.id !== target.id) fail(400, 'The extension must be requested from the record it extends.');
@@ -1676,6 +1705,102 @@ ${body}
   return zipFiles(files);
 }
 // ---------- issued copies of controlled forms (stamp on every page, fields stay fillable) ----------
+// JRS/FRM/QAS/004 Vendor qualification checklist v3.0, rebuilt as a fillable PDF from the controlled form
+const SUP_QUESTIONS = [
+  ['General information', ['What is the business structure? (Public limited, private limited, proprietary or partnership, etc.)', 'Is there an organizational chart which accurately represents the organization? Please provide a copy of the organizational structure / matrix.']],
+  ['Training', ['How are the training records handled?', 'Are there personnel curricula (training matrix / plan) established and documented for everyone?', 'Does the training program include new hire training and re-qualification training for personnel?']],
+  ['Quality management', ['Are external contractors / vendors utilized? Are they qualified / approved for use? Is there an SOP that outlines this process?', 'Is there a quality management system available?', 'Is your facility approved by competent authorities and/or licensing authorities? (If yes, provide the regulatory name and details.)', 'Are there copies of certifications / licenses available? Provide a copy of all applicable licenses.', 'Are all required measures in place to ensure security and confidentiality and prevent unauthorized access to records / storage?']],
+  ['Warehouse and storage', ['Are receipt, storage and shipping areas separate or segregated?', 'Do you use computer applications for inventory management?', 'Is the temperature within the storage area monitored? Controlled?', 'Do you have a fire alarm and control system?', 'Do you have a pest control program in place?', 'Do you have a cleaning procedure in place?']],
+  ['Labelling', ['Do you carry out over-labelling / extension date labelling of clinical trial material?', 'Do you print labels in-house?']],
+  ['Comparator sourcing', ['Do you source comparator products from the local market as well as outside your country?', 'Do you provide pedigree?', 'Do you provide CoA or MSDS?']],
+  ['Documentation', ['Does a documentation control system exist and is it functional?', 'Do you have archival procedures? Please mention the records archival period.']]
+];
+const GENERATED_FORMS = {
+  async supplierQuestionnaire() {
+    const { PDFDocument, StandardFonts, rgb } = PDFLib;
+    const doc = await PDFDocument.create(), form = doc.getForm();
+    const F = await doc.embedFont(StandardFonts.Helvetica), FB = await doc.embedFont(StandardFonts.HelveticaBold);
+    let logo = null; try { logo = await doc.embedPng(fs.readFileSync(path.join(PUBLIC, 'logo.png'))); } catch { /* no logo */ }
+    const W = 595.28, H = 841.89, M = 40, line = rgb(0.55, 0.58, 0.62), shade = rgb(0.93, 0.95, 0.98);
+    let page, y, pageNo = 0; const pages = [];
+    const wrap = (s, font, size, width) => { const out = []; let cur = ''; for (const w of pdfText(s).split(/ +/)) { const t = cur ? cur + ' ' + w : w; if (cur && font.widthOfTextAtSize(t, size) > width) { out.push(cur); cur = w; } else cur = t; } if (cur) out.push(cur); return out; };
+    const newPage = () => {
+      page = doc.addPage([W, H]); pages.push(page); pageNo++;
+      if (logo) page.drawImage(logo, { x: M, y: H - M - 34, width: logo.width * 30 / logo.height, height: 30 });
+      const rows = [['FORM NUMBER', 'JRS/FRM/QAS/004'], ['FORM VERSION', '3.0'], ['FORM TITLE', 'VENDOR QUALIFICATION CHECKLIST'], ['RELATED SOP', 'JRS/SOP/QAS/005']];
+      rows.forEach(([k, v], i) => { const yy = H - M - 10 - i * 12; page.drawText(k, { x: 300, y: yy, size: 7.5, font: FB }); page.drawText(v, { x: 390, y: yy, size: 7.5, font: F }); });
+      page.drawLine({ start: { x: M, y: H - M - 50 }, end: { x: W - M, y: H - M - 50 }, thickness: 0.8, color: line });
+      y = H - M - 62;
+    };
+    const ensure = (h) => { if (y - h < M + 20) newPage(); };
+    const text = (s, o = {}) => { for (const l of wrap(s, o.font || F, o.size || 8.5, o.width || W - 2 * M)) { ensure(12); page.drawText(l, { x: o.x || M, y: y - 9, size: o.size || 8.5, font: o.font || F }); y -= 11.5; } };
+    const field = (name, label, h = 16, multi = false) => {
+      ensure(h + 4); page.drawText(pdfText(label), { x: M, y: y - 11, size: 8, font: FB });
+      const tf = form.createTextField(name); if (multi) tf.enableMultiline();
+      tf.addToPage(page, { x: 210, y: y - h, width: W - M - 210, height: h, borderColor: line, borderWidth: 0.6, backgroundColor: rgb(0.97, 0.98, 1), font: F });
+      y -= h + 4;
+    };
+    const yesNo = (name, x) => { const rg = form.createRadioGroup(name); ['Yes', 'No', 'N/A'].forEach((o, i) => { rg.addOptionToPage(o, page, { x: x + i * 38, y: y - 12, width: 9, height: 9, borderColor: line, borderWidth: 0.6 }); page.drawText(o, { x: x + i * 38 + 12, y: y - 11, size: 7.5, font: F }); }); };
+    newPage();
+    text('VENDOR QUALIFICATION QUESTIONNAIRE', { font: FB, size: 12 }); y -= 2;
+    for (const s of ['Complete the following vendor qualification questionnaire.', 'The responses that you forward will be kept in confidence (in line with the fully executed confidentiality agreement).', 'Please mention N/A if the question is not applicable to your organization. Upon completion, return the form with the requested documents to Jupiter Research Services Quality Assurance by the date specified.']) text('• ' + s);
+    y -= 6;
+    field('vendorName', 'NAME OF VENDOR COMPANY / ORGANIZATION'); field('vendorAddress', 'ADDRESS', 30, true); field('vendorServices', 'SERVICES OFFERED / TO BE RENDERED', 30, true);
+    field('contactPerson', 'CONTACT PERSON'); field('contactNo', 'CONTACT NO.'); field('contactEmail', 'E-MAIL ID');
+    field('qaContactPerson', 'QUALITY ASSURANCE EXECUTIVE – CONTACT PERSON'); field('qaContactDetails', 'QUALITY ASSURANCE EXECUTIVE – CONTACT DETAILS');
+    field('returnBy', 'PLEASE RETURN BY (DATE)');
+    let q = 0;
+    for (const [section, qs] of SUP_QUESTIONS) {
+      ensure(40); y -= 6; page.drawRectangle({ x: M, y: y - 15, width: W - 2 * M, height: 15, color: shade }); page.drawText(section.toUpperCase(), { x: M + 4, y: y - 11, size: 8.5, font: FB }); y -= 19;
+      for (const question of qs) {
+        q++; const lines = wrap(`${q}. ${question}`, F, 8, 250), h = Math.max(42, lines.length * 10 + 26);
+        ensure(h + 4);
+        lines.forEach((l, i) => page.drawText(l, { x: M, y: y - 10 - i * 10, size: 8, font: F }));
+        yesNo(`q${q}`, 300);
+        const tf = form.createTextField(`q${q}_remarks`); tf.enableMultiline();
+        tf.addToPage(page, { x: 300, y: y - h + 2, width: W - M - 300, height: h - 20, borderColor: line, borderWidth: 0.6, backgroundColor: rgb(0.97, 0.98, 1), font: F });
+        page.drawLine({ start: { x: M, y: y - h - 1 }, end: { x: W - M, y: y - h - 1 }, thickness: 0.3, color: line });
+        y -= h + 4;
+      }
+    }
+    ensure(40); y -= 6; page.drawRectangle({ x: M, y: y - 15, width: W - 2 * M, height: 15, color: shade }); page.drawText('DOCUMENTS TO BE ATTACHED WITH THIS QUESTIONNAIRE', { x: M + 4, y: y - 11, size: 8.5, font: FB }); y -= 19;
+    for (const [i, d] of ['Regulatory license', 'List of SOPs', 'Organization chart', 'Any other documents'].entries()) { ensure(18); page.drawText(d, { x: M, y: y - 11, size: 8, font: F }); yesNo(`doc${i + 1}`, 300); y -= 17; }
+    field('observations', 'OBSERVATIONS / RECOMMENDATIONS / REMARKS', 40, true);
+    ensure(60); y -= 4; text('By signing below, I confirm that I am an authorized representative of the company and all information provided above is true and correct.', { font: FB, size: 8 });
+    field('signCompany', 'COMPANY NAME'); field('signName', 'COMPLETED BY – NAME'); field('signTitle', 'TITLE'); field('signDate', 'SIGNATURE / DATE', 24);
+    ensure(160); y -= 8; page.drawRectangle({ x: M, y: y - 15, width: W - 2 * M, height: 15, color: shade }); page.drawText('THIS SECTION IS TO BE COMPLETED BY JUPITER RESEARCH SERVICES ONLY', { x: M + 4, y: y - 11, size: 8.5, font: FB }); y -= 19;
+    field('jrsInspection', 'PHYSICAL INSPECTION REQUIRED AT VENDOR FACILITY?'); field('jrsServices', 'SERVICES OF VENDOR TO BE USED'); field('jrsDecision', 'APPROVED / REJECTED / RE-QUALIFICATION'); field('jrsRemarks', 'REMARKS', 24, true);
+    field('jrsEffective', 'EFFECTIVE DATE'); field('jrsCertificate', 'AUDIT CERTIFICATE ISSUANCE DATE'); field('jrsRequal', 'REQUALIFICATION DATE');
+    pages.forEach((p, i) => p.drawText(`Form No.: JRS/FRM/QAS/004 Version 3.0          Page ${i + 1} of ${pages.length}`, { x: M, y: 18, size: 7, font: F, color: rgb(0.35, 0.35, 0.35) }));
+    return doc;
+  }
+};
+// Audit agenda JRS/FRM/QAS/021 from the supplier record (shared with the supplier before the audit)
+route('GET', '/api/records/:id/agenda.pdf', async (ctx) => {
+  const rec = visibleRecord(ctx.user, getRecord(ctx.params.id)), d = rec.data;
+  if (rec.type !== 'vendors') fail(400, 'Audit agendas are prepared for supplier site audits.');
+  if (!d.auditDate || !(d.agenda || []).length) fail(400, 'Enter the audit date and the audit schedule first.');
+  const { PDFDocument, StandardFonts, rgb } = PDFLib;
+  const doc = await PDFDocument.create(), F = await doc.embedFont(StandardFonts.Helvetica), FB = await doc.embedFont(StandardFonts.HelveticaBold);
+  let logo = null; try { logo = await doc.embedPng(fs.readFileSync(path.join(PUBLIC, 'logo.png'))); } catch { /* no logo */ }
+  const W = 595.28, H = 841.89, M = 50, page = doc.addPage([W, H]); let y = H - M;
+  if (logo) page.drawImage(logo, { x: M, y: y - 30, width: logo.width * 30 / logo.height, height: 30 });
+  [['FORM NUMBER', 'JRS/FRM/QAS/021'], ['FORM VERSION', '1.0'], ['FORM TITLE', 'AUDIT AGENDA'], ['RELATED SOP', 'JRS/SOP/QAS/005']].forEach(([k, v], i) => { page.drawText(k, { x: 320, y: y - 6 - i * 12, size: 7.5, font: FB }); page.drawText(v, { x: 410, y: y - 6 - i * 12, size: 7.5, font: F }); });
+  y -= 70;
+  const line = (s, o = {}) => { page.drawText(pdfText(s).slice(0, 110), { x: o.x || M, y, size: o.size || 9.5, font: o.font || F }); y -= o.gap || 15; };
+  line(`Date: ${dmyText(today())}`); line('Dear Team,'); line(`This is the audit agenda for the ${(d.auditCategory || 'supplier audit').toLowerCase()} on ${dmyText(d.auditDate)}.`, { gap: 22 });
+  for (const [k, v] of [['Auditee company', rec.data.title], ['Auditee representative', d.auditeeRep], ['Purpose', d.auditPurpose], ['Audit method / location', [d.auditMethod, d.auditLocation].filter(Boolean).join(' – ')], ['Date of audit', dmyText(d.auditDate)], ['Auditors', [userLabel(d.leadAuditor) + ' (lead auditor)', d.auditTeam].filter(Boolean).join(', ')]]) {
+    page.drawText(k + ':', { x: M, y, size: 9.5, font: FB }); page.drawText(pdfText(v || '–').slice(0, 85), { x: M + 140, y, size: 9.5, font: F }); y -= 16;
+  }
+  y -= 8; line('Audit schedule:', { font: FB });
+  const cols = [['Date', 70], ['Time', 70], ['Activity / area', 230], ['Participants', 125]];
+  let x = M; cols.forEach(([c, w]) => { page.drawRectangle({ x, y: y - 14, width: w, height: 16, color: rgb(0.93, 0.95, 0.98), borderColor: rgb(0.6, 0.6, 0.6), borderWidth: 0.5 }); page.drawText(c, { x: x + 3, y: y - 9, size: 8, font: FB }); x += w; }); y -= 16;
+  for (const r of d.agenda || []) { x = M; [r.date ? dmyText(r.date) : '', r.time, r.activity, r.participants].forEach((v, i) => { page.drawRectangle({ x, y: y - 14, width: cols[i][1], height: 16, borderColor: rgb(0.6, 0.6, 0.6), borderWidth: 0.5 }); page.drawText(pdfText(v || '').slice(0, i === 2 ? 50 : 26), { x: x + 3, y: y - 9, size: 8, font: F }); x += cols[i][1]; }); y -= 16; if (y < 120) break; }
+  y -= 12; line('*This audit agenda can be updated as per the requirement.', { size: 8 });
+  page.drawText(`${rec.number} · prepared by ${ctx.user.fullname} on ${tsText(now())}`, { x: M, y: 30, size: 7, font: F, color: rgb(0.35, 0.35, 0.35) });
+  audit(ctx.user, 'Audit agenda downloaded', rec, null, null, `JRS/FRM/QAS/021 for ${dmyText(d.auditDate)}`, null, ctx.ip);
+  return { __raw: Buffer.from(await doc.save()), headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${safeName(rec.number)} audit agenda.pdf"` } };
+});
 const FORMS_DIR = path.join(__dirname, 'forms');
 function nextIssueNo() {
   const y = new Date().getFullYear(), key = 'formIssue:' + y, cur = +((db.prepare('SELECT value FROM settings WHERE key=?').get(key) || {}).value || 0) + 1;
@@ -1688,16 +1813,17 @@ route('GET', '/api/forms/:type', async (ctx) => {
   const rec = ctx.query.get('record') ? visibleRecord(ctx.user, getRecord(ctx.query.get('record'))) : null;
   if (rec && rec.type !== ctx.params.type) fail(400, 'The record does not belong to this module.');
   const { PDFDocument, StandardFonts, rgb } = PDFLib;
-  const doc = await PDFDocument.load(fs.readFileSync(path.join(FORMS_DIR, cfg.file)));
+  const doc = cfg.generate ? await GENERATED_FORMS[cfg.generate]() : await PDFDocument.load(fs.readFileSync(path.join(FORMS_DIR, cfg.file)));
   const F = await doc.embedFont(StandardFonts.HelveticaBold), F2 = await doc.embedFont(StandardFonts.Helvetica);
-  if (rec) { const form = doc.getForm(); for (const [field, k] of Object.entries(cfg.prefill || {})) { try { form.getTextField(field).setText(pdfText(rec.data[k] || '')); } catch { /* field not in this form version */ } } }
+  if (rec) { const form = doc.getForm(); for (const [field, k] of Object.entries(cfg.prefill || {})) { try { form.getTextField(field).setText(pdfText(k === '#number' ? rec.number : rec.data[k] || '')); } catch { /* field not in this form version */ } } }
   const no = nextIssueNo(), who = `${ctx.user.fullname}${ctx.user.department ? ' (' + ctx.user.department + ')' : ''}`;
   const lines = [`ISSUED COPY – ${no}`, `Issued to ${who} on ${tsText(now())}`, rec ? `For ${rec.number} – ${rec.data.title || ''}` : 'Blank form – not valid without the issue number'];
   const red = rgb(0.75, 0.1, 0.1);
   for (const p of doc.getPages()) {
-    const { width } = p.getSize(), w = 250, x = width - w - 18, y = 6;
-    p.drawRectangle({ x, y, width: w, height: 34, borderColor: red, borderWidth: 1.2, color: rgb(1, 1, 1), opacity: 0.92, borderOpacity: 1 });
-    lines.forEach((l, i) => p.drawText(pdfText(l).slice(0, 62), { x: x + 6, y: y + 24 - i * 9.5, size: i ? 6.5 : 8, font: i ? F2 : F, color: red }));
+    // top margin, above the form header: clear of the form, the form number and the page number in the footer
+    const { width, height } = p.getSize(), w = 250, h = 27, x = width - w - 18, y = height - h - 4;
+    p.drawRectangle({ x, y, width: w, height: h, borderColor: red, borderWidth: 1.1, color: rgb(1, 1, 1), opacity: 0.92, borderOpacity: 1 });
+    lines.forEach((l, i) => p.drawText(pdfText(l).slice(0, 64), { x: x + 6, y: y + h - 9.5 - i * 7.6, size: i ? 6 : 7.5, font: i ? F2 : F, color: red }));
   }
   doc.setTitle(`${cfg.code} – issued copy ${no}`);
   const buf = Buffer.from(await doc.save());
@@ -1785,10 +1911,10 @@ async function reportPdf(user, rec) {
   y -= 2;
   text(`Status: ${rec.status}   ·   Created by ${userLabel(rec.created_by)} on ${tsText(rec.created_at)}   ·   Report by ${user.fullname} on ${tsText(now())}`, { size: 8.5, color: grey });
   if (!final) { ensure(22); y -= 4; page.drawRectangle({ x: M, y: y - 16, width: W - 2 * M, height: 18, color: rgb(1, 0.97, 0.88), borderColor: rgb(0.82, 0.6, 0.13), borderWidth: 0.6 }); page.drawText(pdfText(`Interim report – the record is still in progress (stage "${rec.status}").`), { x: M + 6, y: y - 12, size: 8.5, font: FB, color: rgb(0.5, 0.35, 0) }); y -= 24; }
-  const LW = 170;
+  const LW = 170; let skip = false;
   for (const f of mod.fields) {
-    if (f.type === 'section') { heading(f.label); continue; }
-    if (!f.k) continue;
+    if (f.type === 'section') { skip = !!(f.showIf && !f.showIf(d)); if (!skip) heading(f.label); continue; }
+    if (!f.k || skip) continue; // sections that do not apply (e.g. evaluations the risk assessment does not require)
     const lab = wrap(f.label, F, 8, LW - 8), val = wrap(plainValue(f, d[f.k]), F, 8.8, W - 2 * M - LW).slice(0, 200);
     const hgt = Math.max(lab.length * 10, val.length * 11.2) + 4;
     if (hgt < 700) ensure(hgt);
@@ -1936,7 +2062,7 @@ const server = http.createServer(async (req, res) => {
     send(res, e.code || 500, { error: e instanceof HttpError ? e.message : 'Unexpected server error', ...(e instanceof HttpError && e.extra ? e.extra : {}) });
   }
 });
-const STATE_MAP = { customers: { Pending: 'Requested', Blocked: 'On Hold' }, investigations: { Initiated: 'Initiation', 'Number Assignment': 'Requested', 'QA Assessment': 'QA Review', 'Pre-Approval': 'QA Review', Evaluation: 'QA Evaluation' }, changes: { 'Number Assignment': 'Draft', Requested: 'Draft', Initiation: 'Draft', 'QA Assessment': 'QA Review', 'Pre-Approval': 'RP Review', 'Pending Closure': 'QA Closure Review' } };
+const STATE_MAP = { vendors: { Prospective: 'Under QA Review', 'Under Qualification': 'Evaluation', 'Conditionally Approved': 'Approved' }, customers: { Pending: 'Under QA Review', Requested: 'Under QA Review', Blocked: 'On Hold' }, investigations: { Initiated: 'Initiation', 'Number Assignment': 'Requested', 'QA Assessment': 'QA Review', 'Pre-Approval': 'QA Review', Evaluation: 'QA Evaluation' }, changes: { 'Number Assignment': 'Draft', Requested: 'Draft', Initiation: 'Draft', 'QA Assessment': 'QA Review', 'Pre-Approval': 'RP Review', 'Pending Closure': 'QA Closure Review' } };
 for (const [type, map] of Object.entries(STATE_MAP)) for (const r of db.prepare(`SELECT * FROM records WHERE type=? AND status IN (${Object.keys(map).map(() => '?').join(',')})`).all(type, ...Object.keys(map)).map(rowToRecord)) {
   const from = r.status; r.status = map[from]; r.data.stateEnteredAt = now();
   ACTOR = { user: null, reason: 'Workflow updated' }; if (DERIVE[type]) DERIVE[type](r); saveRecord(r);

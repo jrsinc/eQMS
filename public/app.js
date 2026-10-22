@@ -39,6 +39,8 @@ function dueOf(r) {
   if (r.type === 'extaudits') return ['Report Received', 'Response Prepared'].includes(r.status) ? d.responseDue : '';
   if (r.type === 'documents') return r.status === 'Approved – Training' ? d.effectiveDate : r.status === 'Effective' ? d.nextReview : '';
   if (r.type === 'archives' && r.status === 'Retrieved') { const x = (d.retrievals || []).slice(-1)[0]; return x && x.date ? addWorkingDaysIso(x.date, 7) : ''; }
+  if (r.type === 'customers') return r.status === 'Qualified' ? d.reviewDate : '';
+  if (r.type === 'vendors') return r.status === 'Approved' ? d.requalDate : r.status === 'Evaluation' && d.auditReportDate && !d.complianceReceived ? addDaysIso(d.auditReportDate, 30) : '';
   return { training: d.dueDate, comparators: d.neededBy, risks: d.reviewDate }[r.type];
 }
 const isOverdue = (r) => { const v = dueOf(r); return !!v && !DONE.has(r.status) && v < today(); };
@@ -323,7 +325,7 @@ function table(rows, cols, empty = 'Nothing here.') {
   if (!rows.length) return `<div class="table-wrap"><div class="empty">${esc(empty)}</div></div>`;
   // column headings from the rows' own module when they share one; the short form of the label (before any explanation in brackets)
   const types = [...new Set(rows.map(r => r.type))], pool = types.length === 1 && MODS[types[0]] ? [...MODS[types[0]].fields, ...Object.values(MODS).flatMap(m => m.fields)] : Object.values(MODS).flatMap(m => m.fields);
-  const head = cols.map(c => c === 'module' ? 'Module' : c === 'number' ? 'Number' : c === 'status' ? 'Status' : (pool.find(f => f.k === c) || { label: c }).label.split(' (')[0]);
+  const head = cols.map(c => c === 'module' ? 'Module' : c === 'number' ? (types.length === 1 && MODS[types[0]] && MODS[types[0]].numberLabel) || 'Number' : c === 'status' ? 'Status' : (pool.find(f => f.k === c) || { label: c }).label.split(' (')[0]);
   return `<div class="table-wrap"><table class="t"><thead><tr>${head.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(r => recRow(r, cols)).join('')}</tbody></table></div>`;
 }
 function tasks() { shell('tasks', `<h1>My tasks</h1><p class="muted">Records waiting for an action your roles allow, your training and CAPA actions you own.</p>${table(myTasks(), ['number', 'module', 'title', 'status'], 'No open tasks.')}`); bindRows(); }
@@ -381,6 +383,7 @@ function fieldHtml(f, v, disabled) {
       const hit = v && ALL.find(r => r.number === v && f.refTypes.includes(r.type));
       input = `<input id="${id}" type="text" name="${f.k}" value="${esc(v)}" list="dl_${f.k}" autocomplete="off" ${d}><datalist id="dl_${f.k}">${ALL.filter(r => f.refTypes.includes(r.type)).slice(0, 300).map(r => `<option value="${esc(r.number)}">${esc(r.data.title || '')}</option>`).join('')}</datalist>${hit ? ` <a class="small" href="#/r/${hit.id}">Open ${esc(hit.number)}</a>` : ''}`; break;
     }
+    case 'url': input = `<input id="${id}" type="url" name="${f.k}" value="${esc(v)}" placeholder="https://" ${d}>${/^https?:\/\//i.test(v) ? ` <a class="small" href="${esc(v)}" target="_blank" rel="noopener noreferrer">Open link</a>` : ''}`; break;
     default: input = `<input id="${id}" type="${f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}" name="${f.k}" value="${esc(v)}" ${d}>`;
   }
   return `<div class="${f.full || f.type === 'multicheck' ? 'full' : ''}">${lab}${input}</div>`;
@@ -409,6 +412,8 @@ function readForm(root, m) {
   const out = {};
   for (const f of dataFields(m)) {
     if (f.type === 'computed' || f.type === 'readonly') continue;
+    // fields not on the page (e.g. a hidden section) are not sent, so they keep their saved value
+    if (!$(`[name="${f.k}"], [data-table="${f.k}"], [name^="${f.k}__"]`, root)) continue;
     if (f.type === 'multicheck') out[f.k] = $$(`input[name="${f.k}"]:checked`, root).map(x => x.value);
     else if (f.type === 'checkbox') out[f.k] = !!$(`[name="${f.k}"]`, root)?.checked;
     else if (f.type === 'checklist') out[f.k] = Object.fromEntries(f.rows.map((row, i) => [row, { v: $(`input[name="${f.k}__${i}"]:checked`, root)?.value || '', r: $(`[name="${f.k}__${i}__r"]`, root)?.value || '' }]));
@@ -440,7 +445,7 @@ function newView(type) {
   const m = MODS[type]; if (!m || !canSeeModule(m)) return dashboard();
   shell(type, `<div class="spread"><div><h1>${esc(m.createTitle || 'New ' + singular(m))}</h1><p class="muted">${m.createHelp ? esc(m.createHelp) : m.tempNumbering ? 'Your request goes to QA with a request number. When QA approves it the record number is assigned automatically; QA may also ask you to update the request, or reject it.' + (m.deptScoped ? ' The responsible department is the department of the responsible person.' : '') : 'The record number is assigned when you save.'} Fields marked * are required.</p></div></div>
    <form id="nf" class="panel"><div class="grid">${createFields(m).filter(f => f.type !== 'readonly').map(f => fieldHtml(f, undefined, false)).join('')}</div>
-   ${m.tempNumbering || m.attachOnRequestOnly ? `<div style="margin-top:1rem"><label class="f" for="natt">Attachments${m.attachOnRequestOnly ? ' – attach the completed form and licence copies now; after the request only QA can add documents' : ' (optional)'}</label><input type="file" id="natt" multiple></div>` : ''}
+   ${m.tempNumbering || m.attachOnRequestOnly ? `<div style="margin-top:1rem"><label class="f" for="natt">Attachments${m.attachOnRequestOnly ? ' – ' + esc(m.attachHint || 'attach your documents now; after the request only QA can add documents') : ' (optional)'}</label><input type="file" id="natt" multiple></div>` : ''}
    <div class="error" style="margin-top:1rem"></div><div class="row"><button class="btn primary">${m.createLabel ? esc(m.createLabel) : m.tempNumbering ? 'Submit request to QA' : 'Save record'}</button><a class="btn" href="#/m/${type}">Cancel</a></div></form>`);
   const form = $('#nf');
   if (type === 'investigations') { const o = $('[name=dateIdentified]', form); if (o) o.value = today(); }
@@ -545,10 +550,11 @@ async function detailView(id) {
     <div class="record"><div>
       <div class="panel no-print"><h3>Next steps</h3><div class="row">
         ${trans.length ? trans.map((t, i) => `<button class="btn ${t.sign ? 'primary sign' : ''}" data-act="tr" data-i="${i}" ${t.allowed ? '' : 'disabled title="Your roles do not permit this step"'}>${esc(t.label)}</button>`).join('') : extraBtns.length ? '' : '<span class="muted">No workflow steps available from this status.</span>'}
-        ${extraBtns.join('')}${m.issueForm ? `<a class="btn" href="/api/forms/${rec.type}?record=${rec.id}" download title="Fillable PDF with an issue stamp">Download form (issued copy)</a>` : ''}<a class="btn" href="/api/records/${rec.id}/report.pdf" download title="One PDF: every part, signatures, all PDF and image attachments${det.auditAccess ? ', audit trail' : ''}">Download report (PDF)</a><a class="btn" href="/api/records/${rec.id}/report.pdf?inline=1" target="_blank" rel="noopener">Print report</a><a class="btn" href="/api/records/${rec.id}/report" download title="Original attachment files in a ZIP">Files (ZIP)</a></div></div>
+        ${extraBtns.join('')}${m.issueForm ? `<a class="btn" href="/api/forms/${rec.type}?record=${rec.id}" download title="Fillable PDF with an issue stamp">Download ${esc(m.issueForm.label)} (issued copy)</a>` : ''}${rec.type === 'vendors' && d.auditDate && (d.agenda || []).length ? `<a class="btn" href="/api/records/${rec.id}/agenda.pdf" download>Audit agenda (JRS/FRM/QAS/021)</a>` : ''}<a class="btn" href="/api/records/${rec.id}/report.pdf" download title="One PDF: every part, signatures, all PDF and image attachments${det.auditAccess ? ', audit trail' : ''}">Download report (PDF)</a><a class="btn" href="/api/records/${rec.id}/report.pdf?inline=1" target="_blank" rel="noopener">Print report</a><a class="btn" href="/api/records/${rec.id}/report" download title="Original attachment files in a ZIP">Files (ZIP)</a></div></div>
       <form class="panel" id="rf"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Record details</h3>${det.editable ? '<span class="small muted">Changes need a reason and are recorded in the audit trail.</span>' : '<span class="pill grey">Read-only in this status</span>'}</div>
         <div class="grid">${(() => { let s = null; return m.fields.map(f => {
-          if (f.type === 'section') { s = f; return fieldHtml(f) + sectionSignatures(m, f, det.signatures); }
+          if (f.type === 'section') { s = f; if (f.showIf && !f.showIf(d)) return ''; return fieldHtml(f) + sectionSignatures(m, f, det.signatures); }
+          if (s && s.showIf && !s.showIf(d)) return '';
           return fieldHtml(f, d[f.k], !det.editable || !!f.lock || !canEditSection(s, rec));
         }).join(''); })()}</div>
         ${det.editable ? '<div class="error" style="margin-top:.8rem"></div><button class="btn primary">Save changes</button>' : ''}</form>

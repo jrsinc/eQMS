@@ -85,6 +85,20 @@
     'Mock recall reports': 15, 'Data archived electronically': 15
   };
 
+  // JRS/SOP/QAS/005 Attachment 1 – supplier risk assessment: RPN = severity × occurrence × detection (1–125)
+  const SUP_SEVERITY = { 5: '5 – Catastrophic (API, parenteral excipients, high-risk location)', 4: '4 – High (primary packaging, non-sterile excipients, regulated printed packaging, depot)', 3: '3 – Moderate (logistics, validation, comparator supplier, CSV, specialty courier, shipping system, IRT)', 2: '2 – Low (ancillary material, destruction, pest control, calibration, maintenance, secondary material)', 1: '1 – Negligible (housekeeping, fire safety maintenance, tertiary packing material)' };
+  const SUP_OCCURRENCE = { 5: '5 – Frequent (> 90 %)', 4: '4 – Probable (60–89 %)', 3: '3 – Occasional (25–59 %)', 2: '2 – Remote (10–24 %)', 1: '1 – Unlikely (< 10 %)' };
+  const SUP_DETECTION = { 5: '5 – Very low (no known control to detect the failure)', 4: '4 – Low', 3: '3 – Moderate', 2: '2 – High', 1: '1 – Very high (failure almost certainly detected)' };
+  // risk ranking table of the SOP (products of 1–5 scores fall in these bands)
+  const supRisk = (d) => {
+    const rpn = (+d.severity || 0) * (+d.occurrence || 0) * (+d.detection || 0);
+    if (!rpn) return { rpn: 0, level: '', audit: '', frequency: '', months: 0 };
+    return rpn >= 80 ? { rpn, level: 'Catastrophic', audit: 'Supplier questionnaire and site audit', frequency: 'Every two years', months: 24 }
+      : rpn >= 45 ? { rpn, level: 'High risk', audit: 'Site audit', frequency: 'Every three years', months: 36 }
+      : rpn >= 20 ? { rpn, level: 'Moderate risk', audit: 'Questionnaire based audit', frequency: 'Every five years', months: 60 }
+      : { rpn, level: 'Low risk', audit: 'Certificate verification', frequency: 'Annually or as needed', months: 12 };
+  };
+
   const MODULES = {
     documents: {
       name: 'Documents', single: 'document', group: 'Documents & training', prefix: 'DOC',
@@ -740,33 +754,86 @@
     },
 
     vendors: {
-      name: 'Vendors', group: 'Supply chain', prefix: 'VEN',
-      intro: 'Supplier qualification, licences, risk score and approved supplier list.',
-      list: ['number', 'title', 'category', 'riskLevel', 'licenceExpiry', 'status'],
+      name: 'Suppliers', single: 'supplier', group: 'Supply chain', prefix: 'SUP',
+      intro: 'Supplier qualification per JRS/SOP/QAS/005. Any department requests a supplier qualification; QA completes the supplier risk assessment (JRS/FRM/QAS/042). The risk priority number decides the evaluation: certificate verification, supplier questionnaire (JRS/FRM/QAS/004), site audit (agenda JRS/FRM/QAS/021, report JRS/FRM/QAS/020) or questionnaire and site audit. Approved suppliers form the approved supplier list (JRS/FRM/QAS/005).',
+      numbering: (d, y) => ({ pre: `SUP-${y}-`, pad: 3 }),
+      numberLabel: 'Supplier no.',
+      list: ['number', 'title', 'services', 'riskLevel', 'auditType', 'requalDate', 'status'],
+      attachOnRequestOnly: true,
+      createTitle: 'Request supplier qualification', createLabel: 'Submit request to QA',
+      attachHint: 'attach any documents you already have (company profile, licences, certificates); after the request only QA can add documents',
+      createHelp: 'Any department can request a supplier qualification (JRS/SOP/QAS/005 §5.1). Give the supplier, why it is needed, the sites and services, and the contact details; attach any documents you already have. QA then completes the risk assessment and evaluation.',
+      issueForm: { generate: 'supplierQuestionnaire', code: 'JRS/FRM/QAS/004', label: 'Supplier questionnaire (JRS/FRM/QAS/004)', prefill: { vendorName: 'title', vendorAddress: 'address', vendorServices: 'services', contactPerson: 'contactPerson', contactNo: 'contactPhone', contactEmail: 'contactEmail' } },
       fields: [
-        { k: 'title', label: 'Vendor legal name', type: 'text', req: true, full: true },
-        { k: 'category', label: 'Category', type: 'select', req: true, options: ['API / excipient', 'Primary packaging', 'Secondary packaging components', 'Label stock / printing', 'Comparator source – MAH', 'Comparator source – wholesaler', 'CMO / CPO', 'Testing laboratory', 'Logistics / courier', 'Depot', 'IT / SaaS', 'Calibration / maintenance'] },
-        { k: 'address', label: 'Site address', type: 'textarea', full: true },
-        { k: 'licences', label: 'Licences / certificates (MIA, WDA, GDP, ISO)', type: 'text', full: true },
-        { k: 'licenceExpiry', label: 'Earliest licence / certificate expiry', type: 'date' },
-        { k: 'criticality', label: 'Criticality (1–5)', type: 'number' },
-        { k: 'performance', label: 'Performance risk (1–5)', type: 'number' },
-        { k: 'riskLevel', label: 'Risk level (computed)', type: 'computed' },
-        { k: 'qualMethod', label: 'Qualification method', type: 'select', options: ['Questionnaire', 'Paper audit', 'Remote audit', 'On-site audit'] },
-        { k: 'qaAgreement', label: 'Quality agreement no. / date', type: 'text' },
-        { k: 'requalDate', label: 'Next requalification', type: 'date' },
-        { k: 'notes', label: 'Qualification summary', type: 'textarea', full: true }
+        sec('Supplier qualification request (any department)', { create: true, edit: { 'Under QA Review': ['qa'], Evaluation: ['qa'], Approved: ['qa'], Suspended: ['qa'] } }),
+        { k: 'title', label: 'Supplier name', type: 'text', req: true, full: true },
+        { k: 'reason', label: 'Reason to qualify (new requirement, quality improvement, discontinuation by current supplier, supplier rejection, business continuity …)', type: 'textarea', req: true, full: true },
+        { k: 'sites', label: 'Applicable site(s)', type: 'multicheck', req: true, options: SITES },
+        { k: 'services', label: 'Services / materials provided', type: 'text', req: true, full: true },
+        { k: 'address', label: 'Supplier address', type: 'textarea', req: true, full: true },
+        { k: 'contactPerson', label: 'Contact person', type: 'text', req: true },
+        { k: 'contactPhone', label: 'Contact number', type: 'text' },
+        { k: 'contactEmail', label: 'Contact e-mail', type: 'text', req: true },
+        { k: 'requesterDept', label: 'Requesting department', type: 'readonly', optionLabels: DEPTS },
+        sec('Supplier risk assessment (JRS/FRM/QAS/042) – QA', { part: 'R', edit: { 'Under QA Review': ['qa'] } }),
+        { k: 'severity', label: 'Severity score (A) – criticality of the material / service and impact on product quality', type: 'select', options: ['5', '4', '3', '2', '1'], optionLabels: SUP_SEVERITY },
+        { k: 'occurrence', label: 'Occurrence score (B) – supply history and status of the supplier\'s quality system', type: 'select', options: ['5', '4', '3', '2', '1'], optionLabels: SUP_OCCURRENCE },
+        { k: 'detection', label: 'Detection score (C) – possibility and stage of detecting a quality failure', type: 'select', options: ['5', '4', '3', '2', '1'], optionLabels: SUP_DETECTION },
+        { k: 'rpn', label: 'Risk priority number (RPN = A × B × C)', type: 'computed' },
+        { k: 'riskLevel', label: 'Risk level', type: 'computed' },
+        { k: 'auditType', label: 'Type of evaluation required', type: 'computed' },
+        { k: 'auditFrequency', label: 'Requalification frequency', type: 'computed' },
+        { k: 'riskRemarks', label: 'Risk assessment remarks', type: 'textarea', full: true },
+        sec('Certificate verification (low risk)', { part: 'E', showIf: (d) => /Certificate/.test(d.auditType || ''), edit: { Evaluation: ['qa'] } }),
+        { k: 'certificates', label: 'Certificates received (attach copies)', type: 'table', full: true, cols: [{ k: 'type', label: 'Certificate', options: ['Regulatory accreditation / licence', 'ISO certification', 'GMP / GDP certificate', 'Business registration', 'Other'] }, { k: 'number', label: 'Number' }, { k: 'issuer', label: 'Issued by' }, { k: 'validUntil', label: 'Valid until', type: 'date' }] },
+        { k: 'certReview', label: 'QA review of the certificates', type: 'textarea', full: true },
+        sec('Supplier questionnaire (JRS/FRM/QAS/004)', { part: 'E', showIf: (d) => /uestionnaire/.test(d.auditType || ''), edit: { Evaluation: ['qa'] } }),
+        { k: 'qSentOn', label: 'Questionnaire sent to the supplier on (download the issued copy above)', type: 'date' },
+        { k: 'qReceivedOn', label: 'Completed questionnaire received on (attach it)', type: 'date' },
+        { k: 'qReview', label: 'QA verification of the completed questionnaire', type: 'textarea', full: true },
+        sec('Site audit – agenda and plan (JRS/FRM/QAS/021)', { part: 'E', showIf: (d) => /ite audit/.test(d.auditType || ''), edit: { Evaluation: ['qa'] } }),
+        { k: 'auditCategory', label: 'Audit category', type: 'select', options: ['Prospective supplier audit', 'Planned supplier audit', 'Cause-based supplier audit'] },
+        { k: 'auditMethod', label: 'Audit method', type: 'select', options: ['On-site', 'Virtual / remote'] },
+        { k: 'auditDate', label: 'Audit date (mutually agreed)', type: 'date' },
+        { k: 'auditLocation', label: 'Audit location', type: 'text' },
+        { k: 'leadAuditor', label: 'Lead auditor (qualified auditor, JRS/FRM/QAS/043)', type: 'user' },
+        { k: 'auditTeam', label: 'Audit support team', type: 'text' },
+        { k: 'auditeeRep', label: 'Auditee representative(s)', type: 'text' },
+        { k: 'auditPurpose', label: 'Purpose and scope of the audit', type: 'textarea', full: true },
+        { k: 'agenda', label: 'Audit schedule (agenda)', type: 'table', full: true, cols: [{ k: 'date', label: 'Date', type: 'date' }, { k: 'time', label: 'Time' }, { k: 'activity', label: 'Activity / area' }, { k: 'participants', label: 'Participants' }] },
+        sec('Site audit – report and compliance (JRS/FRM/QAS/020)', { part: 'E', showIf: (d) => /ite audit/.test(d.auditType || ''), edit: { Evaluation: ['qa'] } }),
+        { k: 'observations', label: 'Audit observations', type: 'table', full: true, cols: [{ k: 'system', label: 'System / sub-system' }, { k: 'category', label: 'Category', options: ['Critical', 'Major', 'Minor', 'Recommendation'] }, { k: 'description', label: 'Observation' }, { k: 'response', label: 'Supplier compliance response' }, { k: 'status', label: 'Status', options: ['Open', 'Closed'] }] },
+        { k: 'auditReportDate', label: 'Audit report issued on (within 30 working days of the audit)', type: 'date' },
+        { k: 'responseDue', label: 'Compliance report due (30 calendar days after the report)', type: 'computed' },
+        { k: 'complianceReceived', label: 'Compliance report received on', type: 'date' },
+        { k: 'auditConclusion', label: 'Audit conclusion (auditor recommendation)', type: 'textarea', full: true },
+        sec('QA decision – approved supplier list (JRS/FRM/QAS/005)', { part: 'A', edit: { Evaluation: ['qa'], Approved: ['qa'], Suspended: ['qa'] } }),
+        { k: 'approvedFor', label: 'Supplier approved for (materials / services)', type: 'text', full: true },
+        { k: 'qtaRef', label: 'Quality technical agreement (signed after a successful audit, before commercial procurement)', type: 'text' },
+        { k: 'auditCertDate', label: 'Audit certificate (JRS/FRM/QAS/027) issued on', type: 'date' },
+        { k: 'approvedOn', label: 'Approved on', type: 'readonly', fmt: 'date' },
+        { k: 'requalDate', label: 'Requalification due (from the requalification frequency)', type: 'readonly', fmt: 'date' },
+        { k: 'qaConclusion', label: 'QA conclusion', type: 'textarea', full: true }
       ],
-      compute: { riskLevel: (d) => { const s = (+d.criticality || 0) * (+d.performance || 0); return s ? (s >= 15 ? 'High (' + s + ')' : s >= 8 ? 'Medium (' + s + ')' : 'Low (' + s + ')') : ''; } },
-      states: ['Prospective', 'Under Qualification', 'Approved', 'Conditionally Approved', 'Suspended', 'Disqualified'],
+      compute: {
+        rpn: (d) => supRisk(d).rpn ? String(supRisk(d).rpn) : '',
+        riskLevel: (d) => supRisk(d).level,
+        auditType: (d) => supRisk(d).audit,
+        auditFrequency: (d) => supRisk(d).frequency,
+        responseDue: (d) => d.auditReportDate ? plusDays(d.auditReportDate, 30) : ''
+      },
+      states: ['Under QA Review', 'Evaluation', 'Approved', 'Rejected', 'Suspended', 'Disqualified'],
       transitions: [
-        t('Prospective', 'Under Qualification', 'Start qualification', ['qa', 'rp', 'cs']),
-        t('Under Qualification', 'Approved', 'Approve vendor', ['qa', 'rp'], { sign: 'Approved', sod: true, needs: ['licences', 'qualMethod'] }),
-        t('Under Qualification', 'Conditionally Approved', 'Approve with conditions', ['qa', 'rp'], { sign: 'Approved', reason: true }),
-        t('Conditionally Approved', 'Approved', 'Lift conditions', ['qa', 'rp'], { sign: 'Approved' }),
-        t('Approved', 'Suspended', 'Suspend', ['qa', 'rp'], { sign: 'Approved', reason: true }),
-        t('Suspended', 'Approved', 'Reinstate', ['qa', 'rp'], { sign: 'Approved', reason: true }),
-        t('Suspended', 'Disqualified', 'Disqualify', ['qa'], { sign: 'Approved', reason: true })
+        t('Under QA Review', 'Evaluation', 'Approve risk assessment – start evaluation', ['qa'], { part: 'R', sign: 'Risk assessment approved – QA', needs: ['severity', 'occurrence', 'detection'] }),
+        t('Under QA Review', 'Rejected', 'Reject request', ['qa'], { part: 'R', sign: 'Supplier rejected – QA', reason: true }),
+        t('Evaluation', 'Under QA Review', 'Return to risk assessment', ['qa'], { reason: true }),
+        t('Evaluation', 'Approved', 'Approve supplier', ['qa'], { part: 'A', sign: 'Supplier approved – QA', needs: ['approvedFor', 'qaConclusion'], checks: ['supEvaluationDone'] }),
+        t('Evaluation', 'Rejected', 'Reject supplier', ['qa'], { part: 'A', sign: 'Supplier rejected – QA', reason: true }),
+        t('Approved', 'Suspended', 'Suspend supplier', ['qa'], { part: 'A', sign: 'Supplier suspended – QA', reason: true }),
+        t('Approved', 'Under QA Review', 'Start requalification', ['qa'], { reason: true }),
+        t('Approved', 'Disqualified', 'Disqualify supplier (rejection proposal)', ['qa'], { part: 'A', sign: 'Supplier disqualified – QA', reason: true }),
+        t('Suspended', 'Approved', 'Reinstate supplier', ['qa'], { part: 'A', sign: 'Supplier reinstated – QA', reason: true }),
+        t('Suspended', 'Disqualified', 'Disqualify supplier', ['qa'], { part: 'A', sign: 'Supplier disqualified – QA', reason: true })
       ]
     },
 
@@ -774,62 +841,31 @@
       name: 'Customers', single: 'customer', group: 'Supply chain', prefix: 'CUS',
       intro: 'Customer qualification per JRS/SOP/OPS/010 and form JRS/FRM/QAS/010 (new customer creation form). Any department can request a customer qualification and attach the completed form and licences with the request. QA reviews them and qualifies, rejects or puts the customer on hold; after the request only QA can change the record or add documents.',
       numbering: (d, y) => ({ pre: `CUS-${y}-`, pad: 3 }),
-      list: ['number', 'title', 'customerType', 'country', 'licenceNo', 'licenceExpiry', 'requesterDept', 'status'],
+      list: ['number', 'title', 'licenceNo', 'licenceExpiry', 'reviewDate', 'requesterDept', 'status'],
       // the requester attaches documents with the request only; afterwards only QA adds documents
       attachOnRequestOnly: true,
       createTitle: 'Request customer qualification', createLabel: 'Submit request to QA',
-      createHelp: 'Any department can request a customer qualification. Download the customer form (JRS/FRM/QAS/010) from the Customers list, have the customer complete it, and attach it with the licence copies here. QA reviews the request and qualifies, rejects or puts the customer on hold.',
-      issueForm: { file: 'JRS-FRM-QAS-010 v2.0 New customer creation form.pdf', code: 'JRS/FRM/QAS/010', label: 'New customer creation form (JRS/FRM/QAS/010)', prefill: { 'NAME OF CUSTOMER COMPANYORGANIZATION': 'title' } },
+      attachHint: 'attach the completed customer form and licence copies now; after the request only QA can add documents',
+      createHelp: 'Any department can request a customer qualification. Attach the completed customer form (JRS/FRM/QAS/010, download it from the Customers list) and the licence copy. QA reviews the request and qualifies, rejects or puts the customer on hold.',
+      issueForm: { file: 'JRS-FRM-QAS-010 v2.0 New customer creation form.pdf', code: 'JRS/FRM/QAS/010', label: 'New customer creation form (JRS/FRM/QAS/010)', prefill: { 'NAME OF CUSTOMER COMPANYORGANIZATION': 'title', 'SHIP TO ADDRESS': 'address', 'LICENSE': 'licenceNo', 'CUSTOMER ACCOUNT NUMBER': '#number' } },
+      // customer number CUS-YYYY-NNN, generated when the request is submitted
+      numberLabel: 'Customer no.',
       fields: [
-        sec('Customer qualification request (any department)', { create: true, edit: { Requested: ['qa'], 'On Hold': ['qa'], Qualified: ['qa'] } }),
-        { k: 'title', label: 'Name of customer company / organization', type: 'text', req: true, full: true },
-        { k: 'customerType', label: 'Business activity', type: 'select', req: true, options: ['Pharmaceutical company / R&D', 'Contract research organization (CRO)', 'Contract development & manufacturing organization (CDMO)', 'Wholesaler / distributor', 'Packaging & labeling', '3PL (third party logistics company)', 'Clinical supply management (storage & distribution)', 'Clinical site / hospital / pharmacy', 'Sponsor', 'Others'] },
-        { k: 'country', label: 'Country', type: 'text', req: true },
-        { k: 'requestReason', label: 'Reason for the request / business need (projects, products, shipments)', type: 'textarea', req: true, full: true },
-        { k: 'requesterDept', label: 'Requesting department', type: 'readonly', optionLabels: DEPTS },
-        sec('Company details (form JRS/FRM/QAS/010)', { edit: { Requested: ['qa'], 'On Hold': ['qa'], Qualified: ['qa'] } }),
-        { k: 'billTo', label: 'Bill-to address', type: 'textarea' },
-        { k: 'address', label: 'Ship-to address', type: 'textarea' },
-        { k: 'businessRegNo', label: 'Business registration number', type: 'text' },
-        { k: 'businessType', label: 'Type of business', type: 'select', options: ['Corporation (private limited)', 'Corporation (public limited)', 'Limited liability company', 'Partnership', 'Proprietorship'] },
-        { k: 'taxId', label: 'Tax ID', type: 'text' },
-        { k: 'vatNo', label: 'VAT # / other', type: 'text' },
-        { k: 'subsidiary', label: 'Subsidiary or operated company of another entity?', type: 'select', options: ['No', 'Yes'] },
-        { k: 'parentCompany', label: 'Name of the parent / holding company (if yes – complete another form for the parent company)', type: 'text' },
-        { k: 'directors', label: 'List of directors and shareholders', type: 'table', full: true, cols: [{ k: 'name', label: 'Name' }, { k: 'holding', label: '% holding' }] },
-        sec('Licences and verification (QA)', { edit: { Requested: ['qa'], 'On Hold': ['qa'], Qualified: ['qa'] } }),
-        { k: 'licenceNo', label: 'Wholesale drug authorization / licence no.', type: 'text' },
-        { k: 'issuingAuthority', label: 'Issuing authority', type: 'text' },
-        { k: 'licenceExpiry', label: 'Licence valid till', type: 'date' },
-        { k: 'otherLicences', label: 'Other applicable regulatory licences (copies attached)', type: 'textarea', full: true },
-        { k: 'verifiedIn', label: 'Licence verified in register (e.g. EudraGMDP, FDA, national authority)', type: 'text' },
-        { k: 'sanctions', label: 'Sanctions / denied-party screening', type: 'select', options: ['Not done', 'Clear', 'Match – escalated'] },
-        { k: 'cd', label: 'Controlled drugs licence held', type: 'checkbox' },
-        sec('Contact details', { edit: { Requested: ['qa'], 'On Hold': ['qa'], Qualified: ['qa'] } }),
-        { k: 'contacts', label: 'Contacts', type: 'table', full: true, cols: [{ k: 'dept', label: 'Department', options: ['Purchase', 'Finance', 'Quality', 'Management', 'Other'] }, { k: 'person', label: 'Contact person' }, { k: 'phone', label: 'Contact number' }, { k: 'email', label: 'E-mail' }] },
-        sec('Bank details', { edit: { Requested: ['qa'], 'On Hold': ['qa'], Qualified: ['qa'] } }),
-        { k: 'bankName', label: 'Bank name', type: 'text' },
-        { k: 'bankAddress', label: 'Bank address', type: 'text' },
-        { k: 'bankContact', label: 'Bank contact number', type: 'text' },
-        { k: 'accountHolder', label: 'Account holder name', type: 'text' },
-        { k: 'accountNumber', label: 'Account number', type: 'text' },
-        { k: 'iban', label: 'IBAN', type: 'text' },
-        { k: 'swift', label: 'SWIFT code', type: 'text' },
-        { k: 'routing', label: 'Routing number', type: 'text' },
-        sec('Completed by (customer)', { edit: { Requested: ['qa'], 'On Hold': ['qa'], Qualified: ['qa'] } }),
-        { k: 'formCompletedBy', label: 'Name and title of the person who completed the form', type: 'text' },
-        { k: 'formDate', label: 'Date on the form', type: 'date' },
-        sec('Jupiter Research Services only – QA qualification', { part: 'Q', edit: { Requested: ['qa'], 'On Hold': ['qa'], Qualified: ['qa'] } }),
-        { k: 'customerAccountNo', label: 'Customer account number', type: 'text' },
-        { k: 'agreement', label: 'Quality / technical agreement', type: 'text' },
-        { k: 'notes', label: 'QA review remarks (form, licence and documents checked)', type: 'textarea', full: true }
+        sec('Customer qualification', { part: 'Q', create: true, edit: { 'Under QA Review': ['qa'], 'On Hold': ['qa'], Qualified: ['qa'] } }),
+        { k: 'title', label: 'Customer name', type: 'text', req: true, full: true },
+        { k: 'address', label: 'Ship-to address', type: 'textarea', req: true, full: true },
+        { k: 'licenceNo', label: 'Licence no.', type: 'text', req: true },
+        { k: 'licenceExpiry', label: 'Licence expiry date', type: 'date', req: true },
+        { k: 'licenceLink', label: 'Licence verification link (register entry, if available)', type: 'url', full: true },
+        { k: 'reviewDate', label: 'Review date (next customer review)', type: 'date' },
+        { k: 'requesterDept', label: 'Requesting department', type: 'readonly', optionLabels: DEPTS }
       ],
-      states: ['Requested', 'Qualified', 'On Hold', 'Rejected'],
+      states: ['Under QA Review', 'Qualified', 'On Hold', 'Rejected'],
       transitions: [
-        t('Requested', 'Qualified', 'Qualify customer', ['qa'], { part: 'Q', sign: 'Customer qualified – QA', needs: ['licenceNo', 'issuingAuthority', 'licenceExpiry', 'verifiedIn', 'notes'], checkSanctions: true, checks: ['custLicenceValid', 'custDocuments'] }),
-        t('Requested', 'On Hold', 'Put on hold', ['qa'], { part: 'Q', sign: 'Put on hold – QA', reason: true }),
-        t('Requested', 'Rejected', 'Reject customer', ['qa'], { part: 'Q', sign: 'Customer rejected – QA', reason: true }),
-        t('On Hold', 'Qualified', 'Qualify customer', ['qa'], { part: 'Q', sign: 'Customer qualified – QA', needs: ['licenceNo', 'issuingAuthority', 'licenceExpiry', 'verifiedIn', 'notes'], checkSanctions: true, checks: ['custLicenceValid', 'custDocuments'] }),
+        t('Under QA Review', 'Qualified', 'Qualify customer', ['qa'], { part: 'Q', sign: 'Customer qualified – QA', needs: ['licenceNo', 'licenceExpiry', 'reviewDate'], checks: ['custLicenceValid', 'custReviewDate', 'custDocuments'] }),
+        t('Under QA Review', 'On Hold', 'Put on hold', ['qa'], { part: 'Q', sign: 'Put on hold – QA', reason: true }),
+        t('Under QA Review', 'Rejected', 'Reject customer', ['qa'], { part: 'Q', sign: 'Customer rejected – QA', reason: true }),
+        t('On Hold', 'Qualified', 'Qualify customer', ['qa'], { part: 'Q', sign: 'Customer qualified – QA', needs: ['licenceNo', 'licenceExpiry', 'reviewDate'], checks: ['custLicenceValid', 'custReviewDate', 'custDocuments'] }),
         t('On Hold', 'Rejected', 'Reject customer', ['qa'], { part: 'Q', sign: 'Customer rejected – QA', reason: true }),
         t('Qualified', 'On Hold', 'Put on hold', ['qa'], { part: 'Q', sign: 'Put on hold – QA', reason: true })
       ]
@@ -1043,6 +1079,6 @@
   MODULES.atreviews.fields.find(f => f.k === 'scope').optionLabels = Object.fromEntries([...Object.entries(MODULES).map(([k, m]) => [k, m.name]), ['system', 'System events (sign-ins, users, settings)']]);
 
   // Enrich: every transition from any open state to "Reopened" is not allowed; closures are final.
-  const api = { ROLES, MAIN_ROLES, DERIVED_ROLES, MODULES, SITES, DEPTS, DEPT_CODES, setDepartments, rpnLevel, fmeaRow, trainingScore, PASS_MARK, TRAINER_PARAMS, TRAINER_PASS, RETENTION };
+  const api = { supRisk, ROLES, MAIN_ROLES, DERIVED_ROLES, MODULES, SITES, DEPTS, DEPT_CODES, setDepartments, rpnLevel, fmeaRow, trainingScore, PASS_MARK, TRAINER_PARAMS, TRAINER_PASS, RETENTION };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.QMS_CONFIG = api;
 })(typeof window !== 'undefined' ? window : globalThis);

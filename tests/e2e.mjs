@@ -7,7 +7,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 18000 + Math.floor(Math.random() * 1000);
 const srv = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], { cwd: root, env: { ...process.env, DATA_DIR: mkdtempSync(join(tmpdir(), 'qms-test-')), PORT: String(PORT), HOST: '127.0.0.1', SEED_DEMO: 'true' }, stdio: 'ignore' });
 const B = 'http://127.0.0.1:' + PORT;
-for (let i = 0; i < 50; i++) { try { await fetch(B + '/api/health'); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
+for (let i = 0; i < 150; i++) { try { await fetch(B + '/api/health'); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
 let failed = 0;
 async function login(u,p='Demo-Pass-2026'){const r=await fetch(B+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});const j=await r.json();if(!r.ok)throw new Error(u+': '+j.error);const c=r.headers.get('set-cookie').split(';')[0];
  const call=async(m,url,b)=>{const r=await fetch(B+url,{method:m,headers:{'Content-Type':'application/json',cookie:c,'X-CSRF-Token':j.csrf},body:b?JSON.stringify(b):undefined});const o=await r.json().catch(()=>({}));return {s:r.status,...o, _arr:Array.isArray(o)?o:null}};
@@ -58,11 +58,10 @@ await cs.call('PUT',`/api/records/${pk.id}`,{data:{returned:1},reason:'found 1 l
 ok((await cs.sig(pk.id,'Reconciled')).ok,'balanced reconciliation');
 ok((await qa.sig(pk.id,'QP Certified')).ok,'QP certified');
 // customer sanctions
-let cu=await op.call('POST','/api/records',{type:'customers',data:{title:'Pharma Wholesale Ltd',customerType:'Wholesaler / distributor',country:'United Kingdom',requestReason:'Comparator supply'}});
-await qa.call('PUT',`/api/records/${cu.id}`,{data:{licenceNo:'WDA(H) 1234',issuingAuthority:'MHRA',licenceExpiry:'2099-01-01',verifiedIn:'MHRA register',notes:'Checked'},reason:'QA review'});
+let cu=await op.call('POST','/api/records',{type:'customers',data:{title:'Pharma Wholesale Ltd',address:'1 Dock Rd, London',licenceNo:'WDA(H) 1234',licenceExpiry:'2099-01-01'}});
 const rp=await login('rp1');
 ok((await rp.sig(cu.id,'Qualified')).s===403,'only QA qualifies customers');
-ok((await qa.sig(cu.id,'Qualified')).s===400,'qualification blocked without sanctions clear');
+ok((await qa.sig(cu.id,'Qualified')).s===400,'qualification blocked without a review date');
 // audit trail
 let v=await qa.call('GET','/api/audit/verify');ok(v.ok,'audit chain intact, entries '+v.checked);
 let det=await qa.call('GET',`/api/records/${rn.id}`);ok(det.signatures.length===2,'randomization signatures '+det.signatures.length);
