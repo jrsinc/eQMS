@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inflateRawSync } from 'node:zlib';
+import { createRequire } from 'node:module';
+const { PDFDocument } = createRequire(import.meta.url)('../vendor/pdf-lib.min.js');
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 24000 + Math.floor(Math.random() * 1000);
 const srv = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], { cwd: root, env: { ...process.env, DATA_DIR: mkdtempSync(join(tmpdir(), 'qms-org-')), PORT: String(PORT), HOST: '127.0.0.1', SEED_DEMO: 'true' }, stdio: 'ignore' });
@@ -14,7 +16,7 @@ for (let i = 0; i < 50; i++) { try { await fetch(B + '/api/health'); break; } ca
 let failed = 0;
 async function login(u,p='Demo-Pass-2026'){const r=await fetch(B+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});const j=await r.json();if(!r.ok)throw new Error(u+': '+j.error);const c=r.headers.get('set-cookie').split(';')[0];
  const call=async(m,url,b)=>{const r=await fetch(B+url,{method:m,headers:{'Content-Type':'application/json',cookie:c,'X-CSRF-Token':j.csrf},body:b?JSON.stringify(b):undefined});const o=await r.json().catch(()=>({}));return {s:r.status,_arr:Array.isArray(o)?o:null,...(Array.isArray(o)?{}:o)}};
- const raw=async(url)=>{const r=await fetch(B+url,{headers:{cookie:c}});return {s:r.status,type:r.headers.get('content-type'),buf:Buffer.from(await r.arrayBuffer())}};
+ const raw=async(url)=>{const r=await fetch(B+url,{headers:{cookie:c}});return {s:r.status,type:r.headers.get('content-type'),disp:r.headers.get('content-disposition'),buf:Buffer.from(await r.arrayBuffer())}};
  const sig=async(id,to,extra={})=>call('POST',`/api/records/${id}/transition`,{to,sigUsername:u,password:p,...extra});
  const go=(id,to,extra={})=>call('POST',`/api/records/${id}/transition`,{to,...extra});
  const put=(id,data,reason='update')=>call('PUT',`/api/records/${id}`,{data,reason});
@@ -97,6 +99,23 @@ ok(!names.includes('audit-trail.csv')&&html.includes('included in reports downlo
 z=await qa.raw(`/api/records/${d.id}/report`); files=unzip(z.buf);
 ok(String(files['audit-trail.csv']).includes('Status changed')&&files[Object.keys(files).find(n=>n.endsWith('report.html'))].toString().includes('<h2>Audit trail</h2><table>'),'QA report ends with the audit trail (and a CSV copy)');
 ok((await tr.raw(`/api/records/${d.id}/report`)).s===404,'users outside the department cannot download the report');
+// merged PDF: report + PDF and image attachments + audit trail
+{
+  const two = await PDFDocument.create(); two.addPage([300, 300]); two.addPage([300, 300]);
+  const pdfB64 = Buffer.from(await two.save()).toString('base64');
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  await pk.call('POST',`/api/records/${d.id}/attachments`,{name:'scan.pdf',mime:'application/pdf',base64:pdfB64});
+  await pk.call('POST',`/api/records/${d.id}/attachments`,{name:'photo.png',mime:'image/png',base64:png});
+  const one = await pk.raw(`/api/records/${d.id}/report.pdf`);
+  ok(one.s===200&&one.type==='application/pdf'&&one.buf.slice(0,4).toString()==='%PDF','report downloads as one PDF');
+  const P = await PDFDocument.load(one.buf), n = P.getPageCount();
+    ok(n >= 5, 'merged PDF has the report, the 2 pages of the attached PDF and the image page ('+n+' pages)');
+  const q = await qa.raw(`/api/records/${d.id}/report.pdf?inline=1`);
+  ok(q.s===200&&/inline/.test(q.disp)&&(await PDFDocument.load(q.buf)).getPageCount()>=n,'print opens the same PDF in the browser; the QA copy also has the audit trail');
+  ok((await tr.raw(`/api/records/${d.id}/report.pdf`)).s===404,'users outside the department cannot get the PDF');
+  ok((await qa.call('GET','/api/audit?action='+encodeURIComponent('(PDF)')))._arr.length===2,'PDF downloads and prints are in the audit trail');
+}
+
 // finish and check closed-record attachments
 await pk.put(d.id,{investigation:'Forklift damage',rootCause:'Forklift tine',riskAssessment:'Low',conclusion:'No impact',capaRequired:'No',capaJustification:'Isolated'});
 await pk.sig(d.id,'HOD Approval'); await cs.sig(d.id,'QA Evaluation');
@@ -107,7 +126,7 @@ ok((await qa.attach(d.id,'closure-memo.txt','memo')).sha256,'QA adds a closure a
 z=await pk.raw(`/api/records/${d.id}/report`); files=unzip(z.buf);
 ok(!files[Object.keys(files).find(n=>n.endsWith('report.html'))].toString().includes('Interim report')&&Object.keys(files).some(n=>n.includes('Closed - closure-memo.txt')),'final report after closure includes the closure attachment');
 let au=await qa.call('GET','/api/audit?action='+encodeURIComponent('Report downloaded'));
-ok(au._arr.length===3,'every report download is in the audit trail (3)');
+ok(au._arr.filter(a=>a.action==='Report downloaded').length===3,'every ZIP download is in the audit trail (3)');
 // no Head anywhere up the hierarchy → the investigation cannot go to approval
 await dir.call('POST','/api/departments',{code:'LAB',name:'Laboratory',reason:'New'});
 await dir.call('PUT','/api/organogram/users/trainer1',{department:'LAB',reportsTo:'',reason:'Lab start-up'});

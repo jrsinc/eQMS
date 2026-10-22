@@ -8,7 +8,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
+const net = require('node:net');
+const tls = require('node:tls');
 const { DatabaseSync } = require('node:sqlite');
+// pdf-lib 1.17.1 (MIT, vendor/pdf-lib.LICENSE.md) – builds the merged PDF report; vendored so the app still installs no npm packages
+const PDFLib = require('./vendor/pdf-lib.min.js');
 const { MODULES, ROLES, DERIVED_ROLES, DEPTS, setDepartments, trainingScore, PASS_MARK, TRAINER_PARAMS, TRAINER_PASS, RETENTION } = require('./public/modules.js');
 // change control states from pre-approval onwards (the change may be implemented)
 const CC_APPROVED = ['Optional Approvals', 'Implementation', 'QA Closure Review', 'Closed – EC Pending', 'Closed'];
@@ -27,6 +31,10 @@ const CFG = {
   demoPassword: process.env.DEMO_PASSWORD || 'Demo-Pass-2026',
   // WAL needs shared memory; network file shares (e.g. Azure App Service /home) need DELETE
   journal: ['WAL', 'DELETE', 'TRUNCATE'].includes(String(process.env.SQLITE_JOURNAL).toUpperCase()) ? String(process.env.SQLITE_JOURNAL).toUpperCase() : 'WAL',
+  // outgoing e-mail for notifications and passwords (e.g. Microsoft 365: smtp.office365.com, port 587, STARTTLS)
+  smtp: { host: process.env.SMTP_HOST || '', port: +process.env.SMTP_PORT || 587, secure: process.env.SMTP_SECURE === 'true',
+    user: process.env.SMTP_USER || '', pass: process.env.SMTP_PASS || '', from: process.env.SMTP_FROM || process.env.SMTP_USER || '', fromName: process.env.SMTP_FROM_NAME || 'JRS eQMS' },
+  appUrl: (process.env.APP_URL || '').replace(/\/$/, ''), // link in e-mails, e.g. http://192.168.1.100:8080
   sp: {
     tenant: process.env.SP_TENANT_ID, clientId: process.env.SP_CLIENT_ID,
     secret: process.env.SP_CLIENT_SECRET, siteId: process.env.SP_SITE_ID,
@@ -78,11 +86,13 @@ CREATE TABLE IF NOT EXISTS versions (record_id TEXT NOT NULL, no INTEGER NOT NUL
   status TEXT NOT NULL, number TEXT, data TEXT NOT NULL, reason TEXT, PRIMARY KEY (record_id, no));
 CREATE TRIGGER IF NOT EXISTS versions_no_update BEFORE UPDATE ON versions BEGIN SELECT RAISE(ABORT, 'version history is read-only'); END;
 CREATE TRIGGER IF NOT EXISTS versions_no_delete BEFORE DELETE ON versions BEGIN SELECT RAISE(ABORT, 'version history is read-only'); END;
+CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, record_id TEXT, record_number TEXT,
+  subject TEXT NOT NULL, body TEXT NOT NULL, action TEXT, ts TEXT NOT NULL, read INTEGER DEFAULT 0, email TEXT);
 CREATE TABLE IF NOT EXISTS departments (code TEXT PRIMARY KEY, name TEXT NOT NULL, parent TEXT, hod TEXT, active INTEGER DEFAULT 1,
   created_by TEXT NOT NULL, created_at TEXT NOT NULL);
 `);
 // register of signatures (JRS/SOP/QAS/009) – columns added to existing databases
-for (const col of ['designation', 'department', 'initials', 'inactive_date', 'reports_to']) { try { db.exec(`ALTER TABLE users ADD COLUMN ${col} TEXT`); } catch { /* already present */ } }
+for (const col of ['designation', 'department', 'initials', 'inactive_date', 'reports_to', 'signature']) { try { db.exec(`ALTER TABLE users ADD COLUMN ${col} TEXT`); } catch { /* already present */ } }
 const REREGISTER_YEARS = 5;
 try { db.exec('ALTER TABLE attachments ADD COLUMN stage TEXT'); } catch { /* already present */ } // workflow stage the file was added at
 
@@ -246,8 +256,10 @@ const pub = (u) => ({ username: u.username, fullname: u.fullname, email: u.email
   department: u.department || '', hodOf: u.hodOf || [], deptsUnder: u.deptsUnder || [], allAccess: allAccess(u), canEditOrg: canEditOrg(u) });
 
 // ---------- helpers ----------
-class HttpError extends Error { constructor(code, msg) { super(msg); this.code = code; } }
-const fail = (code, msg) => { throw new HttpError(code, msg); };
+class HttpError extends Error { constructor(code, msg, extra) { super(msg); this.code = code; this.extra = extra; } }
+const fail = (code, msg, extra) => { throw new HttpError(code, msg, extra); };
+// all empty required fields at once, so the user sees everything still pending (the UI highlights them)
+const failMissing = (fields, what) => fail(400, `${what}: ${fields.map(f => f.label.split(' (')[0]).join('; ')}.`, { missing: fields.map(f => f.k) });
 function send(res, code, body, headers = {}) {
   const isBuf = Buffer.isBuffer(body);
   res.writeHead(code, { 'Content-Type': isBuf ? 'application/octet-stream' : 'application/json; charset=utf-8', ...SEC_HEADERS, ...headers });
@@ -311,6 +323,8 @@ function sanitize(mod, input) {
         if (c.type === 'score' && !/^[1-5]$/.test(x)) fail(400, `${f.label}: ${c.label} must be a whole number from 1 to 5.`);
         if (c.type === 'number' && !(Number(x) >= 0)) fail(400, `${f.label}: ${c.label} must be a number.`);
         if (c.options && !c.options.includes(x)) fail(400, `${f.label}: invalid ${c.label} "${x}".`);
+        if (c.type === 'user' && !db.prepare('SELECT 1 FROM users WHERE username=?').get(x)) fail(400, `${f.label}: ${c.label} must be a user of the system.`);
+        if (c.type === 'dept' && !DEPTS[x]) fail(400, `${f.label}: unknown department "${x}".`);
         if (c.ref) { row[c.k] = x.toUpperCase(); if (!byNumber(row[c.k], c.ref)) fail(400, `${f.label}: no ${c.ref.map(t => MODULES[t].name).join(' / ')} record with number ${row[c.k]}.`); }
       }
       if (f.rowCompute) v = v.map(row => ({ ...row, ...f.rowCompute(row) }));
@@ -366,6 +380,14 @@ function snapshot(rec, user = ACTOR && ACTOR.user) {
   db.prepare('INSERT INTO versions (record_id,no,ts,username,fullname,status,number,data,reason) VALUES (?,?,?,?,?,?,?,?,?)')
     .run(rec.id, last ? last.no + 1 : 1, now(), user ? user.username : 'system', user ? user.fullname : 'System', rec.status, rec.number, data, (ACTOR && ACTOR.reason) || null);
 }
+function createdSummary(rec) {
+  const parts = [`Status: ${rec.status}`];
+  for (const f of MODULES[rec.type].fields) {
+    const v = rec.data[f.k]; if (!f.k || f.type === 'computed' || v === '' || v == null || (Array.isArray(v) && !v.length)) continue;
+    parts.push(`${f.label.split(' (')[0]}: ${f.type === 'user' || f.fmt === 'user' ? userLabel(v) : f.type === 'table' ? v.length + ' row(s)' : f.type === 'checklist' ? 'completed' : fmt(v)}`);
+  }
+  return parts.join('; ');
+}
 function createRecord(user, type, data, ip, reasonText) {
   const mod = MODULES[type];
   for (const f of mod.fields) if (f.k && data[f.k] === undefined && f.def !== undefined) data[f.k] = f.def;
@@ -381,8 +403,8 @@ function createRecord(user, type, data, ip, reasonText) {
     .run(rec.id, type, rec.number, data.title || '', rec.status, JSON.stringify(data), user.username, now(), now());
   rec.created_by = user.username;
   snapshot(rec, user);
-  audit(user, 'Record created', rec, 'status', null, rec.status, reasonText, ip);
-  for (const [k, v] of Object.entries(data)) if (k !== 'stateEnteredAt' && v !== '' && v != null && !(Array.isArray(v) && !v.length)) audit(user, 'Field set', rec, k, null, fmt(v), null, ip);
+  // one entry with every value entered (instead of one "Field set" entry per field)
+  audit(user, 'Record created', rec, null, null, createdSummary(rec), reasonText, ip);
   linkRefs(user, rec, ip);
   return rec;
 }
@@ -433,7 +455,7 @@ const needAudit = (user) => { if (!canSeeAudit(user)) fail(403, 'The audit trail
 // department, the Heads above it and the approving Head see the record – plus QA, admin, management and read-only inspectors.
 // Project managers see events that go to the customer.
 function canSee(user, rec) {
-  if (hiddenFor(user, rec.type)) return false;
+  if (!MODULES[rec.type] || hiddenFor(user, rec.type)) return false;
   if (!MODULES[rec.type].deptScoped || allAccess(user) || user.roles.includes('qa') || user.roles.includes('extaud')) return true;
   const d = rec.data, me = user.username;
   if (rec.created_by === me || d.respPerson === me || d.hodApprover === me) return true;
@@ -593,7 +615,7 @@ const CHECKS = {
   },
   // change control: responsible person, Head of Department, department report, effectiveness check after its period
   isRespPerson: (r, u) => { if (r.data.respPerson !== u.username && !allAccess(u)) fail(403, `Only the responsible person (${userLabel(r.data.respPerson)}) can review this step.`); },
-  isCcDept: (r, u) => { if (![r.created_by, r.data.respPerson].includes(u.username) && !(u.department && u.department === r.data.respDept) && !allAccess(u)) fail(403, 'Only the initiator, the responsible person or the responsible department submits the change control report.'); },
+  isCcDept: (r, u) => { if (![r.created_by, r.data.respPerson].includes(u.username) && !(u.department && u.department === r.data.respDept) && !allAccess(u)) fail(403, 'Only the initiator, the responsible person or the responsible department can do this step.'); },
   ccHasOptional: (r) => need((r.data.optionalDepts || []).length, 'No other departments are named: use "Approve – QA (pre-approval complete)".'),
   ccNoOptional: (r) => need(!(r.data.optionalDepts || []).length, 'Other departments are named for approval: use "Approve – QA (send to other departments)".'),
   ccNeedsEC: (r) => need(r.data.ecRequired === 'Required', 'No effectiveness check is required: use "Close – QA report".'),
@@ -877,7 +899,7 @@ route('POST', '/api/login', async (ctx) => {
 
 route('POST', '/api/logout', (ctx) => { sessions.delete(ctx.user.sid); audit(ctx.user, 'Logout', null, null, null, null, null, ctx.ip); ctx.setCookie = 'qms_sid=; Max-Age=0; Path=/'; return { ok: true }; });
 route('GET', '/api/me', (ctx) => ({ ...pub(ctx.user), idleMinutes: CFG.idleMinutes }));
-route('GET', '/api/config', () => ({ roles: ROLES, org: CFG.orgName, departments: deptRows() }));
+route('GET', '/api/config', () => ({ roles: ROLES, org: CFG.orgName, departments: deptRows(), mail: mailOn() }));
 
 // Departments (System → Departments): everyone can read the list; admin and management create and change departments
 route('GET', '/api/departments', () => deptRows());
@@ -957,13 +979,31 @@ route('POST', '/api/password', (ctx) => {
   audit(ctx.user, 'Password changed', null, null, null, null, null, ctx.ip);
   return { ok: true };
 });
+// Signature register: only the signed-in employee registers their own signature (initials, specimen, password confirmation)
+route('POST', '/api/signature/register', (ctx) => {
+  const u = db.prepare('SELECT * FROM users WHERE username=?').get(ctx.user.username);
+  if (!checkPw(String(ctx.body.password || ''), u.pw_hash)) fail(422, 'Password incorrect. Signature not registered.');
+  const initials = String(ctx.body.initials || '').trim().toUpperCase().slice(0, 6);
+  if (!/^[A-Z]{2,6}$/.test(initials)) fail(400, 'Enter your initials (2–6 letters).');
+  const sig = String(ctx.body.signature || '');
+  if (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(sig) || sig.length > 300000) fail(400, 'Draw your signature in the box.');
+  if (!ctx.body.accept) fail(400, 'Accept the electronic signature statement.');
+  db.prepare('UPDATE users SET initials=?, signature=?, esig_accepted=? WHERE username=?').run(initials, sig, now(), u.username);
+  audit(ctx.user, 'Signature registered', null, u.username, u.initials || null, `Initials ${initials}; specimen signature SHA-256 ${sha256(sig).slice(0, 16)}…; e-signature statement accepted`, null, ctx.ip);
+  return { ok: true };
+});
+route('GET', '/api/users/:u/signature', (ctx) => {
+  const u = db.prepare('SELECT signature FROM users WHERE username=?').get(ctx.params.u);
+  if (!u || !u.signature) fail(404, 'No signature registered');
+  return { __raw: Buffer.from(u.signature.split(',')[1], 'base64'), headers: { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' } };
+});
 route('POST', '/api/esig-accept', (ctx) => {
   db.prepare('UPDATE users SET esig_accepted=? WHERE username=?').run(now(), ctx.user.username);
   audit(ctx.user, 'E-signature statement accepted', null, null, null, 'I agree that my electronic signature is the legally binding equivalent of my handwritten signature.', null, ctx.ip);
   return { ok: true };
 });
 
-route('GET', '/api/users', () => db.prepare('SELECT username,fullname,email,roles,active,locked,last_login,created_at,designation,department,reports_to,initials,inactive_date,esig_accepted FROM users ORDER BY username').all()
+route('GET', '/api/users', () => db.prepare("SELECT username,fullname,email,roles,active,locked,last_login,created_at,designation,department,reports_to,initials,inactive_date,esig_accepted,(signature IS NOT NULL AND signature<>'') AS hasSignature FROM users ORDER BY username").all()
   .map(u => ({ ...u, roles: withOrg({ username: u.username, roles: u.roles }).roles, esigCurrent: esigCurrent(u), reregisterBy: u.esig_accepted ? addDays(u.esig_accepted, Math.round(REREGISTER_YEARS * 365.25)) : '' })));
 route('POST', '/api/users', (ctx) => {
   if (!allAccess(ctx.user)) fail(403, 'Administrator or management role required.');
@@ -979,7 +1019,9 @@ route('POST', '/api/users', (ctx) => {
   db.prepare('INSERT INTO users (username,fullname,email,roles,pw_hash,must_change,created_at,designation,department,initials,reports_to) VALUES (?,?,?,?,?,1,?,?,?,?,?)')
     .run(un, String(fullname || un), String(email || ''), JSON.stringify(r), hashPw(password), now(), s(ctx.body.designation), dep, s(ctx.body.initials).toUpperCase(), mgr || null);
   audit(ctx.user, 'User created', null, 'roles', null, `${un}: ${r.join(', ')}`, ctx.body.reason, ctx.ip);
-  return { ok: true };
+  const emailed = mailPassword(un, password, false);
+  if (emailed) audit(ctx.user, 'Temporary password e-mailed', null, un, null, String(email || ''), null, ctx.ip);
+  return { ok: true, emailed, mailConfigured: mailOn() };
 });
 route('PUT', '/api/users/:u', (ctx) => {
   if (!allAccess(ctx.user)) fail(403, 'Administrator or management role required.');
@@ -993,21 +1035,27 @@ route('PUT', '/api/users/:u', (ctx) => {
     audit(tag, active ? 'User activated' : 'User deactivated', null, u.username, null, active ? null : 'Inactive from ' + today(), reason, ctx.ip);
   }
   setOrg(ctx, u, ctx.body, reason);
-  for (const k of ['designation', 'initials']) if (ctx.body[k] !== undefined && String(ctx.body[k]) !== String(u[k] || '')) {
+  if (ctx.body.email !== undefined && String(ctx.body.email).trim().toLowerCase() !== String(u.email || '').toLowerCase()) {
+    const em = String(ctx.body.email).trim().toLowerCase(); if (em && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) fail(400, 'Enter a valid e-mail address.');
+    db.prepare('UPDATE users SET email=? WHERE username=?').run(em, u.username); audit(tag, 'User email changed', null, u.username, u.email, em, reason, ctx.ip);
+  }
+  for (const k of ['designation']) if (ctx.body[k] !== undefined && String(ctx.body[k]) !== String(u[k] || '')) {
     const v = String(ctx.body[k]).slice(0, 100)[k === 'initials' ? 'toUpperCase' : 'trim']();
     db.prepare(`UPDATE users SET ${k}=? WHERE username=?`).run(v, u.username);
     audit(tag, 'User ' + k + ' changed', null, u.username, u[k], v, reason, ctx.ip);
   }
   if (unlock) { db.prepare('UPDATE users SET locked=0, failed=0 WHERE username=?').run(u.username); audit(tag, 'User unlocked', null, u.username, null, null, reason, ctx.ip); }
   if (password) { const p = pwPolicy(password); if (p) fail(400, p); db.prepare('UPDATE users SET pw_hash=?, must_change=1 WHERE username=?').run(hashPw(password), u.username); audit(tag, 'Password reset by administrator', null, u.username, null, null, reason, ctx.ip); }
-  return { ok: true };
+  const emailed = password ? mailPassword(u.username, password, true) : false;
+  if (emailed) audit(tag, 'Temporary password e-mailed', null, u.username, null, u.email, null, ctx.ip);
+  return { ok: true, emailed, mailConfigured: mailOn() };
 });
 
 route('GET', '/api/records', (ctx) => {
   const type = ctx.query.get('type');
   const rows = type ? db.prepare('SELECT * FROM records WHERE type=? AND deleted=0 ORDER BY created_at DESC').all(type)
     : db.prepare('SELECT * FROM records WHERE deleted=0 ORDER BY updated_at DESC LIMIT 2000').all();
-  return rows.map(rowToRecord).filter(r => canSee(ctx.user, r));
+  return rows.map(rowToRecord).filter(r => MODULES[r.type] && canSee(ctx.user, r)); // records of retired modules stay in the database
 });
 route('GET', '/api/records/:id', (ctx) => {
   const rec = visibleRecord(ctx.user, getRecord(ctx.params.id)), h = contentHash(rec);
@@ -1051,7 +1099,8 @@ route('POST', '/api/records', (ctx) => {
   const mod = MODULES[type], hasCreate = mod.fields.some(f => f.type === 'section' && f.create);
   const onCreateForm = (k) => !hasCreate || !!(sectionOf(mod, k) || {}).create;
   for (const k of Object.keys(clean)) if (!onCreateForm(k)) delete clean[k];
-  for (const f of mod.fields) if (f.req && onCreateForm(f.k) && (clean[f.k] === '' || clean[f.k] == null) && f.def === undefined) fail(400, `${f.label} is required.`);
+  const missing = mod.fields.filter(f => f.req && onCreateForm(f.k) && (clean[f.k] === '' || clean[f.k] == null) && f.def === undefined);
+  if (missing.length) failMissing(missing, 'Required fields are empty');
   if (type === 'investigations') clean.qaNotified = today();
   if (type === 'documents') { clean.version = '1.0'; clean.revisionType = 'New document'; }
   if (type === 'training') {
@@ -1093,6 +1142,7 @@ route('POST', '/api/records', (ctx) => {
   }
   const src = linkFrom ? getRecord(linkFrom) : null;
   const rec = createRecord(ctx.user, type, clean, ctx.ip);
+  notifyStatus(ctx.user, rec, '', rec.status);
   if (src) link(ctx.user, src, rec, ctx.ip);
   return rec;
 });
@@ -1233,6 +1283,7 @@ function coSign(ctx, rec, mod, t) {
     audit(ctx.user, 'Status changed (all sign-offs given)', rec, 'status', from, next, null, ctx.ip);
   }
   saveRecord(rec);
+  if (done) notifyStatus(ctx.user, rec, from, rec.status);
   return { ok: true, status: rec.status, pending: group.meanings.filter(m => !given().some(s => s.meaning === m)) };
 }
 route('POST', '/api/records/:id/transition', (ctx) => {
@@ -1243,7 +1294,8 @@ route('POST', '/api/records/:id/transition', (ctx) => {
   if (!t) fail(409, cands.length ? 'Choose which sign-off to give.' : `Cannot move from ${rec.status} to ${ctx.body.to}.`);
   if (!hasRole(ctx.user, t.roles)) fail(403, `Your roles do not allow "${t.label}".`);
   if (t.reason && !String(ctx.body.reason || '').trim()) fail(400, 'A reason is required for this step.');
-  for (const k of t.needs || []) { const f = mod.fields.find(x => x.k === k); if (isEmpty(f, rec.data[k])) fail(400, `Complete "${f.label}" first.`); }
+  const missing = (t.needs || []).map(k => mod.fields.find(x => x.k === k)).filter(f => isEmpty(f, rec.data[f.k]));
+  if (missing.length) failMissing(missing, `Complete these fields before "${t.label}"`);
   for (const c of t.checks || []) CHECKS[c](rec, ctx.user);
   if (t.sod && rec.created_by === ctx.user.username) fail(403, 'Segregation of duties: the record initiator cannot approve it.');
   if (t.sodWith && db.prepare('SELECT 1 FROM signatures WHERE record_id=? AND username=? AND meaning LIKE ?').get(rec.id, ctx.user.username, t.sodWith + '%'))
@@ -1265,6 +1317,7 @@ route('POST', '/api/records/:id/transition', (ctx) => {
   saveRecord(rec);
   audit(ctx.user, t.sign ? 'Status changed (e-signed: ' + t.sign + ')' : 'Status changed', rec, 'status', from, t.to, ctx.body.reason, ctx.ip);
   if (t.sign) sign(ctx.user, rec, t.sign, from, t.to);
+  if (from !== rec.status) notifyStatus(ctx.user, rec, from, rec.status);
   return { ok: true, status: rec.status };
 });
 route('POST', '/api/records/:id/revise', (ctx) => {
@@ -1438,6 +1491,103 @@ route('POST', '/api/audit/report', (ctx) => { // logs that a filtered audit trai
   audit(ctx.user, 'Audit trail ' + (ctx.body.kind === 'print' ? 'report printed' : 'exported'), null, 'filters', null, String(ctx.body.filters || 'none').slice(0, 500), null, ctx.ip);
   return { ok: true };
 });
+// ---------- e-mail (SMTP, no dependencies) and notifications ----------
+const mailOn = () => !!(CFG.smtp.host && CFG.smtp.from);
+async function smtpSend(to, subject, text) {
+  const c = CFG.smtp; let sock = c.secure ? tls.connect({ host: c.host, port: c.port, servername: c.host }) : net.connect({ host: c.host, port: c.port });
+  let buf = ''; const waiting = [];
+  const flush = () => { while (waiting.length) { const m = buf.match(/^((?:\d{3}-[^\r\n]*\r?\n)*)(\d{3})(?: [^\r\n]*)?\r?\n/); if (!m) return; buf = buf.slice(m[0].length); waiting.shift().ok({ code: +m[2], text: m[0] }); } };
+  const attach = (s) => { s.setTimeout(30000); s.on('data', d => { buf += d.toString('utf8'); flush(); }); s.on('timeout', () => s.destroy(new Error('SMTP timeout'))); s.on('error', e => waiting.splice(0).forEach(w => w.fail(e))); };
+  const read = () => new Promise((ok, f) => { waiting.push({ ok, fail: f }); flush(); });
+  const cmd = async (line, codes) => { if (line != null) sock.write(line + '\r\n'); const r = await read(); if (!codes.includes(r.code)) throw new Error(`SMTP ${r.code}: ${r.text.trim().slice(0, 200)}`); return r; };
+  attach(sock);
+  try {
+    await cmd(null, [220]);
+    let r = await cmd('EHLO jrs-eqms', [250]);
+    if (!c.secure && /STARTTLS/i.test(r.text)) {
+      await cmd('STARTTLS', [220]); sock.removeAllListeners('data'); sock.removeAllListeners('timeout');
+      sock = tls.connect({ socket: sock, servername: c.host }); attach(sock);
+      await new Promise((ok, f) => { sock.once('secureConnect', ok); sock.once('error', f); });
+      r = await cmd('EHLO jrs-eqms', [250]);
+    }
+    if (c.user) { await cmd('AUTH LOGIN', [334]); await cmd(Buffer.from(c.user).toString('base64'), [334]); await cmd(Buffer.from(c.pass).toString('base64'), [235]); }
+    await cmd(`MAIL FROM:<${c.from}>`, [250]);
+    await cmd(`RCPT TO:<${to}>`, [250, 251]);
+    await cmd('DATA', [354]);
+    const b64 = (v) => '=?UTF-8?B?' + Buffer.from(v).toString('base64') + '?=';
+    await cmd([`From: ${b64(c.fromName)} <${c.from}>`, `To: <${to}>`, `Subject: ${b64(subject)}`, `Date: ${new Date().toUTCString()}`, `Message-ID: <${uid()}@jrs-eqms>`,
+      'MIME-Version: 1.0', 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', Buffer.from(text).toString('base64').replace(/.{76}/g, '$&\r\n'), '.'].join('\r\n'), [250]);
+    await cmd('QUIT', [221]).catch(() => {});
+  } finally { sock.end(); }
+}
+// e-mails go out one at a time in the background; the result is kept on the notification (or logged for password e-mails)
+const mailQueue = []; let mailBusy = false;
+function queueMail(to, subject, text, noteId) {
+  if (!mailOn() || !to) { if (noteId) db.prepare('UPDATE notifications SET email=? WHERE id=?').run(mailOn() ? 'No e-mail address' : 'E-mail not configured', noteId); return false; }
+  mailQueue.push({ to, subject, text, noteId }); if (!mailBusy) setImmediate(drainMail); return true;
+}
+async function drainMail() {
+  mailBusy = true;
+  while (mailQueue.length) {
+    const m = mailQueue.shift(); let result = 'Sent ' + now();
+    try { await smtpSend(m.to, m.subject, m.text); } catch (e) { result = 'Failed: ' + e.message; console.error('E-mail to', m.to, 'failed:', e.message); }
+    if (m.noteId) db.prepare('UPDATE notifications SET email=? WHERE id=?').run(result, m.noteId);
+  }
+  mailBusy = false;
+}
+const userRow = (u) => u ? db.prepare('SELECT username, fullname, email, roles, active FROM users WHERE username=?').get(u) : null;
+const usersWithRole = (r) => db.prepare('SELECT username, roles FROM users WHERE active=1').all().filter(u => JSON.parse(u.roles).includes(r)).map(u => u.username);
+// who has to act next on a record (and the step they can take)
+function nextActors(rec) {
+  const mod = MODULES[rec.type], d = rec.data, out = new Map(), add = (u, label) => { if (u && !out.has(u)) out.set(u, label); };
+  for (const t of mod.transitions.filter(x => x.from === rec.status && !x.reason && !['Cancelled', 'Rejected'].includes(x.to))) {
+    const c = t.checks || [];
+    if (c.includes('isHodApprover')) add(d.hodApprover, t.label);
+    else if (c.includes('isRespPerson') || c.includes('isPartCOwner')) add(d.respPerson, t.label);
+    else if (c.includes('isPartAOwner') || c.includes('isCcDept') || c.includes('isResponsible')) { add(rec.created_by, t.label); add(d.respPerson, t.label); }
+    else if (c.includes('isInitiator')) add(rec.created_by, t.label);
+    else if (c.includes('isReviewer')) add(d.reviewer, t.label);
+    else if (c.includes('isTrainee') || t.traineeOnly) add(d.trainee, t.label);
+    else if (c.includes('isTrainer')) add(d.trainer, t.label);
+    else for (const r of t.roles) {
+      if (r === 'hod') add(d.respDept ? hodFor(d.respDept) : '', t.label);
+      else if (r === 'pm' && d.pm) add(d.pm, t.label);
+      else if (r !== 'any') usersWithRole(r).forEach(u => add(u, t.label));
+    }
+  }
+  const da = mod.deptApproval;
+  if (da && rec.status === da.state) for (const code of d[da.field] || []) if (!(d.deptApprovals || []).some(a => a.dept === code)) add(hodFor(code), `${da.label} (${code})`);
+  return out;
+}
+// every status change: the people who act next, plus the initiator, responsible person and approving Head, in the app and by e-mail
+function notifyStatus(actor, rec, from, to) {
+  const d = rec.data, mod = MODULES[rec.type], act = nextActors(rec), people = new Set([...act.keys(), rec.created_by, d.respPerson, d.hodApprover].filter(Boolean));
+  const link = CFG.appUrl ? `${CFG.appUrl}/#/r/${rec.id}` : '';
+  for (const u of people) {
+    if (u === actor.username) continue;
+    const p = userRow(u); if (!p || !p.active) continue;
+    const action = act.get(u) || '';
+    const subject = `${rec.number} – ${action ? 'action needed: ' + action : to}`;
+    const body = [`${mod.name}: ${rec.number} – ${d.title || ''}`, from ? `Status: ${from} → ${to} (by ${actor.fullname})` : `New record, status ${to} (by ${actor.fullname})`,
+      action ? `Your action: ${action}` : 'For your information – no action needed from you now.', link ? `Open: ${link}` : '', '', 'JRS eQMS – automatic notification. Do not reply.'].filter(x => x !== '').join('\n');
+    const id = db.prepare('INSERT INTO notifications (username,record_id,record_number,subject,body,action,ts) VALUES (?,?,?,?,?,?,?)').run(u, rec.id, rec.number, subject, body, action, now()).lastInsertRowid;
+    queueMail(p.email, subject, body, id);
+  }
+}
+function mailPassword(u, password, reset) {
+  const p = userRow(u); if (!p || !p.email || !mailOn()) return false;
+  return queueMail(p.email, reset ? 'JRS eQMS – your password was reset' : 'JRS eQMS – your account',
+    [`Hello ${p.fullname},`, '', reset ? 'An administrator has reset your password for the JRS eQMS.' : 'An account has been created for you in the JRS eQMS.',
+      `User ID: ${p.username} (or sign in with this e-mail address)`, `Temporary password: ${password}`, CFG.appUrl ? `Sign in: ${CFG.appUrl}` : '', '',
+      'You must choose a new password when you sign in. Do not share your password.'].filter(x => x !== '').join('\n'));
+}
+route('GET', '/api/notifications', (ctx) => {
+  const unread = db.prepare('SELECT COUNT(*) AS n FROM notifications WHERE username=? AND read=0').get(ctx.user.username).n;
+  if (ctx.query.get('count')) return { unread };
+  return { unread, items: db.prepare('SELECT id, record_id, record_number, subject, body, action, ts, read, email FROM notifications WHERE username=? ORDER BY id DESC LIMIT 200').all(ctx.user.username) };
+});
+route('POST', '/api/notifications/read', (ctx) => { db.prepare('UPDATE notifications SET read=1 WHERE username=? AND read=0').run(ctx.user.username); return { ok: true }; });
+
 // ---------- full record report (any stage): report.html, every attachment and the audit trail, in one ZIP ----------
 function zipFiles(files) { // stored with deflate, UTF-8 names; no dependencies
   const d = new Date(), time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
@@ -1503,6 +1653,161 @@ ${body}
     ...trail.map(a => [a.id, a.ts, a.username, a.fullname, a.action, a.field, a.old_value, a.new_value, a.reason, a.hash])].map(r => r.map(csvCell).join(',')).join('\r\n') });
   return zipFiles(files);
 }
+// ---------- merged PDF report ----------
+// Standard PDF fonts use the Windows-1252 character set: map the few other characters used in the forms
+const WINANSI = '€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ';
+const pdfText = (v) => String(v ?? '').replace(/\r/g, '').replace(/\t/g, '  ').replace(/[→⇒]/g, '->').replace(/≥/g, '>=').replace(/≤/g, '<=').replace(/[−‐‑]/g, '-')
+  .replace(/[^\n\x20-\x7e\xa0-\xff]/g, c => WINANSI.includes(c) ? c : '?');
+const kindOf = (buf) => buf.slice(0, 4).toString('latin1') === '%PDF' ? 'pdf' : buf[0] === 0x89 && buf[1] === 0x50 ? 'png' : buf[0] === 0xff && buf[1] === 0xd8 ? 'jpg' : '';
+function plainValue(f, v) {
+  if (v === '' || v == null || (Array.isArray(v) && !v.length)) return '—';
+  if (f.type === 'table') return v.map((row, i) => `${i + 1}. ` + f.cols.map(c => `${c.label}: ${c.type === 'user' ? userLabel(row[c.k]) : row[c.k] || '–'}`).join('; ')).join('\n');
+  if (f.type === 'checklist') return f.rows.map(r => `${r}: ${(v[r] || {}).v || '–'}${(v[r] || {}).r ? ' (' + v[r].r + ')' : ''}`).join('\n');
+  if (f.type === 'user' || f.fmt === 'user') return userLabel(v);
+  if (f.optionLabels && f.optionLabels[v]) return f.optionLabels[v];
+  if ((f.type === 'date' || f.fmt === 'date') && /^\d{4}-\d{2}-\d{2}/.test(v)) return dmyText(v);
+  return String(fmt(v));
+}
+const MON3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const dmyText = (v) => { const [y, m, d] = String(v).slice(0, 10).split('-'); return `${d}-${MON3[+m - 1]}-${y}`; };
+const tsText = (v) => `${dmyText(v)} ${String(v).slice(11, 19)} UTC`;
+async function reportPdf(user, rec) {
+  const { PDFDocument, StandardFonts, rgb } = PDFLib;
+  const mod = MODULES[rec.type], withAudit = canSeeAudit(user), h = contentHash(rec), d = rec.data;
+  const doc = await PDFDocument.create();
+  doc.setTitle(`${rec.number} – ${pdfText(d.title || mod.name)}`); doc.setAuthor(CFG.orgName); doc.setCreator('JRS eQMS'); doc.setProducer('JRS eQMS (pdf-lib)');
+  const F = await doc.embedFont(StandardFonts.Helvetica), FB = await doc.embedFont(StandardFonts.HelveticaBold);
+  let logo = null; try { logo = await doc.embedPng(fs.readFileSync(path.join(PUBLIC, 'logo.png'))); } catch { /* no logo */ }
+  const W = 595.28, H = 841.89, M = 40, blue = rgb(0.10, 0.40, 0.69), grey = rgb(0.38, 0.40, 0.43), lineC = rgb(0.80, 0.83, 0.86), black = rgb(0, 0, 0);
+  let page, y;
+  const head = (p, label) => {
+    if (logo) { const hh = 26; p.drawImage(logo, { x: M, y: H - M - hh + 10, width: logo.width * hh / logo.height, height: hh }); }
+    const t = pdfText(label); p.drawText(t, { x: W - M - FB.widthOfTextAtSize(t, 9.5), y: H - M - 2, size: 9.5, font: FB, color: blue });
+    p.drawLine({ start: { x: M, y: H - M - 22 }, end: { x: W - M, y: H - M - 22 }, thickness: 0.8, color: blue });
+  };
+  const newPage = (label = `${mod.name} – ${rec.number}`) => { page = doc.addPage([W, H]); head(page, label); y = H - M - 34; };
+  const ensure = (need) => { if (y - need < M + 16) newPage(); };
+  const wrap = (s, font, size, width) => {
+    const out = [];
+    for (const para of pdfText(s).split('\n')) {
+      let cur = '';
+      for (let w of para.split(/ +/)) {
+        while (font.widthOfTextAtSize(w, size) > width) { let i = w.length; while (i > 1 && font.widthOfTextAtSize(w.slice(0, i), size) > width) i--; if (cur) { out.push(cur); cur = ''; } out.push(w.slice(0, i)); w = w.slice(i); }
+        const t = cur ? cur + ' ' + w : w;
+        if (cur && font.widthOfTextAtSize(t, size) > width) { out.push(cur); cur = w; } else cur = t;
+      }
+      out.push(cur);
+    }
+    return out;
+  };
+  const text = (s, o = {}) => { const { font = F, size = 9, color = black, x = M, width = W - 2 * M } = o; for (const l of wrap(s, font, size, width)) { ensure(size + 3); page.drawText(l, { x, y: y - size, size, font, color }); y -= size + 3; } };
+  const heading = (s) => { ensure(44); y -= 8; page.drawRectangle({ x: M, y: y - 17, width: W - 2 * M, height: 19, color: rgb(0.92, 0.95, 0.99) }); page.drawText(pdfText(s).slice(0, 105), { x: M + 6, y: y - 12.5, size: 10, font: FB, color: blue }); y -= 26; };
+  const table = (cols, rows, size = 7.8) => {
+    const tw = cols.reduce((a, c) => a + c.w, 0);
+    const row = (cells, font, bg) => {
+      const lines = cells.map((c, i) => wrap(c, font, size, cols[i].w - 6).slice(0, 60));
+      const hgt = Math.max(1, ...lines.map(l => l.length)) * (size + 2) + 5;
+      if (y - hgt < M + 16) { newPage(); if (font !== FB) row(cols.map(c => c.label), FB, rgb(0.95, 0.96, 0.97)); }
+      if (bg) page.drawRectangle({ x: M, y: y - hgt, width: tw, height: hgt, color: bg });
+      let x = M;
+      cells.forEach((c, i) => { lines[i].forEach((l, j) => page.drawText(l, { x: x + 3, y: y - 3 - size - j * (size + 2), size, font })); page.drawRectangle({ x, y: y - hgt, width: cols[i].w, height: hgt, borderColor: lineC, borderWidth: 0.5 }); x += cols[i].w; });
+      y -= hgt;
+    };
+    row(cols.map(c => c.label), FB, rgb(0.95, 0.96, 0.97));
+    for (const r of rows) row(r.map(v => String(v ?? '')), F);
+    y -= 6;
+  };
+  const sigs = db.prepare('SELECT * FROM signatures WHERE record_id=? ORDER BY id').all(rec.id);
+  const atts = db.prepare('SELECT * FROM attachments WHERE record_id=? ORDER BY ts').all(rec.id);
+  const links = linked(rec.id).filter(r => canSee(user, r));
+  const final = LOCKED.has(rec.status) || rec.status.startsWith('Closed');
+
+  // ----- report -----
+  newPage();
+  text(`${mod.name}`, { font: F, size: 10, color: grey });
+  text(rec.number, { font: FB, size: 17, color: blue });
+  text(d.title || '', { font: FB, size: 11 });
+  y -= 2;
+  text(`Status: ${rec.status}   ·   Created by ${userLabel(rec.created_by)} on ${tsText(rec.created_at)}   ·   Report by ${user.fullname} on ${tsText(now())}`, { size: 8.5, color: grey });
+  if (!final) { ensure(22); y -= 4; page.drawRectangle({ x: M, y: y - 16, width: W - 2 * M, height: 18, color: rgb(1, 0.97, 0.88), borderColor: rgb(0.82, 0.6, 0.13), borderWidth: 0.6 }); page.drawText(pdfText(`Interim report – the record is still in progress (stage "${rec.status}").`), { x: M + 6, y: y - 12, size: 8.5, font: FB, color: rgb(0.5, 0.35, 0) }); y -= 24; }
+  const LW = 170;
+  for (const f of mod.fields) {
+    if (f.type === 'section') { heading(f.label); continue; }
+    if (!f.k) continue;
+    const lab = wrap(f.label, F, 8, LW - 8), val = wrap(plainValue(f, d[f.k]), F, 8.8, W - 2 * M - LW).slice(0, 200);
+    const hgt = Math.max(lab.length * 10, val.length * 11.2) + 4;
+    if (hgt < 700) ensure(hgt);
+    lab.forEach((l, i) => { if (y - 8 - i * 10 > M + 16) page.drawText(l, { x: M, y: y - 8 - i * 10, size: 8, font: F, color: grey }); });
+    let yy = y;
+    for (const l of val) { if (yy - 11 < M + 16) { newPage(); yy = y; } page.drawText(l, { x: M + LW, y: yy - 8.8, size: 8.8, font: F }); yy -= 11.2; }
+    y = Math.min(yy, y - lab.length * 10) - 4;
+    page.drawLine({ start: { x: M, y: y + 2 }, end: { x: W - M, y: y + 2 }, thickness: 0.3, color: lineC });
+  }
+  // ----- signatures, with the signer's registered signature specimen -----
+  heading('Electronic signatures');
+  if (!sigs.length) text('No signatures yet.', { color: grey });
+  const sigImg = {};
+  for (const s of sigs) {
+    ensure(44);
+    if (!(s.username in sigImg)) { const u = db.prepare('SELECT signature FROM users WHERE username=?').get(s.username); try { sigImg[s.username] = u && u.signature ? await doc.embedPng(Buffer.from(u.signature.split(',')[1], 'base64')) : null; } catch { sigImg[s.username] = null; } }
+    const im = sigImg[s.username];
+    page.drawText(pdfText(s.meaning).slice(0, 95), { x: M, y: y - 10, size: 9, font: FB });
+    page.drawText(pdfText(`${s.fullname} (${s.username}) · ${tsText(s.ts)} · ${s.from_state || ''} -> ${s.to_state || ''}${s.content_hash === h ? '' : ' · signed an earlier version'}`).slice(0, 120), { x: M, y: y - 22, size: 7.8, font: F, color: grey });
+    if (im) { const ih = 30, iw = Math.min(120, im.width * ih / im.height); page.drawImage(im, { x: W - M - iw, y: y - 34, width: iw, height: ih }); }
+    page.drawLine({ start: { x: M, y: y - 38 }, end: { x: W - M, y: y - 38 }, thickness: 0.3, color: lineC });
+    y -= 42;
+  }
+  // ----- attachments list and linked records -----
+  heading(`Attachments (${atts.length})`);
+  const merged = atts.map(a => ['pdf', 'png', 'jpg'].includes(kindOf(Buffer.from(a.blob))));
+  if (atts.length) table([{ label: '#', w: 22 }, { label: 'Stage', w: 80 }, { label: 'File', w: 170 }, { label: 'Added by', w: 100 }, { label: 'Added', w: 85 }, { label: 'In this PDF', w: 58 }],
+    atts.map((a, i) => [i + 1, a.stage || '', a.name, userLabel(a.uploaded_by), tsText(a.ts), merged[i] ? 'Yes' : 'No – open in eQMS']));
+  else text('No attachments.', { color: grey });
+  heading('Linked records');
+  if (links.length) table([{ label: 'Number', w: 120 }, { label: 'Module', w: 110 }, { label: 'Title', w: 200 }, { label: 'Status', w: 85 }], links.map(l => [l.number, MODULES[l.type].name, l.data.title || '', l.status]));
+  else text('None.', { color: grey });
+
+  // ----- attachments: PDF pages and images merged in -----
+  for (const [i, a] of atts.entries()) {
+    const buf = Buffer.from(a.blob), kind = kindOf(buf), label = `Attachment ${i + 1} of ${atts.length}: ${a.name} (stage ${a.stage || '–'})`;
+    try {
+      if (kind === 'pdf') {
+        const src = await PDFDocument.load(buf, { ignoreEncryption: true });
+        if (src.isEncrypted) throw new Error('protected PDF');
+        const pages = await doc.copyPages(src, src.getPageIndices());
+        for (const p of pages) { doc.addPage(p); const { height } = p.getSize(); p.drawRectangle({ x: 0, y: height - 14, width: 420, height: 14, color: rgb(1, 1, 1), opacity: 0.85 }); p.drawText(pdfText(label).slice(0, 100), { x: 6, y: height - 10, size: 7, font: FB, color: blue }); }
+      } else if (kind === 'png' || kind === 'jpg') {
+        const im = kind === 'png' ? await doc.embedPng(buf) : await doc.embedJpg(buf);
+        newPage(label);
+        const maxW = W - 2 * M, maxH = H - 2 * M - 50, sc = Math.min(maxW / im.width, maxH / im.height, 1);
+        page.drawImage(im, { x: M + (maxW - im.width * sc) / 2, y: H - M - 40 - im.height * sc, width: im.width * sc, height: im.height * sc });
+      }
+    } catch (e) {
+      newPage(label); text(label, { font: FB, size: 10 });
+      text(`This file could not be added to the PDF (${e.message === 'protected PDF' ? 'it is a protected / encrypted PDF' : 'unreadable file'}). Open it from the record in the eQMS.`, { color: grey });
+    }
+  }
+  // ----- audit trail (QA, administrators, management) -----
+  newPage();
+  heading('Audit trail');
+  if (withAudit) {
+    const trail = db.prepare('SELECT * FROM audit WHERE record_id=? ORDER BY id').all(rec.id);
+    const lbl = (k) => { const f = mod.fields.find(x => x.k === k); return f ? f.label.split(' (')[0] : k || ''; };
+    table([{ label: 'Date / time', w: 72 }, { label: 'User', w: 78 }, { label: 'Action', w: 105 }, { label: 'Field', w: 70 }, { label: 'Change', w: 125 }, { label: 'Reason', w: 65.28 }],
+      trail.map(a => [tsText(a.ts), a.fullname, a.action, lbl(a.field), a.old_value != null ? `${a.old_value} -> ${a.new_value ?? ''}` : a.new_value || '', a.reason || '']), 7);
+  } else text('The audit trail is included in reports produced by QA, administrators and management.', { color: grey });
+  // footer on every page
+  const pages = doc.getPages(), stamp = `${rec.number} · ${CFG.orgName} · ${final ? 'Final report' : 'Interim report'} · ${tsText(now())}`;
+  pages.forEach((p, i) => { const { width } = p.getSize(); p.drawText(pdfText(stamp), { x: 18, y: 10, size: 6.5, font: F, color: grey }); const pn = `Page ${i + 1} of ${pages.length}`; p.drawText(pn, { x: width - 18 - F.widthOfTextAtSize(pn, 6.5), y: 10, size: 6.5, font: F, color: grey }); });
+  return Buffer.from(await doc.save());
+}
+route('GET', '/api/records/:id/report.pdf', async (ctx) => {
+  const rec = visibleRecord(ctx.user, getRecord(ctx.params.id)), inline = ctx.query.get('inline') === '1';
+  const buf = await reportPdf(ctx.user, rec);
+  audit(ctx.user, inline ? 'Report printed (PDF)' : 'Report downloaded (PDF)', rec, null, null, `Stage ${rec.status}`, null, ctx.ip);
+  const name = safeName(rec.number) + ' report.pdf';
+  return { __raw: buf, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${name.replace(/[^ -~]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(name)}` } };
+});
 route('GET', '/api/records/:id/report', (ctx) => {
   const rec = visibleRecord(ctx.user, getRecord(ctx.params.id));
   const buf = reportZip(ctx.user, rec);
@@ -1563,7 +1868,7 @@ const server = http.createServer(async (req, res) => {
     send(res, 200, out ?? { ok: true }, headers);
   } catch (e) {
     if (!(e instanceof HttpError)) console.error(e);
-    send(res, e.code || 500, { error: e instanceof HttpError ? e.message : 'Unexpected server error' });
+    send(res, e.code || 500, { error: e instanceof HttpError ? e.message : 'Unexpected server error', ...(e instanceof HttpError && e.extra ? e.extra : {}) });
   }
 });
 const STATE_MAP = { investigations: { Initiated: 'Initiation', 'Number Assignment': 'Requested', 'QA Assessment': 'QA Review', 'Pre-Approval': 'QA Review', Evaluation: 'QA Evaluation' }, changes: { 'Number Assignment': 'Draft', Requested: 'Draft', Initiation: 'Draft', 'QA Assessment': 'QA Review', 'Pre-Approval': 'RP Review', 'Pending Closure': 'QA Closure Review' } };

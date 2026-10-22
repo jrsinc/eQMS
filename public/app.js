@@ -87,7 +87,7 @@ async function api(method, url, body) {
   if (r.status === 401 && url !== '/api/login') { ME = null; renderLogin('Your session ended. Sign in again.'); throw new Error('Session expired'); }
   const ct = r.headers.get('content-type') || '';
   const out = ct.includes('json') ? await r.json() : await r.blob();
-  if (!r.ok) throw new Error(out.error || 'Request failed (' + r.status + ')');
+  if (!r.ok) { const e = new Error(out.error || 'Request failed (' + r.status + ')'); e.missing = out.missing || []; throw e; }
   return out;
 }
 
@@ -114,11 +114,35 @@ const val = (form, name) => (form.elements[name] ? form.elements[name].value : '
 
 async function ensureEsigAccepted() {
   if (ME.esigAccepted) return true;
+  toast('Register your signature before you sign for the first time.');
+  return registerSignature();
+}
+// Signature registration by the signed-in employee: initials, handwritten specimen (drawn), statement, password
+async function registerSignature() {
   const ok = await modal({
-    title: 'Electronic signature statement', ok: 'I accept', html: `<p class="sig-statement">I certify that my electronic signature in this system is the legally binding equivalent of my handwritten signature (21 CFR 11.100). I will not share my password, and I am accountable for actions initiated under my electronic signature.</p>`,
-    onOk: () => api('POST', '/api/esig-accept')
+    title: 'Register my signature', ok: 'Register signature', wide: true,
+    html: `<p class="muted small">Register of signatures (JRS/SOP/QAS/009). Only you can register your signature. It is renewed every 5 years.</p>
+      <div class="grid"><div><label class="f">Name</label><input type="text" value="${esc(ME.fullname)}" readonly></div><div><label class="f">Initials <span class="req">*</span></label><input type="text" name="initials" maxlength="6" style="text-transform:uppercase" value="${esc((USERS.find(u => u.username === ME.username) || {}).initials || '')}"></div></div>
+      <div><label class="f">Signature specimen – sign in the box with the mouse, pen or finger <span class="req">*</span></label><canvas id="sigpad" class="sigpad" width="560" height="160" aria-label="Signature pad"></canvas>
+      <button type="button" class="btn" id="sigclear">Clear</button></div>
+      <label class="row"><input type="checkbox" name="accept"> I certify that my electronic signature in this system is the legally binding equivalent of my handwritten signature (21 CFR 11.100). I will not share my password, and I am accountable for actions initiated under my electronic signature.</label>
+      <div><label class="f">Password (confirms it is you) <span class="req">*</span></label><input type="password" name="password" autocomplete="current-password"></div>`,
+    onMount: (f) => {
+      const c = $('#sigpad', f), g = c.getContext('2d'); let down = false, drawn = false;
+      g.lineWidth = 2.2; g.lineCap = 'round'; g.strokeStyle = '#0b2a6b';
+      const pos = (e) => { const r = c.getBoundingClientRect(); return [(e.clientX - r.left) * c.width / r.width, (e.clientY - r.top) * c.height / r.height]; };
+      c.addEventListener('pointerdown', (e) => { down = true; c.setPointerCapture(e.pointerId); g.beginPath(); g.moveTo(...pos(e)); });
+      c.addEventListener('pointermove', (e) => { if (!down) return; g.lineTo(...pos(e)); g.stroke(); drawn = true; });
+      ['pointerup', 'pointerleave'].forEach(ev => c.addEventListener(ev, () => { down = false; }));
+      $('#sigclear', f).addEventListener('click', () => { g.clearRect(0, 0, c.width, c.height); drawn = false; });
+      f._drawn = () => drawn;
+    },
+    onOk: async (f) => {
+      if (!f._drawn()) throw new Error('Draw your signature in the box.');
+      await api('POST', '/api/signature/register', { initials: val(f, 'initials'), signature: $('#sigpad', f).toDataURL('image/png'), accept: f.accept.checked, password: f.password.value });
+    }
   });
-  if (ok) ME.esigAccepted = true;
+  if (ok) { ME.esigAccepted = true; toast('Signature registered'); }
   return !!ok;
 }
 /** Dialog for a workflow step. Collects reason, extra fields and the e-signature, then calls perform(values). */
@@ -147,7 +171,7 @@ function renderLogin(msg = '') {
   clearInterval(idleTimer);
   $('#app').innerHTML = `${envBanner()}<div class="login"><div class="side"><h1>Quality records you can stand behind in an inspection.</h1>
     <p>Documents, training, deviations and complaints, CAPA, change control, audits, suppliers and clinical supply — one validated system with a full audit trail and electronic signatures.</p></div>
-    <form id="lf"><div class="brand" style="color:var(--ink);padding:0">${logo()}<div>QualiSuite eQMS<small class="muted">${esc(HEALTH.org || '')}</small></div></div>
+    <form id="lf"><div class="brand login-brand"><img class="brand-logo" src="/logo.png" alt="Jupiter Research Services"></div><p class="muted small" style="margin:-.4rem 0 0">Electronic Quality Management System</p>
     <h2>Sign in</h2><div><label class="f" for="u">User ID or email</label><input id="u" type="text" autocomplete="username" required></div>
     <div><label class="f" for="p">Password</label><input id="p" type="password" autocomplete="current-password" required></div>
     <div class="error" role="alert">${esc(msg)}</div><button class="btn primary">Sign in</button>
@@ -200,15 +224,16 @@ function shell(active, html) {
   const link = (href, label, key, count) => `<a href="#/${href}" class="${active === key ? 'active' : ''}">${esc(label)}${count ? `<span class="count">${count}</span>` : ''}</a>`;
   const isAdmin = ME.allAccess;
   $('#app').innerHTML = `<div class="shell"><nav class="nav" id="nav" aria-label="Main">
-    <div class="brand">${logo()}<div>QualiSuite eQMS<small>${esc(HEALTH.org || '')}</small></div></div>
+    <div class="brand"><img class="brand-logo" src="/logo.png" alt="Jupiter Research Services"></div><div class="brand-sub">eQMS</div>
     ${link('dashboard', 'Dashboard', 'dashboard')}${link('tasks', 'My tasks', 'tasks')}${link('readiness', 'Inspection readiness', 'readiness')}
     ${Object.entries(groups).map(([g, list]) => `<h4>${esc(g)}</h4>${list.map(([k, m]) => link('m/' + k, m.name, k, openCount(k))).join('')}${g === 'Documents & training' ? link('matrix', 'Training matrix', 'matrix') : ''}`).join('')}
     <h4>System</h4>${auditAccess() ? link('audit', 'Audit trail', 'audit') : ''}${link('signatures', 'Signature register', 'signatures')}${link('sharepoint', 'SharePoint', 'sharepoint')}${link('departments', 'Departments', 'departments')}${ME.canEditOrg ? link('organogram', 'Organogram', 'organogram') : ''}${isAdmin ? link('users', 'Users and roles', 'users') : ''}${link('password', 'Change password', 'password')}
     </nav><div class="main">${envBanner()}<header class="topbar"><button class="btn menu-btn" id="menu" aria-label="Menu">Menu</button>
     <form id="gs" role="search" style="flex:1;max-width:420px"><input type="search" name="q" placeholder="Search records by number or title"></form>
-    <div class="who"><span title="Automatic lock after inactivity">Lock in <span id="idle" class="mono">${Math.floor(idleLeft / 60)}:${String(idleLeft % 60).padStart(2, '0')}</span></span>
+    <div class="who"><a class="btn bell" href="#/notifications" title="Notifications">Notifications<span class="count" id="ncount" hidden></span></a><span title="Automatic lock after inactivity">Lock in <span id="idle" class="mono">${Math.floor(idleLeft / 60)}:${String(idleLeft % 60).padStart(2, '0')}</span></span>
     <span><b>${esc(ME.fullname)}</b><br><span class="small muted">${esc([ME.department ? deptName(ME.department) : '', ...ME.roles.filter(r => r !== 'numgen').map(r => r === 'hod' ? 'Head of ' + ME.hodOf.join(', ') : CFG.ROLES[r].split(' (')[0])].filter(Boolean).join(' · '))}</span></span>
     <button class="btn" id="logout">Sign out</button></div></header><main class="content" id="content">${html}</main></div></div>`;
+  api('GET', '/api/notifications?count=1').then(r => { const c = $('#ncount'); if (c && r.unread) { c.textContent = r.unread; c.hidden = false; } }).catch(() => {});
   $('#logout').addEventListener('click', async () => { await api('POST', '/api/logout'); ME = null; location.hash = ''; renderLogin(); });
   $('#menu').addEventListener('click', () => $('#nav').classList.toggle('open'));
   $('#gs').addEventListener('submit', (e) => { e.preventDefault(); location.hash = '#/search/' + encodeURIComponent(e.target.q.value); });
@@ -223,7 +248,7 @@ async function route() {
   QS = new URLSearchParams(query || ''); // e.g. #/audit?from=2026-07-01&to=2026-09-30
   try {
     ALL = await api('GET', '/api/records');
-    const views = { dashboard, tasks, readiness, matrix, audit: auditView, history: historyView, signatures: signatureRegister, users: usersView, departments: departmentsView, organogram: organogramView, sharepoint: spView, password: () => renderPasswordChange(false), m: listView, new: newView, r: detailView, search: searchView, verify: verifyView };
+    const views = { dashboard, tasks, readiness, matrix, audit: auditView, history: historyView, signatures: signatureRegister, users: usersView, notifications: notificationsView, departments: departmentsView, organogram: organogramView, sharepoint: spView, password: () => renderPasswordChange(false), m: listView, new: newView, r: detailView, search: searchView, verify: verifyView };
     await (views[view] || dashboard)(a);
     window.scrollTo(0, 0);
   } catch (x) { if (ME) { shell('', `<div class="panel"><h2>Something went wrong</h2><p>${esc(x.message)}</p></div>`); } }
@@ -358,10 +383,19 @@ function tableRow(f, r = {}, d = '') {
     const v = r[c.k] || '', aria = `aria-label="${esc(c.label)}"`;
     if (c.computed) return `<span class="mono" data-calc="${c.k}">${esc(calc[c.k] || '')}</span>`;
     if (c.options) return `<select data-col="${c.k}" ${d} ${aria}><option value=""></option>${c.options.map(o => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+    if (c.type === 'user') return `<select data-col="${c.k}" ${d} ${aria}><option value=""></option>${USERS.filter(u => u.active || u.username === v).map(u => `<option value="${esc(u.username)}" ${u.username === v ? 'selected' : ''}>${esc(u.fullname)}${u.department ? ' – ' + esc(u.department) : ''}</option>`).join('')}</select>`;
+    if (c.type === 'dept') return `<select data-col="${c.k}" ${d} ${aria}><option value=""></option>${Object.entries(CFG.DEPTS).map(([k, l]) => `<option value="${esc(k)}" ${k === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
     if (c.type === 'score') return `<input type="number" min="1" max="5" step="1" class="score" data-col="${c.k}" value="${esc(v)}" ${d} ${aria}>`;
     return `<input type="${c.type === 'date' ? 'date' : 'text'}" data-col="${c.k}" value="${esc(v)}" ${d} ${aria}>`;
   };
   return `<tr>${f.cols.map(c => `<td>${cell(c)}</td>`).join('')}${d ? '' : '<td><button type="button" class="btn" data-delrow>Remove</button></td>'}</tr>`;
+}
+// highlight the fields the server reported as still empty
+function markMissing(root, keys = []) {
+  if (!root) return;
+  $$('.field-missing', root).forEach(el => el.classList.remove('field-missing'));
+  for (const k of keys) { const el = $(`[name="${k}"], [data-table="${k}"], [data-computed="${k}"]`, root); const box = el && el.closest('.grid > div'); if (box) box.classList.add('field-missing'); }
+  $('.field-missing', root)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 function readForm(root, m) {
   const out = {};
@@ -411,7 +445,7 @@ function newView(type) {
       for (const f of files) await uploadFile(rec.id, f);
       toast(`${rec.number} created${files.length ? ` with ${files.length} attachment(s)` : ''}`); location.hash = '#/r/' + rec.id;
     }
-    catch (x) { $('.error', form).textContent = x.message; }
+    catch (x) { $('.error', form).textContent = x.message; markMissing(form, x.missing); }
   });
 }
 
@@ -443,7 +477,7 @@ async function detailView(id) {
   const canWrite = !ME.roles.every(r => r === 'extaud');
   const isRequest = (rec.type === 'investigations' && ['Requested', 'Request Update', 'Rejected'].includes(rec.status)) || (rec.type === 'changes' && ['Draft', 'QA Review', 'Rejected', 'Cancelled'].includes(rec.status));
   if (canWrite && !isRequest) {
-    if (['investigations', 'selfinspections', 'extaudits'].includes(rec.type)) extraBtns.push(`<button class="btn" data-act="spawn" data-to="capa">Raise CAPA</button>`, `<button class="btn" data-act="spawn" data-to="rca">Start RCA</button>`);
+    if (['investigations', 'selfinspections', 'extaudits'].includes(rec.type)) extraBtns.push(`<button class="btn" data-act="spawn" data-to="capa">Raise CAPA</button>`);
     if (['investigations', 'capa', 'extaudits'].includes(rec.type)) extraBtns.push(`<button class="btn" data-act="spawn" data-to="changes">Raise change control</button>`);
     if (['changes', 'investigations', 'capa'].includes(rec.type)) extraBtns.push(`<button class="btn" data-act="spawn" data-to="risks">Start risk assessment</button>`);
     if (rec.type === 'capa') extraBtns.push(`<button class="btn" data-act="spawn" data-to="training">Assign retraining</button>`);
@@ -458,7 +492,7 @@ async function detailView(id) {
     <div class="record"><div>
       <div class="panel no-print"><h3>Next steps</h3><div class="row">
         ${trans.length ? trans.map((t, i) => `<button class="btn ${t.sign ? 'primary sign' : ''}" data-act="tr" data-i="${i}" ${t.allowed ? '' : 'disabled title="Your roles do not permit this step"'}>${esc(t.label)}</button>`).join('') : extraBtns.length ? '' : '<span class="muted">No workflow steps available from this status.</span>'}
-        ${extraBtns.join('')}<a class="btn" href="/api/records/${rec.id}/report" download title="Report with every part, signatures, attachments${det.auditAccess ? ' and the audit trail' : ''} (ZIP)">Download report</a><button class="btn" data-act="print">Print record</button><button class="btn" data-act="export">Export JSON</button></div></div>
+        ${extraBtns.join('')}<a class="btn" href="/api/records/${rec.id}/report.pdf" download title="One PDF: every part, signatures, all PDF and image attachments${det.auditAccess ? ', audit trail' : ''}">Download report (PDF)</a><a class="btn" href="/api/records/${rec.id}/report.pdf?inline=1" target="_blank" rel="noopener">Print report</a><a class="btn" href="/api/records/${rec.id}/report" download title="Original attachment files in a ZIP">Files (ZIP)</a></div></div>
       <form class="panel" id="rf"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Record details</h3>${det.editable ? '<span class="small muted">Changes need a reason and are recorded in the audit trail.</span>' : '<span class="pill grey">Read-only in this status</span>'}</div>
         <div class="grid">${(() => { let s = null; return m.fields.map(f => {
           if (f.type === 'section') { s = f; return fieldHtml(f) + sectionSignatures(m, f, det.signatures); }
@@ -493,12 +527,10 @@ async function detailView(id) {
   });
   $$('[data-act="tr"]').forEach(b => b.addEventListener('click', async () => {
     const t = trans[+b.dataset.i];
-    const ok = await stepDialog({ title: t.label, meaning: t.sign, reason: t.reason, perform: (v) => api('POST', `/api/records/${id}/transition`, { to: t.to, label: t.label, ...v }) });
+    const ok = await stepDialog({ title: t.label, meaning: t.sign, reason: t.reason, perform: (v) => api('POST', `/api/records/${id}/transition`, { to: t.to, label: t.label, ...v }).catch(x => { markMissing($('#rf'), x.missing); throw x; }) });
     if (ok) { toast(ok.pending && ok.pending.length ? `Signed – still needed: ${ok.pending.join(', ')}` : `${rec.number}: ${ok.status || t.to}`); route(); }
   }));
   const act = (name, fn) => $$(`[data-act="${name}"]`).forEach(b => b.addEventListener('click', () => fn(b)));
-  act('print', () => printRecord(rec, det.signatures));
-  act('export', async () => download(`${rec.number}.json`, JSON.stringify(await api('GET', '/api/export/' + id), null, 2), 'application/json'));
   act('revise', async () => {
     const r = await stepDialog({ title: 'Start revision', reason: true,
       extra: `<div><label class="f">Revision type</label><select name="revisionType"><option>Revision – technical / procedural change</option><option>Periodic review – no change</option></select></div>
@@ -584,7 +616,6 @@ async function spawn(src, to) {
   const capaSource = src.type === 'investigations' ? s.invType : src.type === 'selfinspections' ? 'Internal audit / self-inspection'
     : src.type === 'extaudits' ? (s.auditType === 'Regulatory inspection' ? 'Regulatory inspection / compliance' : 'External audit') : 'Other';
   const pre = { capa: { title: 'CAPA for ' + src.number + ': ' + (s.title || ''), source: capaSource, sourceRecord: src.number, nonconformance: s.description || s.title || '', respDept: s.respDept || s.auditeeDept || '', respPerson: s.respPerson || s.auditee || '' },
-    rca: { title: s.title || '', sourceRecord: src.number },
     changes: { title: 'Change arising from ' + src.number, justification: 'See ' + src.number, respDept: s.respDept || '' },
     risks: { title: 'Risk assessment for ' + src.number + ': ' + (s.title || ''), referenceDoc: src.number, site: s.site || '' },
     extensions: { documentId: src.number, scope: 'Overall due date' },
@@ -596,15 +627,6 @@ async function spawn(src, to) {
   form.addEventListener('submit', async (e) => { e.preventDefault(); try { const r = await api('POST', '/api/records', { type: to, data: readForm(form, m), linkFrom: src.id }); toast(r.number + ' created'); location.hash = '#/r/' + r.id; } catch (x) { $('.error', form).textContent = x.message; } });
 }
 
-function printRecord(rec, sigs = []) {
-  const m = MODS[rec.type];
-  api('POST', `/api/records/${rec.id}/printed`, {}).catch(() => {});
-  const w = window.open('', '_blank'); if (!w) return toast('Allow pop-ups to print.');
-  w.document.write(`<!doctype html><title>${esc(rec.number)}</title><style>body{font:11pt Arial,sans-serif;margin:15mm}table{border-collapse:collapse;width:100%}td,th{border:1px solid #888;padding:4px 6px;text-align:left;vertical-align:top}th{width:30%;background:#eee}th.sec{background:#cfd8d4;width:auto}.wm{position:fixed;top:40%;left:5%;font-size:44pt;color:rgba(0,0,0,.08);transform:rotate(-30deg)}</style>
-   <div class="wm">UNCONTROLLED COPY</div><h2>${esc(rec.number)} – ${esc(m.name)}</h2><p>Status: ${esc(rec.status)} · Printed ${dmyt(new Date().toISOString())} by ${esc(ME.fullname)} · Valid on date of print only</p>
-   <table>${m.fields.map(f => f.type === 'section' ? `<tr><th class="sec" colspan="2">${esc(f.label)}</th></tr>${signoffRows(m, f, sigs).map(x => `<tr><th>${esc(x.meaning)}</th><td>${x.sig ? `${esc(x.sig.fullname)} · ${dmyt(x.sig.ts)}` : 'Pending'}</td></tr>`).join('')}` :`<tr><th>${esc(f.label)}</th><td style="white-space:pre-wrap">${esc(f.type === 'user' ? userName(rec.data[f.k]) : f.fmt === 'date' ? dmy(rec.data[f.k]) : plain(f, rec.data[f.k]))}</td></tr>`).join('')}</table>`);
-  w.document.close(); w.focus(); w.print();
-}
 
 // ---------- issued copies with stamp ----------
 function printIssued(r) {
@@ -773,11 +795,13 @@ async function auditView() {
     <div id="al"></div>`);
   const rows = await api('GET', '/api/audit?limit=2000&' + new URLSearchParams(Object.entries(f).filter(([, v]) => v)).toString());
   const view = rows.map(a => ({ ...a, module: recordLabel(a), fieldName: fieldLabel(a.record_type, a.field), oldV: String(auditValue(a.record_type, a.field, a.old_value) ?? ''), newV: String(auditValue(a.record_type, a.field, a.new_value) ?? '') }));
-  $('#al').innerHTML = `<p class="small muted">${view.length} entr${view.length === 1 ? 'y' : 'ies'}${view.length === 2000 ? ' (latest 2,000 – narrow the filters to see older entries)' : ''} · ${esc(filterText(f))}</p>
-    <div class="table-wrap"><table class="t audit-table"><thead><tr><th>#</th><th>Date / time</th><th>User</th><th>Action</th><th>Record</th><th>Field</th><th>Old value</th><th>New value</th><th>Reason</th></tr></thead><tbody>
-    ${view.map(a => `<tr><td class="mono small">${a.id}</td><td class="mono small">${dmyt(a.ts)}</td><td>${esc(a.fullname || a.username)}<br><span class="small muted mono">${esc(a.username || '')}</span></td><td>${esc(a.action)}</td>
-      <td>${a.record_id ? `<a class="mono small" href="#/r/${a.record_id}">${esc(a.record_number)}</a><br><span class="small muted">${esc(a.module)}</span>` : '<span class="small muted">System</span>'}</td>
-      <td>${esc(a.fieldName)}</td><td class="small">${esc(a.oldV.slice(0, 160))}</td><td class="small">${esc(a.newV.slice(0, 160))}</td><td class="small">${esc(a.reason || '')}</td></tr>`).join('') || '<tr><td colspan="9" class="muted">No entries match.</td></tr>'}</tbody></table></div>`;
+  // which modules changed in this selection – click one to filter
+  const byMod = Object.entries(view.reduce((o, a) => { const k = a.record_type || (a.record_id ? '' : 'system'); (o[k] ||= { label: a.module || 'System', n: 0 }).n++; return o; }, {})).sort((x, y) => y[1].n - x[1].n);
+  $('#al').innerHTML = `${byMod.length ? `<div class="panel" style="margin-bottom:.8rem"><h3 style="margin-top:0">Changes by module</h3><div class="row">${byMod.map(([k, x]) => k ? `<a class="btn" href="#/audit?${new URLSearchParams({ ...Object.fromEntries(Object.entries(f).filter(([, v]) => v)), type: k })}">${esc(x.label)} <span class="count">${x.n}</span></a>` : `<span class="btn">${esc(x.label)} <span class="count">${x.n}</span></span>`).join('')}</div></div>` : ''}<p class="small muted">${view.length} entr${view.length === 1 ? 'y' : 'ies'}${view.length === 2000 ? ' (latest 2,000 – narrow the filters to see older entries)' : ''} · ${esc(filterText(f))}</p>
+    <div class="table-wrap"><table class="t audit-table"><thead><tr><th>#</th><th>Date / time</th><th>User</th><th>Module</th><th>Action</th><th>Record</th><th>Field</th><th>Old value</th><th>New value</th><th>Reason</th></tr></thead><tbody>
+    ${view.map(a => `<tr><td class="mono small">${a.id}</td><td class="mono small">${dmyt(a.ts)}</td><td>${esc(a.fullname || a.username)}<br><span class="small muted mono">${esc(a.username || '')}</span></td><td>${esc(a.module || 'System')}</td><td>${esc(a.action)}</td>
+      <td>${a.record_id ? `<a class="mono small" href="#/r/${a.record_id}">${esc(a.record_number)}</a>` : '<span class="small muted">–</span>'}</td>
+      <td>${esc(a.fieldName)}</td><td class="small">${esc(a.oldV.slice(0, 160))}</td><td class="small">${esc(a.newV.slice(0, 160))}</td><td class="small">${esc(a.reason || '')}</td></tr>`).join('') || '<tr><td colspan="10" class="muted">No entries match.</td></tr>'}</tbody></table></div>`;
   $('#aq').addEventListener('submit', (e) => { e.preventDefault(); const p = new URLSearchParams([...new FormData(e.target)].filter(([, v]) => v)); location.hash = '#/audit' + (p.toString() ? '?' + p : ''); });
   $('#av').addEventListener('click', async () => { const r = await api('GET', '/api/audit/verify'); modal({ title: 'Audit trail integrity', cancel: '', ok: 'Close', html: r.ok ? `<p><span class="pill done">Intact</span> ${r.checked} entries verified. The hash chain is unbroken.</p>` : `<p><span class="pill bad">Broken</span> Chain fails at entry #${r.brokenAt}. Escalate to QA and IT as a data-integrity incident.</p>` }); });
   $('#ax').addEventListener('click', () => {
@@ -792,8 +816,8 @@ async function auditView() {
     w.document.write(`<!doctype html><title>Audit trail report</title><style>body{font:9.5pt Arial,sans-serif;margin:12mm}h1{font-size:14pt;margin:0}table{border-collapse:collapse;width:100%;margin-top:4mm}td,th{border:1px solid #999;padding:2px 4px;text-align:left;vertical-align:top}th{background:#eee}thead{display:table-header-group}.meta{margin:2mm 0;color:#333}</style>
       <h1>Audit trail report – ${esc(HEALTH.org || '')}</h1>
       <div class="meta">Filters: ${esc(filterText(f))}<br>Entries: ${view.length} · Integrity: ${chain.ok ? `intact (${chain.checked} entries verified)` : `BROKEN at entry #${chain.brokenAt}`}<br>Printed ${dmyt(new Date().toISOString())} ${esc(tz)} by ${esc(ME.fullname)}</div>
-      <table><thead><tr><th>#</th><th>Date / time</th><th>User</th><th>Action</th><th>Record</th><th>Field</th><th>Old</th><th>New</th><th>Reason</th></tr></thead><tbody>
-      ${view.map(a => `<tr><td>${a.id}</td><td>${dmyt(a.ts)}</td><td>${esc(a.fullname || a.username)}</td><td>${esc(a.action)}</td><td>${esc(a.record_number || 'System')}</td><td>${esc(a.fieldName)}</td><td>${esc(a.oldV)}</td><td>${esc(a.newV)}</td><td>${esc(a.reason || '')}</td></tr>`).join('')}</tbody></table>`);
+      <table><thead><tr><th>#</th><th>Date / time</th><th>User</th><th>Module</th><th>Action</th><th>Record</th><th>Field</th><th>Old</th><th>New</th><th>Reason</th></tr></thead><tbody>
+      ${view.map(a => `<tr><td>${a.id}</td><td>${dmyt(a.ts)}</td><td>${esc(a.fullname || a.username)}</td><td>${esc(a.module || 'System')}</td><td>${esc(a.action)}</td><td>${esc(a.record_number || '–')}</td><td>${esc(a.fieldName)}</td><td>${esc(a.oldV)}</td><td>${esc(a.newV)}</td><td>${esc(a.reason || '')}</td></tr>`).join('')}</tbody></table>`);
     w.document.close(); w.focus(); w.print();
   });
 }
@@ -858,13 +882,16 @@ async function signatureRegister() {
   USERS = await api('GET', '/api/users');
   const status = (u) => !u.active ? `<span class="pill grey">Inactive${u.inactive_date ? ' from ' + dmy(u.inactive_date) : ''}</span>` : !u.esig_accepted ? '<span class="pill warn">Not registered</span>'
     : u.esigCurrent ? '<span class="pill done">Registered</span>' : '<span class="pill bad">Re-registration due</span>';
-  shell('signatures', `<div class="spread"><div><h1>Signature register</h1><p class="muted">Electronic register of signatures (replaces FRM/QAS/008). A user registers by accepting the electronic signature statement at first signing; registration is renewed every 5 years. Superseded entries stay in the audit trail.</p></div><button class="btn" id="sx">Export CSV</button></div>
-    <div class="table-wrap"><table class="t"><thead><tr><th>Name</th><th>User ID</th><th>Designation</th><th>Department</th><th>Initials</th><th>Registered on</th><th>Re-register by</th><th>Status</th></tr></thead><tbody>
-    ${USERS.map(u => `<tr><td>${esc(u.fullname)}</td><td class="mono">${esc(u.username)}</td><td>${esc(u.designation || '')}</td><td>${esc(CFG.DEPTS[u.department] || u.department || '')}</td><td class="mono">${esc(u.initials || '')}</td><td>${dmy(u.esig_accepted)}</td><td>${dmy(u.reregisterBy)}</td><td>${status(u)}</td></tr>`).join('')}</tbody></table></div>`);
+  const me = USERS.find(u => u.username === ME.username) || {};
+  shell('signatures', `<div class="spread"><div><h1>Signature register</h1><p class="muted">Electronic register of signatures (replaces FRM/QAS/008). A user registers by accepting the electronic signature statement at first signing; registration is renewed every 5 years. Superseded entries stay in the audit trail.</p></div><div class="row"><button class="btn primary" id="sr">${me.hasSignature && me.esigCurrent ? 'Re-register my signature' : 'Register my signature'}</button><button class="btn" id="sx">Export CSV</button></div></div>
+    <div class="table-wrap"><table class="t"><thead><tr><th>Name</th><th>User ID</th><th>Designation</th><th>Department</th><th>Initials</th><th>Signature</th><th>Registered on</th><th>Re-register by</th><th>Status</th></tr></thead><tbody>
+    ${USERS.map(u => `<tr><td>${esc(u.fullname)}</td><td class="mono">${esc(u.username)}</td><td>${esc(u.designation || '')}</td><td>${esc(CFG.DEPTS[u.department] || u.department || '')}</td><td class="mono">${esc(u.initials || '')}</td><td>${u.hasSignature ? `<img class="sig-thumb" alt="Signature of ${esc(u.fullname)}" src="/api/users/${encodeURIComponent(u.username)}/signature?v=${encodeURIComponent(u.esig_accepted || '')}">` : ''}</td><td>${dmy(u.esig_accepted)}</td><td>${dmy(u.reregisterBy)}</td><td>${status(u)}</td></tr>`).join('')}</tbody></table></div>`);
+  $('#sr').addEventListener('click', async () => { if (await registerSignature()) signatureRegister(); });
   $('#sx').addEventListener('click', () => download(`signature_register_${today()}.csv`, toCsv([['Name', 'User ID', 'Designation', 'Department', 'Initials', 'Registered on', 'Re-register by', 'Active', 'Inactive from'], ...USERS.map(u => [u.fullname, u.username, u.designation, u.department, u.initials, u.esig_accepted, u.reregisterBy, u.active ? 'Yes' : 'No', u.inactive_date])])));
 }
 
 // ---------- users ----------
+const f_pwNote = (ok, u) => ok.mailConfigured === false ? 'User updated. E-mail is not set up – if you reset the password, give it to the user yourself.' : !u.email ? 'User updated. The user has no e-mail address – give a reset password to them yourself.' : 'User updated';
 async function usersView() {
   if (!ME.allAccess) return dashboard();
   USERS = await api('GET', '/api/users');
@@ -877,8 +904,8 @@ async function usersView() {
   const regFields = (u = {}) => `<div class="grid"><div><label class="f">Designation</label><input type="text" name="designation" value="${esc(u.designation || '')}"></div>
     <div><label class="f">Department</label><select name="department"><option value=""></option>${Object.entries(CFG.DEPTS).map(([k, v]) => `<option value="${k}" ${u.department === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
     <div><label class="f">Reports to (line manager)</label><select name="reportsTo"><option value=""></option>${USERS.filter(x => x.active && x.username !== u.username).map(x => `<option value="${esc(x.username)}" ${u.reports_to === x.username ? 'selected' : ''}>${esc(x.fullname)}</option>`).join('')}</select></div>
-    <div><label class="f">Initials</label><input type="text" name="initials" value="${esc(u.initials || '')}"></div></div>`;
-  const regVals = (f) => ({ designation: val(f, 'designation'), department: val(f, 'department'), reportsTo: val(f, 'reportsTo'), initials: val(f, 'initials') });
+    </div>`;
+  const regVals = (f) => ({ designation: val(f, 'designation'), department: val(f, 'department'), reportsTo: val(f, 'reportsTo') });
   shell('users', `<div class="spread"><div><h1>Users and roles</h1><p class="muted">User IDs are unique and never reused. Deactivate instead of deleting. Administrators and management have all access; department users raise deviations and complaints and write reports for their department.</p></div><div class="row"><button class="btn primary" id="nu">New user</button><button class="btn" id="ux">Access review CSV</button></div></div>
     <div class="table-wrap"><table class="t"><thead><tr><th>User ID</th><th>Name</th><th>Department</th><th>Reports to</th><th>Roles</th><th>Status</th><th>Last login</th><th></th></tr></thead><tbody>
     ${USERS.map(u => `<tr><td class="mono">${esc(u.username)}</td><td>${esc(u.fullname)}</td><td>${esc(deptName(u.department))}</td><td>${esc(userName(u.reports_to))}</td><td class="small">${esc(u.roles.map(r => CFG.ROLES[r]).join(', '))}</td><td>${u.locked ? '<span class="pill bad">Locked</span>' : u.active ? '<span class="pill done">Active</span>' : '<span class="pill grey">Inactive</span>'}</td><td class="small">${dmyt(u.last_login)}</td><td><button class="btn" data-edit="${esc(u.username)}">Edit</button></td></tr>`).join('')}</tbody></table></div>`);
@@ -887,17 +914,26 @@ async function usersView() {
       <div><label class="f">Email</label><input type="text" name="email"></div><div><label class="f">Initial password</label><input type="password" name="password" autocomplete="new-password"></div></div>
       ${regFields()}<div><label class="f">Roles</label>${roleChecks()}</div><div><label class="f">Reason / access request reference</label><input type="text" name="reason"></div>`,
       onOk: (f) => api('POST', '/api/users', { username: val(f, 'username'), fullname: val(f, 'fullname'), email: val(f, 'email'), password: f.password.value, reason: val(f, 'reason'), roles: $$('input[name=roles]:checked', f).map(x => x.value), ...regVals(f) }) });
-    if (ok) { toast('User created – they must change the password at first sign-in'); usersView(); }
+    if (ok) { toast(ok.emailed ? 'User created – the temporary password was e-mailed to them' : 'User created – e-mail is not set up, so give them the temporary password yourself; they must change it at first sign-in'); usersView(); }
   });
   $$('[data-edit]').forEach(b => b.addEventListener('click', async () => {
     const u = USERS.find(x => x.username === b.dataset.edit);
-    const ok = await modal({ title: 'Edit ' + u.username, ok: 'Save', html: `${regFields(u)}<div><label class="f">Roles</label>${roleChecks(u.roles)}</div>
+    const ok = await modal({ title: 'Edit ' + u.username, ok: 'Save', html: `<div><label class="f">E-mail</label><input type="text" name="email" value="${esc(u.email || '')}"></div>${regFields(u)}<div><label class="f">Roles</label>${roleChecks(u.roles)}</div>
       <div class="row"><label><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> Active</label>${u.locked ? '<label><input type="checkbox" name="unlock"> Unlock account</label>' : ''}</div>
       <div><label class="f">Reset password (optional)</label><input type="password" name="password" autocomplete="new-password"></div><div><label class="f">Reason <span class="req">*</span></label><input type="text" name="reason"></div>`,
-      onOk: (f) => api('PUT', '/api/users/' + u.username, { roles: $$('input[name=roles]:checked', f).map(x => x.value), active: f.active.checked, unlock: f.unlock ? f.unlock.checked : false, password: f.password.value || undefined, reason: val(f, 'reason'), ...regVals(f) }) });
-    if (ok) { toast('User updated'); usersView(); }
+      onOk: (f) => api('PUT', '/api/users/' + u.username, { roles: $$('input[name=roles]:checked', f).map(x => x.value), active: f.active.checked, unlock: f.unlock ? f.unlock.checked : false, password: f.password.value || undefined, reason: val(f, 'reason'), email: val(f, 'email'), ...regVals(f) }) });
+    if (ok) { toast(ok.emailed ? `User updated – new password e-mailed to ${u.email}` : f_pwNote(ok, u)); usersView(); }
   }));
   $('#ux').addEventListener('click', () => download(`user_access_review_${today()}.csv`, toCsv([['User ID', 'Name', 'Department', 'Reports to', 'Roles', 'Active', 'Locked', 'Last login', 'Created'], ...USERS.map(u => [u.username, u.fullname, u.department, u.reports_to, u.roles.join('; '), u.active ? 'Yes' : 'No', u.locked ? 'Yes' : 'No', u.last_login, u.created_at])])));
+}
+
+// ---------- notifications (also sent by e-mail when the server has e-mail set up) ----------
+async function notificationsView() {
+  const r = await api('GET', '/api/notifications');
+  shell('notifications', `<h1>Notifications</h1><p class="muted">Status changes of records you are involved in and steps waiting for you. The same messages are e-mailed to you when e-mail is set up on the server.</p>
+    ${r.items.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Date / time</th><th>Record</th><th>Message</th><th>E-mail</th></tr></thead><tbody>${r.items.map(n => `<tr class="${n.read ? '' : 'unread'}"><td class="small mono">${dmyt(n.ts)}</td>
+      <td>${n.record_id ? `<a class="mono" href="#/r/${n.record_id}">${esc(n.record_number)}</a>` : ''}</td><td>${n.action ? '<span class="pill warn">Action needed</span> ' : ''}<b>${esc(n.subject)}</b><div class="small muted" style="white-space:pre-line">${esc(n.body)}</div></td><td class="small muted">${esc(n.email || 'Queued')}</td></tr>`).join('')}</tbody></table></div>` : '<div class="table-wrap"><div class="empty">No notifications yet.</div></div>'}`);
+  if (r.unread) api('POST', '/api/notifications/read').catch(() => {});
 }
 
 // ---------- departments (admin and management create them) ----------
@@ -906,8 +942,8 @@ async function departmentsView() {
   const members = (c) => USERS.filter(u => u.active && u.department === c).length;
   shell('departments', `<div class="spread"><div><h1>Departments</h1><p class="muted">Department codes form CAPA and document numbers and are never reused. Administrators and management create and rename departments; the Head of each department and the hierarchy are kept in the organogram.</p></div>
     <div class="row">${ME.allAccess ? '<button class="btn primary" id="nd">New department</button>' : ''}${ME.canEditOrg ? '<a class="btn" href="#/organogram">Open organogram</a>' : ''}</div></div>
-    <div class="table-wrap"><table class="t"><thead><tr><th>Code</th><th>Name</th><th>Part of</th><th>Head of Department</th><th>Members</th><th>Status</th><th></th></tr></thead><tbody>
-    ${deps.map(d => `<tr><td class="mono">${esc(d.code)}</td><td>${esc(d.name)}</td><td>${esc(d.parent ? deptName(d.parent) : '')}</td><td>${d.hod ? esc(userName(d.hod)) : '<span class="pill warn">Not set</span>'}</td><td>${members(d.code)}</td>
+    <div class="table-wrap"><table class="t"><thead><tr><th>Code</th><th>Name</th><th>Part of</th><th>Head of Department</th><th>Head's email</th><th>Members</th><th>Status</th><th></th></tr></thead><tbody>
+    ${deps.map(d => `<tr><td class="mono">${esc(d.code)}</td><td>${esc(d.name)}</td><td>${esc(d.parent ? deptName(d.parent) : '')}</td><td>${d.hod ? esc(userName(d.hod)) : '<span class="pill warn">Not set</span>'}</td><td>${(() => { const e = (USERS.find(u => u.username === d.hod) || {}).email; return e ? `<a href="mailto:${esc(e)}">${esc(e)}</a>` : ''; })()}</td><td>${members(d.code)}</td>
       <td>${d.active ? '<span class="pill done">Active</span>' : '<span class="pill grey">Inactive</span>'}</td><td>${ME.allAccess ? `<button class="btn" data-ed="${esc(d.code)}">Edit</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`);
   const parentSel = (cur, self) => `<select name="parent"><option value="">– none (top level) –</option>${deps.filter(d => d.code !== self).map(d => `<option value="${esc(d.code)}" ${cur === d.code ? 'selected' : ''}>${esc(deptName(d.code))}</option>`).join('')}</select>`;
   $('#nd')?.addEventListener('click', async () => {

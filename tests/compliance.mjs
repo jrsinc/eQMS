@@ -73,7 +73,7 @@ ok((await qr.sig(si1.id,'Report Issued')).ok,'lead auditor issues the report (FR
 let g=await qa.get(si1.id);ok(g.record.data.dueDate===addD(T,15),'response due 15 calendar days after the report: '+g.record.data.dueDate);
 ok((await qa.sig(si1.id,'Response Submitted')).s===403,'only the auditee submits the response');
 ok((await op.sig(si1.id,'Response Submitted')).s===400,'every observation needs a corrective action, due date and responsible person');
-await op.put(si1.id,{observations:[{...obs[0],corrective:'Monthly review added to SOP',caDue:addD(T,30),preventive:'Add to QMR KPIs',paDue:addD(T,60),responsible:'Ravi Patel'}]});
+await op.put(si1.id,{observations:[{...obs[0],corrective:'Monthly review added to SOP',caDue:addD(T,30),preventive:'Add to QMR KPIs',paDue:addD(T,60),responsible:'operator1'}]});
 ok((await op.sig(si1.id,'Response Submitted')).ok,'auditee submits the response and CAPA plan (FRM/QAS/041)');
 g=await qa.get(si1.id);ok(g.record.data.responseDate===T&&g.record.data.responseTimeliness==='On time','response recorded on time');
 ok((await hod.sig(si1.id,'Auditor Review')).ok,'manager of the CAPA plan owner approves');

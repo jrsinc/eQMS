@@ -201,3 +201,18 @@ tr.group-row td { background: var(--surface-2); font-weight: 600; font-size: .85
 .org-people { margin: .3rem 0 0; padding-left: 1.1rem; font-size: .9rem; }
 .org-people li { margin: .2rem 0; }
 button.link { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline; }
+/* fields still to be completed before a workflow step */
+.field-missing { outline: 2px solid var(--red); outline-offset: 4px; border-radius: var(--radius-s); }
+.field-missing label.f::after { content: ' – required for this step'; color: var(--red); font-weight: 600; }
+/* signature register */
+.sigpad { display: block; width: 100%; max-width: 560px; height: 160px; border: 1px dashed var(--line); border-radius: var(--radius-s); background: #fff; touch-action: none; margin-bottom: .4rem; }
+.sig-thumb { height: 34px; max-width: 140px; background: #fff; border: 1px solid var(--line-2); border-radius: 2px; }
+/* notifications */
+.bell { position: relative; }
+.bell .count { margin-left: .35rem; }
+tr.unread td { background: var(--accent-soft); }
+/* company logo */
+.brand-logo { display: block; height: 40px; width: auto; max-width: 100%; background: #fff; border-radius: 6px; padding: 4px 8px; }
+.login-brand { padding: 0; }
+.login-brand .brand-logo { height: 56px; padding: 0; }
+.brand-sub { color: var(--nav-ink); font-size: .78rem; padding: 0 .5rem .9rem; margin-top: -.6rem; letter-spacing: .04em; }

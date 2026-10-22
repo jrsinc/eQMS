@@ -152,7 +152,8 @@ ok((await qa.sig(a3.id,'Destroyed',{reason:'Client instruction'})).ok,'client-sp
 
 // ===== Register of signatures – JRS/SOP/QAS/009 =====
 const ad=await login('admin','ChangeMe-2026!');
-ok((await ad.call('PUT','/api/users/operator1',{designation:'Warehouse operator',department:'OPS',initials:'rp',reason:'Signature register'})).ok,'admin records designation, department and initials');
+ok((await ad.call('PUT','/api/users/operator1',{designation:'Warehouse operator',department:'OPS',reason:'Signature register'})).ok,'admin records designation and department');
+ok((await op.call('POST','/api/signature/register',{initials:'rp',signature:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',accept:true,password:'Demo-Pass-2026'})).ok,'the employee registers their own initials and signature');
 let us=(await ad.call('GET','/api/users'))._arr, o=us.find(u=>u.username==='operator1');
 ok(o.initials==='RP'&&o.department==='OPS'&&o.esig_accepted&&o.reregisterBy===addD(o.esig_accepted.slice(0,10),1826),'register shows registration date and re-registration due in 5 years: '+o.reregisterBy);
 await ad.call('PUT','/api/users/stat1',{active:false,reason:'Left the company'});

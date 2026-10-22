@@ -225,11 +225,13 @@ ok((await au.put(cc.id,{classification:'Minor'})).s===403,'the initiator cannot 
 await au.put(cc.id,{...partA,dueDate:addD(T,95)},'Draft');
 ok((await au.sig(cc.id,'QA Review')).s===400,'permanent change must be due within 90 days');
 await au.put(cc.id,{dueDate:addD(T,60)});
-ok((await op.sig(cc.id,'QA Review')).s===403,'only the initiator submits Part A');
+ok((await tr.sig(cc.id,'QA Review')).s===403,'other departments cannot submit Part A');
 ok((await au.sig(cc.id,'QA Review')).ok,'initiator signs and submits Part A to QA');
 ok((await au.put(cc.id,{description:'changed'})).s===403,'Part A is locked once submitted');
 ok((await qa.go(cc.id,'Draft',{reason:'Add the logger model'})).ok,'QA returns Part A: need to update');
 await au.put(cc.id,{description:'Install a second calibrated logger (model TL-200)'},'QA request');
+ok((await op.put(cc.id,{current:'Single logger in cold room 2'},'Draft')).changes===1,'anyone in the responsible department can edit the draft');
+ok((await tr.put(cc.id,{current:'x'},'Draft')).s===403,'other departments cannot edit the draft');
 ok((await au.sig(cc.id,'QA Review')).ok,'initiator updates and resubmits Part A');
 // Part B – QA
 const plan=[{activity:'Install logger',dept:'OPS',person:'operator1',due:addD(T,20)},{activity:'Update SOP',dept:'QAS',person:'qa.reviewer',due:addD(T,30)}];
@@ -297,7 +299,7 @@ await op.put(cc.id,{ecRespComment:'Second logger reporting since go-live'});
 await qa.put(cc.id,{effective:'Yes',ecQaComment:'Both loggers reporting'});
 ok((await qa.sig(cc.id,'Closed')).ok,'change control closed after the effectiveness check');
 g=await qa.get(cc.id);
-const wantCC=['Part A submitted – initiator','Part B approved – QA (number assigned)','Reviewed and approved – responsible person','Rejected – Head of Department','Approved – Head of Department','Pre-approved – QA','Change control report – responsible department','Closed – QA review report (effectiveness check pending)','Effectiveness verified – QA'];
+const wantCC=['Part A submitted – initiator / responsible department','Part B approved – QA (number assigned)','Reviewed and approved – responsible person','Rejected – Head of Department','Approved – Head of Department','Pre-approved – QA','Change control report – responsible department','Closed – QA review report (effectiveness check pending)','Effectiveness verified – QA'];
 ok(wantCC.every(m=>g.signatures.some(s=>s.meaning===m)),'every stage signed and dated: '+g.signatures.map(s=>s.fullname.split(' (')[0]+' – '+s.meaning.split(' – ')[0]).join('; '));
 // effectiveness check cannot be recorded before its period has passed
 let cc3=await au.call('POST','/api/records',{type:'changes',data:{...partA,title:'Relabel freezer shelves'}});

@@ -396,33 +396,6 @@
       ]
     },
 
-    rca: {
-      name: 'Root cause analysis', group: 'Quality events', prefix: 'RCA',
-      intro: '5 Whys and Ishikawa (6M) investigations linked to deviations, complaints and audit findings.',
-      list: ['number', 'title', 'method', 'rootCategory', 'status'],
-      fields: [
-        { k: 'title', label: 'Problem statement', type: 'text', req: true, full: true },
-        { k: 'sourceRecord', label: 'Source record no. (deviation, complaint, audit or CAPA)', type: 'recordref', refTypes: ['investigations', 'selfinspections', 'extaudits', 'capa'], req: true },
-        { k: 'method', label: 'Method', type: 'select', req: true, options: ['5 Whys', 'Ishikawa (6M)', '5 Whys + Ishikawa', 'Fault tree', 'TapRooT', 'Process mapping', 'Is / Is-not', 'Kepner-Tregoe'] },
-        { k: 'team', label: 'RCA team', type: 'text', full: true },
-        { k: 'why1', label: 'Why 1', type: 'text', full: true }, { k: 'why2', label: 'Why 2', type: 'text', full: true },
-        { k: 'why3', label: 'Why 3', type: 'text', full: true }, { k: 'why4', label: 'Why 4', type: 'text', full: true },
-        { k: 'why5', label: 'Why 5', type: 'text', full: true },
-        { k: 'fb_man', label: 'Fishbone – Man (people)', type: 'textarea' }, { k: 'fb_machine', label: 'Fishbone – Machine', type: 'textarea' },
-        { k: 'fb_method', label: 'Fishbone – Method', type: 'textarea' }, { k: 'fb_material', label: 'Fishbone – Material', type: 'textarea' },
-        { k: 'fb_measure', label: 'Fishbone – Measurement', type: 'textarea' }, { k: 'fb_env', label: 'Fishbone – Environment', type: 'textarea' },
-        { k: 'rootCategory', label: 'Root-cause category', type: 'select', req: true, options: ['Procedure', 'Equipment', 'Material / supplier', 'Environment', 'Design', 'Management system', 'Human error – slip', 'Human error – lapse', 'Human error – mistake', 'Human error – violation', 'Not identified (most probable cause)'] },
-        { k: 'systemic', label: 'Systemic factors evaluated (required before human error)', type: 'textarea', full: true },
-        { k: 'conclusion', label: 'Root cause conclusion and contributing factors', type: 'textarea', req: true, full: true }
-      ],
-      states: ['Draft', 'Under Review', 'Approved'],
-      transitions: [
-        t('Draft', 'Under Review', 'Submit for QA review', ['any']),
-        t('Under Review', 'Draft', 'Return', ['qa'], { reason: true }),
-        t('Under Review', 'Approved', 'Approve RCA', ['qa'], { sign: 'Approved', sod: true })
-      ]
-    },
-
     capa: {
       name: 'CAPA', group: 'Quality events', prefix: 'CAPA',
       intro: 'Corrective and preventive actions per JRS/SOP/QAS/006 (form JRS/FRM/QAS/006 Parts A–E, register JRS/FRM/QAS/016). Number CAPA/department/serial/year; the serial restarts each year per department.',
@@ -506,7 +479,7 @@
       createLabel: 'Save Part A draft',
       list: ['number', 'title', 'nature', 'respDept', 'classification', 'dueDate', 'status'],
       fields: [
-        sec('Part A – Change request (initiator)', { part: 'A', create: true, edit: { Draft: ['initiator'] } }),
+        sec('Part A – Change request (initiator / responsible department)', { part: 'A', create: true, edit: { Draft: ['initiator', 'responsible', 'respdept'] } }),
         { k: 'title', label: 'Short description', type: 'text', req: true, full: true },
         { k: 'nature', label: 'Nature of change', type: 'select', req: true, options: ['Permanent', 'Temporary'] },
         { k: 'respPerson', label: 'Responsible person (sets the responsible department)', type: 'user' },
@@ -535,7 +508,7 @@
         { k: 'pm', label: 'Person responsible for client communication (Project Manager)', type: 'user' },
         { k: 'qaReviewComment', label: 'QA review comment', type: 'textarea', full: true },
         sec('Implementation plan – activity closure dates are updated during implementation', { edit: { 'QA Review': ['qa'], Implementation: ['initiator', 'responsible', 'respdept', 'qa'] } }),
-        { k: 'plan', label: 'Implementation plan', type: 'table', full: true, cols: [{ k: 'activity', label: 'Activity' }, { k: 'dept', label: 'Responsible department' }, { k: 'person', label: 'Responsible person' }, { k: 'due', label: 'Target due date', type: 'date' }, { k: 'closed', label: 'Activity closure date', type: 'date' }] },
+        { k: 'plan', label: 'Implementation plan', type: 'table', full: true, cols: [{ k: 'activity', label: 'Activity' }, { k: 'dept', label: 'Responsible department', type: 'dept' }, { k: 'person', label: 'Responsible person', type: 'user' }, { k: 'due', label: 'Target due date', type: 'date' }, { k: 'closed', label: 'Activity closure date', type: 'date' }] },
         sec('Part C – Pre-approval: responsible person and Head of Department', { part: 'C', edit: { 'RP Review': ['responsible'], 'HOD Approval': ['depthead'] } }),
         { k: 'rpComment', label: 'Responsible person review comment', type: 'textarea', full: true },
         { k: 'hodApprover', label: 'Approving Head of Department (from the organogram)', type: 'readonly', fmt: 'user' },
@@ -561,8 +534,8 @@
       ],
       states: ['Draft', 'QA Review', 'RP Review', 'HOD Approval', 'QA Approval', 'Optional Approvals', 'Implementation', 'QA Closure Review', 'Closed – EC Pending', 'Closed', 'Rejected', 'Cancelled'],
       transitions: [
-        t('Draft', 'QA Review', 'Submit Part A to QA', ['any'], { part: 'A', sign: 'Part A submitted – initiator', needs: ['respPerson', 'dueDate', 'changeType', 'description', 'justification'], checks: ['isInitiator', 'ccDue90', 'ccTemp'] }),
-        t('Draft', 'Cancelled', 'Cancel draft', ['any'], { reason: true, checks: ['isInitiator'] }),
+        t('Draft', 'QA Review', 'Submit Part A to QA', ['any'], { part: 'A', sign: 'Part A submitted – initiator / responsible department', needs: ['respPerson', 'dueDate', 'changeType', 'description', 'justification'], checks: ['isCcDept', 'ccDue90', 'ccTemp'] }),
+        t('Draft', 'Cancelled', 'Cancel draft', ['any'], { reason: true, checks: ['isCcDept'] }),
         t('QA Review', 'Draft', 'Need to update – return Part A', ['qa'], { reason: true }),
         t('QA Review', 'RP Review', 'Approve Part B – assign number', ['qa'], { part: 'B', sign: 'Part B approved – QA (number assigned)', sod: true, needs: ['impactCheck', 'impactSummary', 'classification', 'classRationale', 'riskRequired', 'plan', 'clientPre', 'clientPost'], checks: ['ccDue90', 'ccTemp', 'ccRiskClass', 'ccRiskRef', 'ccClientPm'] }),
         t('QA Review', 'Rejected', 'Reject change', ['qa'], { part: 'B', sign: 'Change rejected – QA', reason: true }),
@@ -639,7 +612,7 @@
           { k: 'description', label: 'Description of observation' }, { k: 'recommendation', label: 'Recommendation' },
           { k: 'corrective', label: 'Corrective action' }, { k: 'caDue', label: 'CA due date', type: 'date' },
           { k: 'preventive', label: 'Preventive action' }, { k: 'paDue', label: 'PA due date', type: 'date' },
-          { k: 'responsible', label: 'Responsible person' }, { k: 'capa', label: 'CAPA no.', ref: ['capa'] }, { k: 'status', label: 'Status', options: ['Open', 'Complied'] }] },
+          { k: 'responsible', label: 'Responsible person', type: 'user' }, { k: 'capa', label: 'CAPA no.', ref: ['capa'] }, { k: 'status', label: 'Status', options: ['Open', 'Complied'] }] },
         sec('Response and closure'),
         { k: 'dueDate', label: 'Response due (15 calendar days from the report)', type: 'readonly', fmt: 'date' },
         { k: 'extendedDue', label: 'Extended response due (approved extension – one only)', type: 'readonly', fmt: 'date' },
