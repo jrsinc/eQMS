@@ -274,7 +274,7 @@ function myTasks() {
     if (r.type === 'training') return ['Trainer Evaluation', 'Failed'].includes(r.status) ? r.data.trainer === ME.username : r.data.trainee === ME.username;
     if (r.type === 'documents' && r.status === 'In Review' && r.data.reviewer === ME.username) return true;
     if (r.type === 'documents' && r.status === 'Draft' && r.created_by === ME.username) return true;
-    if (r.type === 'extensions' && r.status === 'HOD Review' && r.data.hodApprover === ME.username) return true;
+    if (['extensions', 'vendors'].includes(r.type) && r.status === 'HOD Review' && r.data.hodApprover === ME.username) return true;
     if (r.type === 'extensions' && r.status === 'Draft' && r.created_by === ME.username) return true;
     if (r.type === 'capa') {
       const d = r.data;
@@ -366,6 +366,8 @@ function fieldHtml(f, v, disabled) {
   const optLabel = (o) => (f.optionLabels || {})[o] || CFG.ROLES[o] || o;
   switch (f.type) {
     case 'section': return `<h4 class="full form-section">${esc(f.label)}</h4>`;
+    case 'docs': return `<div class="full docs-field" data-docs="${esc(f.docs.map(x => x.join(':')).join('|'))}"></div>`;
+    case 'issue': return `<div class="full issue-field" data-issue></div>`;
     case 'guide': return `<details class="full guide"><summary>${esc(f.label)}</summary>${f.rows.map(([title, rows]) => `<p class="guide-title">${esc(title)}</p><table class="t"><tbody>${rows.map(([a, b]) => `<tr><th>${esc(a)}</th><td>${esc(b)}</td></tr>`).join('')}</tbody></table>`).join('')}</details>`;
     case 'textarea': input = `<textarea id="${id}" name="${f.k}" rows="${f.rows || 4}" ${d}>${esc(v)}</textarea>`; break;
     case 'select': input = `<select id="${id}" name="${f.k}" ${d}><option value=""></option>${f.options.map(o => `<option value="${esc(o)}" ${o === v ? 'selected' : ''}>${esc(optLabel(o))}</option>`).join('')}</select>`; break;
@@ -464,7 +466,7 @@ function newView(type) {
 }
 
 const fileB64 = (file) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(file); });
-const uploadFile = async (id, file) => api('POST', `/api/records/${id}/attachments`, { name: file.name, mime: file.type, base64: await fileB64(file) });
+const uploadFile = async (id, file, category) => api('POST', `/api/records/${id}/attachments`, { name: file.name, mime: file.type, base64: await fileB64(file), category });
 // attachments grouped by the workflow stage they were added at
 function attachmentsTable(m, atts) {
   if (!atts.length) return '<p class="muted">No attachments. Files can be added at every stage; each is stored with a SHA-256 checksum that is verified on every download.</p>';
@@ -551,7 +553,7 @@ async function detailView(id) {
     <div class="record"><div>
       <div class="panel no-print"><h3>Next steps</h3><div class="row">
         ${trans.length ? trans.map((t, i) => `<button class="btn ${t.sign ? 'primary sign' : ''}" data-act="tr" data-i="${i}" ${t.allowed ? '' : 'disabled title="Your roles do not permit this step"'}>${esc(t.label)}</button>`).join('') : extraBtns.length ? '' : '<span class="muted">No workflow steps available from this status.</span>'}
-        ${extraBtns.join('')}${m.issueForm && (!m.issueForm.roles || hasRole(m.issueForm.roles)) && (!m.issueForm.when || m.issueForm.when(d, rec.status)) ? `<a class="btn" href="/api/forms/${rec.type}?record=${rec.id}" download title="Controlled form with a numbered issue stamp">Issue ${esc(m.issueForm.label)}</a>` : ''}${rec.type === 'vendors' && d.auditDate && (d.agenda || []).length ? `<a class="btn" href="/api/records/${rec.id}/agenda.pdf" download>Audit agenda (JRS/FRM/QAS/021)</a>` : ''}<a class="btn" href="/api/records/${rec.id}/report.pdf" download title="One PDF: every part, signatures, all PDF and image attachments${det.auditAccess ? ', audit trail' : ''}">Download report (PDF)</a><a class="btn" href="/api/records/${rec.id}/report.pdf?inline=1" target="_blank" rel="noopener">Print report</a><a class="btn" href="/api/records/${rec.id}/report" download title="Original attachment files in a ZIP">Files (ZIP)</a></div></div>
+        ${extraBtns.join('')}${m.issueForm && !m.issueForm.inSection && (!m.issueForm.roles || hasRole(m.issueForm.roles)) && (!m.issueForm.when || m.issueForm.when(d, rec.status)) ? `<a class="btn" href="/api/forms/${rec.type}?record=${rec.id}" download title="Controlled form with a numbered issue stamp">Issue ${esc(m.issueForm.label)}</a>` : ''}${rec.type === 'vendors' && d.auditDate && (d.agenda || []).length ? `<a class="btn" href="/api/records/${rec.id}/agenda.pdf" download>Audit agenda (JRS/FRM/QAS/021)</a>` : ''}<a class="btn" href="/api/records/${rec.id}/report.pdf" download title="One PDF: every part, signatures, all PDF and image attachments${det.auditAccess ? ', audit trail' : ''}">Download report (PDF)</a><a class="btn" href="/api/records/${rec.id}/report.pdf?inline=1" target="_blank" rel="noopener">Print report</a><a class="btn" href="/api/records/${rec.id}/report" download title="Original attachment files in a ZIP">Files (ZIP)</a></div></div>
       <form class="panel" id="rf"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Record details</h3>${det.editable ? '<span class="small muted">Changes need a reason and are recorded in the audit trail.</span>' : '<span class="pill grey">Read-only in this status</span>'}</div>
         <div class="grid">${(() => { let s = null; return m.fields.map(f => {
           if (f.type === 'section') { s = f; if (f.showIf && !f.showIf(d, rec.status)) return ''; return fieldHtml(f) + sectionSignatures(m, f, det.signatures); }
@@ -614,6 +616,23 @@ async function detailView(id) {
     try { await uploadFile(id, file); toast('Attachment added'); route(); } catch (x) { toast(x.message); }
   });
   if (canWrite && open) extensionButtons(rec);
+  // required documents by type (e.g. licence copy, filled questionnaire, audit certificate) for the current qualification cycle
+  const sectionOpen = (el) => { let s = null; for (const f of m.fields) { if (f.type === 'section') s = f; if (f === el) return canEditSection(s, rec); } return false; };
+  $$('[data-docs]').forEach(box => {
+    const f = m.fields.find(x => x.type === 'docs' && x.docs.map(y => y.join(':')).join('|') === box.dataset.docs), canAdd = canWrite && sectionOpen(f);
+    box.innerHTML = f.docs.map(([cat, label]) => { const files = det.attachments.filter(a => a.category === cat && a.ts >= (d.cycleStartedAt || ''));
+      return `<div class="doc-req"><span class="doc-label">${esc(label)}</span>${files.length ? files.map(a => `<a class="pill done" href="/api/attachments/${a.id}">${esc(a.name)}</a>`).join(' ') : '<span class="pill warn">Not attached</span>'}
+        ${canAdd ? `<label class="btn small-btn">Attach ${esc(label.toLowerCase())}<input type="file" hidden data-cat="${esc(cat)}"></label>` : ''}</div>`; }).join('');
+  });
+  $$('[data-cat]').forEach(inp => inp.addEventListener('change', async (e) => { const file = e.target.files[0]; if (!file) return; try { await uploadFile(id, file, inp.dataset.cat); toast('Document attached'); route(); } catch (x) { toast(x.message); } }));
+  // controlled form issued once per qualification cycle; later downloads give the same file
+  $$('[data-issue]').forEach(box => {
+    const cfg = m.issueForm, done = (d.formIssues || []).filter(x => x.ts >= (d.cycleStartedAt || '')).pop(), allowed = cfg && (!cfg.roles || hasRole(cfg.roles));
+    box.innerHTML = done ? `<div class="doc-req"><span class="doc-label">${esc(cfg.label)}</span><span class="pill done">Issued ${esc(done.no)} – ${dmy(done.ts)} to ${esc(userName(done.by))}</span>${allowed ? ` <a class="btn small-btn" href="/api/forms/${rec.type}?record=${rec.id}" download>Download issued copy</a>` : ''}</div>`
+      : allowed && cfg.when(d, rec.status) ? `<div class="doc-req"><span class="doc-label">${esc(cfg.label)}</span><span class="pill warn">Not issued</span> <a class="btn primary small-btn" href="/api/forms/${rec.type}?record=${rec.id}" download id="issueBtn">Issue questionnaire</a></div>`
+      : `<div class="doc-req"><span class="doc-label">${esc(cfg.label)}</span><span class="pill warn">Not issued</span> <span class="small muted">QA issues it during the quality review.</span></div>`;
+  });
+  $('#issueBtn')?.addEventListener('click', () => setTimeout(route, 1500));
   if (rec.type === 'labels') labelPanel(rec);
   if (rec.type === 'randomization' && det.randList) randPanel(rec, det.randList);
   if (m.deptApproval && (d[m.deptApproval.field] || []).length) optionalApprovalsPanel(rec);

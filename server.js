@@ -24,7 +24,7 @@ const CFG = {
   host: process.env.HOST || '0.0.0.0',
   dataDir: process.env.DATA_DIR || path.join(__dirname, 'data'),
   cookieSecure: process.env.COOKIE_SECURE === 'true',
-  idleMinutes: +process.env.SESSION_IDLE_MINUTES || 15,
+  idleMinutes: +process.env.SESSION_IDLE_MINUTES || 60, // automatic lock after 1 hour without activity
   maxFailed: 5,
   orgName: process.env.ORG_NAME || 'Your Organisation',
   envLabel: process.env.APP_ENV_LABEL || '', // e.g. "TEST – not for GxP use", shown as a banner on every page
@@ -97,6 +97,8 @@ CREATE TABLE IF NOT EXISTS departments (code TEXT PRIMARY KEY, name TEXT NOT NUL
 for (const col of ['designation', 'department', 'initials', 'inactive_date', 'reports_to', 'signature']) { try { db.exec(`ALTER TABLE users ADD COLUMN ${col} TEXT`); } catch { /* already present */ } }
 const REREGISTER_YEARS = 5;
 try { db.exec('ALTER TABLE attachments ADD COLUMN stage TEXT'); } catch { /* already present */ } // workflow stage the file was added at
+try { db.exec('ALTER TABLE attachments ADD COLUMN category TEXT'); } catch { /* already present */ } // document type, e.g. licence copy
+try { db.exec('ALTER TABLE form_issues ADD COLUMN pdf BLOB'); } catch { /* already present or created below */ } // the issued file, returned again on every download
 
 const now = () => new Date().toISOString();
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -624,19 +626,16 @@ const CHECKS = {
   supEvaluationDone: (r) => {
     const d = r.data, a = supRisk(d).audit;
     need(a, 'Complete the risk assessment first.');
-    // the audit / evaluation report of this qualification cycle is attached during the quality review
-    need(db.prepare("SELECT 1 FROM attachments WHERE record_id=? AND stage IN ('Under Quality Review','On Hold') AND ts>=? LIMIT 1").get(r.id, d.cycleStartedAt || ''), 'Attach the audit / evaluation report (certificates, completed questionnaire or audit report) before approval.');
+    // documents of this qualification cycle, by document type
+    const has = (cat) => !!db.prepare('SELECT 1 FROM attachments WHERE record_id=? AND category=? AND ts>=? LIMIT 1').get(r.id, cat, d.cycleStartedAt || '');
+    need(d.licenceExpiry > today(), `The licence expired on ${d.licenceExpiry}. Record the current licence no. and expiry date.`);
     need(d.requalDate > (d.effectiveDate || today()), 'The requalification date must be after the effective date.');
-    const old = (d.certificates || []).filter(x => !x.validUntil || x.validUntil < today());
-    need(!old.length, `Certificate verification: ${old.length} certificate(s) without a valid "valid until" date.`);
-    if (/ite audit/.test(a)) {
-      const obs = d.observations || [];
-      need(!obs.some(o => o.category === 'Critical'), 'Site audit: a critical observation was cited – the supplier cannot be approved and shall be disqualified (JRS/SOP/QAS/005 §5.5.8.4).');
-      const open = obs.filter(o => o.status !== 'Closed');
-      need(!open.length, `Site audit: ${open.length} observation(s) still open – evaluate the supplier's compliance report first.`);
-      if (obs.length) need(d.complianceReceived, 'Site audit: record when the compliance report was received.');
-    }
+    if (/Certificate/.test(a)) { need(has('licence'), 'Certificate verification: attach the licence copy.'); need(d.licenceVerified === true, 'Certificate verification: tick "Licence verified" on the checklist.'); }
+    if (/uestionnaire/.test(a)) need(has('questionnaire'), 'Supplier questionnaire: attach the filled questionnaire.');
+    if (/ite audit/.test(a)) { need(d.auditDate && d.auditCertDate, 'Site audit: record the audit date and the audit certificate date.'); need(has('auditCert'), 'Site audit: attach the audit certificate.'); }
   },
+  // the Head of the requesting department reviews the supplier risk assessment; never the QA person who prepared it
+  supHodAvailable: (r, u) => need(hodFor(r.data.requesterDept, u.username), `No Head of Department in the organogram can review the risk assessment${r.data.requesterDept ? ' for ' + (DEPTS[r.data.requesterDept] || r.data.requesterDept) : ' (the request has no department)'}. Ask management or the Head of QA to set one.`),
   custReviewDate: (r) => need(r.data.reviewDate > today(), 'Set the next review date (after today).'),
   custDocuments: (r) => need(db.prepare('SELECT 1 FROM attachments WHERE record_id=? LIMIT 1').get(r.id), 'Attach the completed customer form and the licence copies before qualification.'),
   isRespPerson: (r, u) => { if (r.data.respPerson !== u.username && !allAccess(u)) fail(403, `Only the responsible person (${userLabel(r.data.respPerson)}) can review this step.`); },
@@ -781,12 +780,13 @@ const AFTER = {
   'investigations:HOD Approval': (u, r, ip) => assignHod(u, r, ip),
   // approved supplier list: approval date of this qualification cycle (effective and requalification dates are set by QA)
   'vendors:Approved': (u, r) => { r.data.approvedOn = today(); },
+  'vendors:HOD Review': (u, r, ip) => { const old = r.data.hodApprover; r.data.hodApprover = hodFor(r.data.requesterDept, u.username); if (old !== r.data.hodApprover) audit(u, 'Approver assigned from the organogram', r, 'hodApprover', old, r.data.hodApprover, null, ip); },
   // requalification: the same process again – the finished cycle goes to the history, its review results are cleared
   'vendors:Risk Assessment': (u, r, ip) => {
     const d = r.data; if (!d.approvedOn) return; // returned from the quality review in the same cycle
     const cycle = (d.qualHistory || []).length + 1;
     (d.qualHistory ||= []).push({ cycle: String(cycle), riskLevel: `${d.riskLevel || ''} (${d.rpn || ''})`, auditType: d.auditType || '', effectiveDate: d.effectiveDate || '', requalDate: d.requalDate || '', outcome: 'Approved ' + d.approvedOn });
-    for (const k of ['certificates', 'certReview', 'qSentOn', 'qReceivedOn', 'qReview', 'auditCategory', 'auditMethod', 'auditDate', 'auditLocation', 'leadAuditor', 'auditTeam', 'auditeeRep', 'auditPurpose', 'agenda', 'observations', 'auditReportDate', 'complianceReceived', 'auditConclusion', 'effectiveDate', 'requalDate', 'auditCertDate', 'approvedOn', 'qaConclusion']) delete d[k];
+    for (const k of ['licenceVerified', 'auditCategory', 'auditMethod', 'auditDate', 'auditLocation', 'leadAuditor', 'auditTeam', 'auditeeRep', 'auditPurpose', 'agenda', 'effectiveDate', 'requalDate', 'auditCertDate', 'approvedOn', 'qaConclusion', 'hodApprover', 'hodComment']) delete d[k];
     d.cycleStartedAt = now();
     audit(u, 'Requalification started', r, 'qualHistory', null, `Cycle ${cycle} archived; new risk assessment and quality review`, null, ip);
   },
@@ -1097,7 +1097,7 @@ route('GET', '/api/records', (ctx) => {
 route('GET', '/api/records/:id', (ctx) => {
   const rec = visibleRecord(ctx.user, getRecord(ctx.params.id)), h = contentHash(rec);
   const sigs = db.prepare('SELECT * FROM signatures WHERE record_id=? ORDER BY id').all(rec.id).map(s => ({ ...s, current: s.content_hash === h }));
-  const atts = db.prepare('SELECT id,name,mime,size,sha256,uploaded_by,ts,stage FROM attachments WHERE record_id=? ORDER BY ts').all(rec.id);
+  const atts = db.prepare('SELECT id,name,mime,size,sha256,uploaded_by,ts,stage,category FROM attachments WHERE record_id=? ORDER BY ts').all(rec.id);
   const auditAccess = canSeeAudit(ctx.user);
   const trail = auditAccess ? db.prepare('SELECT * FROM audit WHERE record_id=? ORDER BY id DESC').all(rec.id) : [];
   const rl = rec.type === 'randomization' ? db.prepare('SELECT generated_by, ts FROM rand_lists WHERE record_id=?').get(rec.id) : null;
@@ -1397,9 +1397,10 @@ function addAttachment(ctx, rec, file) {
   const buf = Buffer.from(String(file.base64 || ''), 'base64'); if (!buf.length) fail(400, 'Empty file');
   if (buf.length > 25 * 1024 * 1024) fail(413, 'Maximum file size is 25 MB.');
   const id = uid(), h = crypto.createHash('sha256').update(buf).digest('hex');
-  db.prepare('INSERT INTO attachments (id,record_id,name,mime,size,sha256,blob,uploaded_by,ts,stage) VALUES (?,?,?,?,?,?,?,?,?,?)')
-    .run(id, rec.id, String(file.name || 'file').slice(0, 200), String(file.mime || ''), buf.length, h, buf, ctx.user.username, now(), rec.status);
-  audit(ctx.user, 'Attachment added', rec, 'attachment', null, `${file.name} (stage ${rec.status}; SHA-256 ${h.slice(0, 16)}…)`, file.reason || ctx.body.reason, ctx.ip);
+  const cat = String(file.category || '').replace(/[^\w-]/g, '').slice(0, 30) || null;
+  db.prepare('INSERT INTO attachments (id,record_id,name,mime,size,sha256,blob,uploaded_by,ts,stage,category) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+    .run(id, rec.id, String(file.name || 'file').slice(0, 200), String(file.mime || ''), buf.length, h, buf, ctx.user.username, now(), rec.status, cat);
+  audit(ctx.user, 'Attachment added', rec, 'attachment', null, `${file.name} (stage ${rec.status}${cat ? '; ' + cat : ''}; SHA-256 ${h.slice(0, 16)}…)`, file.reason || ctx.body.reason, ctx.ip);
   return { id, sha256: h };
 }
 route('POST', '/api/records/:id/attachments', (ctx) => {
@@ -1712,7 +1713,7 @@ ${body}
 }
 // ---------- issued copies of controlled forms (stamp on every page, fields stay fillable) ----------
 // Register of issued controlled forms (QA, administrators, management)
-route('GET', '/api/form-issues', (ctx) => { needAudit(ctx.user); return db.prepare('SELECT * FROM form_issues ORDER BY ts DESC').all(); });
+route('GET', '/api/form-issues', (ctx) => { needAudit(ctx.user); return db.prepare('SELECT no,form_code,form_title,record_id,record_number,record_title,issued_to,issued_name,dept,ts FROM form_issues ORDER BY ts DESC').all(); });
 // Audit agenda JRS/FRM/QAS/021 from the supplier record (shared with the supplier before the audit)
 route('GET', '/api/records/:id/agenda.pdf', async (ctx) => {
   const rec = visibleRecord(ctx.user, getRecord(ctx.params.id)), d = rec.data;
@@ -1752,6 +1753,11 @@ route('GET', '/api/forms/:type', async (ctx) => {
   if (rec && rec.type !== ctx.params.type) fail(400, 'The record does not belong to this module.');
   if (cfg.roles && !hasRole(ctx.user, cfg.roles)) fail(403, `Only ${cfg.roles.map(r => ROLES[r].split(' (')[0]).join(' / ')} can issue ${cfg.code}.`);
   if (cfg.fromRecordOnly && !rec) fail(400, `${cfg.code} is issued from the record it is for.`);
+  const issued = rec && cfg.oncePerCycle ? db.prepare('SELECT * FROM form_issues WHERE record_id=? AND form_code=? AND ts>=? AND pdf IS NOT NULL ORDER BY ts DESC LIMIT 1').get(rec.id, cfg.code, rec.data.cycleStartedAt || '') : null;
+  if (issued) { // one issue per supplier and qualification cycle: the same file every time
+    audit(ctx.user, `Controlled form downloaded again (${issued.no})`, rec, null, null, `${cfg.code} issued ${issued.ts.slice(0, 10)} to ${issued.issued_name}`, null, ctx.ip);
+    return { __raw: Buffer.from(issued.pdf), headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${cfg.code.replace(/\//g, '-')} ${issued.no}.pdf"` } };
+  }
   if (rec && cfg.when && !cfg.when(rec.data, rec.status)) fail(409, `${cfg.code} is not needed for ${rec.number} at stage "${rec.status}".`);
   const { PDFDocument, StandardFonts, rgb } = PDFLib;
   const doc = await PDFDocument.load(fs.readFileSync(path.join(FORMS_DIR, cfg.file)));
@@ -1769,8 +1775,8 @@ route('GET', '/api/forms/:type', async (ctx) => {
   doc.setTitle(`${cfg.code} – issued copy ${no}`);
   const buf = Buffer.from(await doc.save());
   if (rec) { (rec.data.formIssues ||= []).push({ no, by: ctx.user.username, ts: now() }); saveRecord(rec); }
-  db.prepare('INSERT INTO form_issues (no,form_code,form_title,record_id,record_number,record_title,issued_to,issued_name,dept,ts) VALUES (?,?,?,?,?,?,?,?,?,?)')
-    .run(no, cfg.code, cfg.label, rec ? rec.id : null, rec ? rec.number : null, rec ? rec.data.title || '' : null, ctx.user.username, ctx.user.fullname, ctx.user.department || '', now());
+  db.prepare('INSERT INTO form_issues (no,form_code,form_title,record_id,record_number,record_title,issued_to,issued_name,dept,ts,pdf) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+    .run(no, cfg.code, cfg.label, rec ? rec.id : null, rec ? rec.number : null, rec ? rec.data.title || '' : null, ctx.user.username, ctx.user.fullname, ctx.user.department || '', now(), cfg.oncePerCycle ? buf : null);
   audit(ctx.user, `Controlled form issued (${no})`, rec, null, null, `${cfg.code} issued to ${who}`, null, ctx.ip);
   const name = `${cfg.code.replace(/\//g, '-')} ${no}.pdf`;
   return { __raw: buf, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${name}"` } };

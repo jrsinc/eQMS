@@ -232,3 +232,7 @@ tr.unread td { background: var(--accent-soft); }
 .guide-title { margin: .7rem 0 .3rem; font-weight: 600; font-size: .88rem; }
 .guide table.t th { width: 150px; white-space: nowrap; }
 .guide table.t td, .guide table.t th { font-size: .84rem; }
+/* required documents and issued forms inside a form section */
+.doc-req { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .35rem 0; border-bottom: 1px dashed var(--line-2); }
+.doc-req .doc-label { font-weight: 600; min-width: 190px; }
+.small-btn { padding: .2rem .6rem; font-size: .82rem; }

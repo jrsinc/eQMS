@@ -79,7 +79,7 @@ if (-not (Test-Az webapp show --name $AppName --resource-group $ResourceGroup)) 
 
 Write-Host 'Applying settings ...'
 Invoke-Az 'Applying app settings' webapp config appsettings set --name $AppName --resource-group $ResourceGroup --output none --settings `
-  HOST=0.0.0.0 COOKIE_SECURE=true DATA_DIR=/home/data SQLITE_JOURNAL=DELETE SESSION_IDLE_MINUTES=15 `
+  HOST=0.0.0.0 COOKIE_SECURE=true DATA_DIR=/home/data SQLITE_JOURNAL=DELETE SESSION_IDLE_MINUTES=60 `
   SEED_DEMO=true "DEMO_PASSWORD=$demoPw" "ADMIN_INITIAL_PASSWORD=$adminPw" "ORG_NAME=$OrgName" `
   "APP_ENV_LABEL=TEST SYSTEM - for team testing only, not for GxP records" `
   SCM_DO_BUILD_DURING_DEPLOYMENT=false WEBSITES_ENABLE_APP_SERVICE_STORAGE=true

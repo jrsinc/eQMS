@@ -36,6 +36,6 @@ F1 limits: the app sleeps after about 20 minutes without use (first page then ta
 
 ## Security notes
 
-- Anyone with the link can reach the sign-in page. Accounts lock after 5 failed attempts and sessions end after 15 minutes idle.
+- Anyone with the link can reach the sign-in page. Accounts lock after 5 failed attempts and sessions end after 1 hour idle.
 - For access limited to JRS staff, add Microsoft Entra sign-in in front of the app (App Service → Authentication → add identity provider → Microsoft, "Require authentication"). This needs no code change.
 - `deploy\out\` holds the generated passwords and is excluded from Git; do not commit or share the folder.
