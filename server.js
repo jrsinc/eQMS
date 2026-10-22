@@ -86,6 +86,8 @@ CREATE TABLE IF NOT EXISTS versions (record_id TEXT NOT NULL, no INTEGER NOT NUL
   status TEXT NOT NULL, number TEXT, data TEXT NOT NULL, reason TEXT, PRIMARY KEY (record_id, no));
 CREATE TRIGGER IF NOT EXISTS versions_no_update BEFORE UPDATE ON versions BEGIN SELECT RAISE(ABORT, 'version history is read-only'); END;
 CREATE TRIGGER IF NOT EXISTS versions_no_delete BEFORE DELETE ON versions BEGIN SELECT RAISE(ABORT, 'version history is read-only'); END;
+CREATE TABLE IF NOT EXISTS form_issues (no TEXT PRIMARY KEY, form_code TEXT NOT NULL, form_title TEXT, record_id TEXT, record_number TEXT, record_title TEXT,
+  issued_to TEXT NOT NULL, issued_name TEXT, dept TEXT, ts TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, record_id TEXT, record_number TEXT,
   subject TEXT NOT NULL, body TEXT NOT NULL, action TEXT, ts TEXT NOT NULL, read INTEGER DEFAULT 0, email TEXT);
 CREATE TABLE IF NOT EXISTS departments (code TEXT PRIMARY KEY, name TEXT NOT NULL, parent TEXT, hod TEXT, active INTEGER DEFAULT 1,
@@ -469,6 +471,8 @@ function visibleRecord(user, rec) { if (!canSee(user, rec)) fail(404, 'Record no
 // Derived values recalculated whenever a record is created, edited or moves state.
 const DERIVE = {
   // JRS/SOP/QAS/022: investigation complete within 30 calendar days of opening; Critical events within 10 working days
+  // suppliers: requalification date suggested from the effective date and the risk level frequency
+  vendors: (r) => { const d = r.data; if (d.effectiveDate && !d.requalDate && supRisk(d).months) d.requalDate = addMonths(d.effectiveDate, supRisk(d).months); },
   changes: (r) => { r.data.respDept = r.data.respPerson ? userDept(r.data.respPerson) : ''; },
   investigations: (r) => { const d = r.data; d.respDept = d.respPerson ? userDept(d.respPerson) : ''; d.dueDate = !d.criticality ? '' : d.criticality === 'Critical' ? addWorkingDays(d.dateOpened, 10) : addDays(d.dateOpened, 30); },
   // JRS/SOP/QAS/021: titles in capitals, "[GLB]" when the document applies to more than one site
@@ -620,20 +624,12 @@ const CHECKS = {
   supEvaluationDone: (r) => {
     const d = r.data, a = supRisk(d).audit;
     need(a, 'Complete the risk assessment first.');
-    if (/Certificate/.test(a)) {
-      const c = d.certificates || [];
-      need(c.length, 'Certificate verification: record the certificates received.');
-      const old = c.filter(x => !x.validUntil || x.validUntil < today());
-      need(!old.length, `Certificate verification: ${old.length} certificate(s) without a valid "valid until" date.`);
-      need(!blank(d.certReview), 'Certificate verification: record the QA review of the certificates.');
-    }
-    if (/uestionnaire/.test(a)) {
-      need(d.qReceivedOn && !blank(d.qReview), 'Supplier questionnaire: record when the completed questionnaire was received and the QA verification.');
-      need(db.prepare('SELECT 1 FROM attachments WHERE record_id=? LIMIT 1').get(r.id), 'Supplier questionnaire: attach the completed questionnaire.');
-    }
+    // the audit / evaluation report of this qualification cycle is attached during the quality review
+    need(db.prepare("SELECT 1 FROM attachments WHERE record_id=? AND stage IN ('Under Quality Review','On Hold') AND ts>=? LIMIT 1").get(r.id, d.cycleStartedAt || ''), 'Attach the audit / evaluation report (certificates, completed questionnaire or audit report) before approval.');
+    need(d.requalDate > (d.effectiveDate || today()), 'The requalification date must be after the effective date.');
+    const old = (d.certificates || []).filter(x => !x.validUntil || x.validUntil < today());
+    need(!old.length, `Certificate verification: ${old.length} certificate(s) without a valid "valid until" date.`);
     if (/ite audit/.test(a)) {
-      need(d.auditDate && d.leadAuditor && (d.agenda || []).length, 'Site audit: complete the audit plan (date, lead auditor and agenda).');
-      need(d.auditReportDate && !blank(d.auditConclusion), 'Site audit: record the audit report date and the audit conclusion.');
       const obs = d.observations || [];
       need(!obs.some(o => o.category === 'Critical'), 'Site audit: a critical observation was cited – the supplier cannot be approved and shall be disqualified (JRS/SOP/QAS/005 §5.5.8.4).');
       const open = obs.filter(o => o.status !== 'Closed');
@@ -783,8 +779,17 @@ const AFTER = {
   'investigations:Initiation': (u, r, ip) => assignNumber(u, r, ip),
   // the approving Head of Department comes from the organogram when the investigation is submitted
   'investigations:HOD Approval': (u, r, ip) => assignHod(u, r, ip),
-  // approved supplier list: requalification due from the risk assessment frequency
-  'vendors:Approved': (u, r) => { if (!r.data.approvedOn || r.data.requalDate < today()) { r.data.approvedOn = today(); r.data.requalDate = addMonths(today(), supRisk(r.data).months || 12); } },
+  // approved supplier list: approval date of this qualification cycle (effective and requalification dates are set by QA)
+  'vendors:Approved': (u, r) => { r.data.approvedOn = today(); },
+  // requalification: the same process again – the finished cycle goes to the history, its review results are cleared
+  'vendors:Risk Assessment': (u, r, ip) => {
+    const d = r.data; if (!d.approvedOn) return; // returned from the quality review in the same cycle
+    const cycle = (d.qualHistory || []).length + 1;
+    (d.qualHistory ||= []).push({ cycle: String(cycle), riskLevel: `${d.riskLevel || ''} (${d.rpn || ''})`, auditType: d.auditType || '', effectiveDate: d.effectiveDate || '', requalDate: d.requalDate || '', outcome: 'Approved ' + d.approvedOn });
+    for (const k of ['certificates', 'certReview', 'qSentOn', 'qReceivedOn', 'qReview', 'auditCategory', 'auditMethod', 'auditDate', 'auditLocation', 'leadAuditor', 'auditTeam', 'auditeeRep', 'auditPurpose', 'agenda', 'observations', 'auditReportDate', 'complianceReceived', 'auditConclusion', 'effectiveDate', 'requalDate', 'auditCertDate', 'approvedOn', 'qaConclusion']) delete d[k];
+    d.cycleStartedAt = now();
+    audit(u, 'Requalification started', r, 'qualHistory', null, `Cycle ${cycle} archived; new risk assessment and quality review`, null, ip);
+  },
   'capa:HOD Pre-Approval': (u, r, ip) => assignHod(u, r, ip),
   'capa:HOD Verification': (u, r, ip) => assignHod(u, r, ip),
   'documents:Approved – Training': (u, r, ip) => { r.data.approvedOn = today(); assignDocTraining(u, r, ip); },
@@ -1148,6 +1153,7 @@ route('POST', '/api/records', (ctx) => {
     if (!(+clean.copies >= 1 && +clean.copies <= 100)) fail(400, 'Copies must be between 1 and 100.');
   }
   if (type === 'customers' || type === 'vendors') clean.requesterDept = ctx.user.department || '';
+  if (type === 'vendors') clean.cycleStartedAt = now();
   if (type === 'extensions') {
     const { target, due } = erCheck(clean);
     if (src && src.id !== target.id) fail(400, 'The extension must be requested from the record it extends.');
@@ -1705,76 +1711,8 @@ ${body}
   return zipFiles(files);
 }
 // ---------- issued copies of controlled forms (stamp on every page, fields stay fillable) ----------
-// JRS/FRM/QAS/004 Vendor qualification checklist v3.0, rebuilt as a fillable PDF from the controlled form
-const SUP_QUESTIONS = [
-  ['General information', ['What is the business structure? (Public limited, private limited, proprietary or partnership, etc.)', 'Is there an organizational chart which accurately represents the organization? Please provide a copy of the organizational structure / matrix.']],
-  ['Training', ['How are the training records handled?', 'Are there personnel curricula (training matrix / plan) established and documented for everyone?', 'Does the training program include new hire training and re-qualification training for personnel?']],
-  ['Quality management', ['Are external contractors / vendors utilized? Are they qualified / approved for use? Is there an SOP that outlines this process?', 'Is there a quality management system available?', 'Is your facility approved by competent authorities and/or licensing authorities? (If yes, provide the regulatory name and details.)', 'Are there copies of certifications / licenses available? Provide a copy of all applicable licenses.', 'Are all required measures in place to ensure security and confidentiality and prevent unauthorized access to records / storage?']],
-  ['Warehouse and storage', ['Are receipt, storage and shipping areas separate or segregated?', 'Do you use computer applications for inventory management?', 'Is the temperature within the storage area monitored? Controlled?', 'Do you have a fire alarm and control system?', 'Do you have a pest control program in place?', 'Do you have a cleaning procedure in place?']],
-  ['Labelling', ['Do you carry out over-labelling / extension date labelling of clinical trial material?', 'Do you print labels in-house?']],
-  ['Comparator sourcing', ['Do you source comparator products from the local market as well as outside your country?', 'Do you provide pedigree?', 'Do you provide CoA or MSDS?']],
-  ['Documentation', ['Does a documentation control system exist and is it functional?', 'Do you have archival procedures? Please mention the records archival period.']]
-];
-const GENERATED_FORMS = {
-  async supplierQuestionnaire() {
-    const { PDFDocument, StandardFonts, rgb } = PDFLib;
-    const doc = await PDFDocument.create(), form = doc.getForm();
-    const F = await doc.embedFont(StandardFonts.Helvetica), FB = await doc.embedFont(StandardFonts.HelveticaBold);
-    let logo = null; try { logo = await doc.embedPng(fs.readFileSync(path.join(PUBLIC, 'logo.png'))); } catch { /* no logo */ }
-    const W = 595.28, H = 841.89, M = 40, line = rgb(0.55, 0.58, 0.62), shade = rgb(0.93, 0.95, 0.98);
-    let page, y, pageNo = 0; const pages = [];
-    const wrap = (s, font, size, width) => { const out = []; let cur = ''; for (const w of pdfText(s).split(/ +/)) { const t = cur ? cur + ' ' + w : w; if (cur && font.widthOfTextAtSize(t, size) > width) { out.push(cur); cur = w; } else cur = t; } if (cur) out.push(cur); return out; };
-    const newPage = () => {
-      page = doc.addPage([W, H]); pages.push(page); pageNo++;
-      if (logo) page.drawImage(logo, { x: M, y: H - M - 34, width: logo.width * 30 / logo.height, height: 30 });
-      const rows = [['FORM NUMBER', 'JRS/FRM/QAS/004'], ['FORM VERSION', '3.0'], ['FORM TITLE', 'VENDOR QUALIFICATION CHECKLIST'], ['RELATED SOP', 'JRS/SOP/QAS/005']];
-      rows.forEach(([k, v], i) => { const yy = H - M - 10 - i * 12; page.drawText(k, { x: 300, y: yy, size: 7.5, font: FB }); page.drawText(v, { x: 390, y: yy, size: 7.5, font: F }); });
-      page.drawLine({ start: { x: M, y: H - M - 50 }, end: { x: W - M, y: H - M - 50 }, thickness: 0.8, color: line });
-      y = H - M - 62;
-    };
-    const ensure = (h) => { if (y - h < M + 20) newPage(); };
-    const text = (s, o = {}) => { for (const l of wrap(s, o.font || F, o.size || 8.5, o.width || W - 2 * M)) { ensure(12); page.drawText(l, { x: o.x || M, y: y - 9, size: o.size || 8.5, font: o.font || F }); y -= 11.5; } };
-    const field = (name, label, h = 16, multi = false) => {
-      ensure(h + 4); page.drawText(pdfText(label), { x: M, y: y - 11, size: 8, font: FB });
-      const tf = form.createTextField(name); if (multi) tf.enableMultiline();
-      tf.addToPage(page, { x: 210, y: y - h, width: W - M - 210, height: h, borderColor: line, borderWidth: 0.6, backgroundColor: rgb(0.97, 0.98, 1), font: F });
-      y -= h + 4;
-    };
-    const yesNo = (name, x) => { const rg = form.createRadioGroup(name); ['Yes', 'No', 'N/A'].forEach((o, i) => { rg.addOptionToPage(o, page, { x: x + i * 38, y: y - 12, width: 9, height: 9, borderColor: line, borderWidth: 0.6 }); page.drawText(o, { x: x + i * 38 + 12, y: y - 11, size: 7.5, font: F }); }); };
-    newPage();
-    text('VENDOR QUALIFICATION QUESTIONNAIRE', { font: FB, size: 12 }); y -= 2;
-    for (const s of ['Complete the following vendor qualification questionnaire.', 'The responses that you forward will be kept in confidence (in line with the fully executed confidentiality agreement).', 'Please mention N/A if the question is not applicable to your organization. Upon completion, return the form with the requested documents to Jupiter Research Services Quality Assurance by the date specified.']) text('• ' + s);
-    y -= 6;
-    field('vendorName', 'NAME OF VENDOR COMPANY / ORGANIZATION'); field('vendorAddress', 'ADDRESS', 30, true); field('vendorServices', 'SERVICES OFFERED / TO BE RENDERED', 30, true);
-    field('contactPerson', 'CONTACT PERSON'); field('contactNo', 'CONTACT NO.'); field('contactEmail', 'E-MAIL ID');
-    field('qaContactPerson', 'QUALITY ASSURANCE EXECUTIVE – CONTACT PERSON'); field('qaContactDetails', 'QUALITY ASSURANCE EXECUTIVE – CONTACT DETAILS');
-    field('returnBy', 'PLEASE RETURN BY (DATE)');
-    let q = 0;
-    for (const [section, qs] of SUP_QUESTIONS) {
-      ensure(40); y -= 6; page.drawRectangle({ x: M, y: y - 15, width: W - 2 * M, height: 15, color: shade }); page.drawText(section.toUpperCase(), { x: M + 4, y: y - 11, size: 8.5, font: FB }); y -= 19;
-      for (const question of qs) {
-        q++; const lines = wrap(`${q}. ${question}`, F, 8, 250), h = Math.max(42, lines.length * 10 + 26);
-        ensure(h + 4);
-        lines.forEach((l, i) => page.drawText(l, { x: M, y: y - 10 - i * 10, size: 8, font: F }));
-        yesNo(`q${q}`, 300);
-        const tf = form.createTextField(`q${q}_remarks`); tf.enableMultiline();
-        tf.addToPage(page, { x: 300, y: y - h + 2, width: W - M - 300, height: h - 20, borderColor: line, borderWidth: 0.6, backgroundColor: rgb(0.97, 0.98, 1), font: F });
-        page.drawLine({ start: { x: M, y: y - h - 1 }, end: { x: W - M, y: y - h - 1 }, thickness: 0.3, color: line });
-        y -= h + 4;
-      }
-    }
-    ensure(40); y -= 6; page.drawRectangle({ x: M, y: y - 15, width: W - 2 * M, height: 15, color: shade }); page.drawText('DOCUMENTS TO BE ATTACHED WITH THIS QUESTIONNAIRE', { x: M + 4, y: y - 11, size: 8.5, font: FB }); y -= 19;
-    for (const [i, d] of ['Regulatory license', 'List of SOPs', 'Organization chart', 'Any other documents'].entries()) { ensure(18); page.drawText(d, { x: M, y: y - 11, size: 8, font: F }); yesNo(`doc${i + 1}`, 300); y -= 17; }
-    field('observations', 'OBSERVATIONS / RECOMMENDATIONS / REMARKS', 40, true);
-    ensure(60); y -= 4; text('By signing below, I confirm that I am an authorized representative of the company and all information provided above is true and correct.', { font: FB, size: 8 });
-    field('signCompany', 'COMPANY NAME'); field('signName', 'COMPLETED BY – NAME'); field('signTitle', 'TITLE'); field('signDate', 'SIGNATURE / DATE', 24);
-    ensure(160); y -= 8; page.drawRectangle({ x: M, y: y - 15, width: W - 2 * M, height: 15, color: shade }); page.drawText('THIS SECTION IS TO BE COMPLETED BY JUPITER RESEARCH SERVICES ONLY', { x: M + 4, y: y - 11, size: 8.5, font: FB }); y -= 19;
-    field('jrsInspection', 'PHYSICAL INSPECTION REQUIRED AT VENDOR FACILITY?'); field('jrsServices', 'SERVICES OF VENDOR TO BE USED'); field('jrsDecision', 'APPROVED / REJECTED / RE-QUALIFICATION'); field('jrsRemarks', 'REMARKS', 24, true);
-    field('jrsEffective', 'EFFECTIVE DATE'); field('jrsCertificate', 'AUDIT CERTIFICATE ISSUANCE DATE'); field('jrsRequal', 'REQUALIFICATION DATE');
-    pages.forEach((p, i) => p.drawText(`Form No.: JRS/FRM/QAS/004 Version 3.0          Page ${i + 1} of ${pages.length}`, { x: M, y: 18, size: 7, font: F, color: rgb(0.35, 0.35, 0.35) }));
-    return doc;
-  }
-};
+// Register of issued controlled forms (QA, administrators, management)
+route('GET', '/api/form-issues', (ctx) => { needAudit(ctx.user); return db.prepare('SELECT * FROM form_issues ORDER BY ts DESC').all(); });
 // Audit agenda JRS/FRM/QAS/021 from the supplier record (shared with the supplier before the audit)
 route('GET', '/api/records/:id/agenda.pdf', async (ctx) => {
   const rec = visibleRecord(ctx.user, getRecord(ctx.params.id)), d = rec.data;
@@ -1812,8 +1750,11 @@ route('GET', '/api/forms/:type', async (ctx) => {
   if (hiddenFor(ctx.user, ctx.params.type)) fail(404, 'Not found');
   const rec = ctx.query.get('record') ? visibleRecord(ctx.user, getRecord(ctx.query.get('record'))) : null;
   if (rec && rec.type !== ctx.params.type) fail(400, 'The record does not belong to this module.');
+  if (cfg.roles && !hasRole(ctx.user, cfg.roles)) fail(403, `Only ${cfg.roles.map(r => ROLES[r].split(' (')[0]).join(' / ')} can issue ${cfg.code}.`);
+  if (cfg.fromRecordOnly && !rec) fail(400, `${cfg.code} is issued from the record it is for.`);
+  if (rec && cfg.when && !cfg.when(rec.data, rec.status)) fail(409, `${cfg.code} is not needed for ${rec.number} at stage "${rec.status}".`);
   const { PDFDocument, StandardFonts, rgb } = PDFLib;
-  const doc = cfg.generate ? await GENERATED_FORMS[cfg.generate]() : await PDFDocument.load(fs.readFileSync(path.join(FORMS_DIR, cfg.file)));
+  const doc = await PDFDocument.load(fs.readFileSync(path.join(FORMS_DIR, cfg.file)));
   const F = await doc.embedFont(StandardFonts.HelveticaBold), F2 = await doc.embedFont(StandardFonts.Helvetica);
   if (rec) { const form = doc.getForm(); for (const [field, k] of Object.entries(cfg.prefill || {})) { try { form.getTextField(field).setText(pdfText(k === '#number' ? rec.number : rec.data[k] || '')); } catch { /* field not in this form version */ } } }
   const no = nextIssueNo(), who = `${ctx.user.fullname}${ctx.user.department ? ' (' + ctx.user.department + ')' : ''}`;
@@ -1828,6 +1769,8 @@ route('GET', '/api/forms/:type', async (ctx) => {
   doc.setTitle(`${cfg.code} – issued copy ${no}`);
   const buf = Buffer.from(await doc.save());
   if (rec) { (rec.data.formIssues ||= []).push({ no, by: ctx.user.username, ts: now() }); saveRecord(rec); }
+  db.prepare('INSERT INTO form_issues (no,form_code,form_title,record_id,record_number,record_title,issued_to,issued_name,dept,ts) VALUES (?,?,?,?,?,?,?,?,?,?)')
+    .run(no, cfg.code, cfg.label, rec ? rec.id : null, rec ? rec.number : null, rec ? rec.data.title || '' : null, ctx.user.username, ctx.user.fullname, ctx.user.department || '', now());
   audit(ctx.user, `Controlled form issued (${no})`, rec, null, null, `${cfg.code} issued to ${who}`, null, ctx.ip);
   const name = `${cfg.code.replace(/\//g, '-')} ${no}.pdf`;
   return { __raw: buf, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${name}"` } };
@@ -1913,7 +1856,7 @@ async function reportPdf(user, rec) {
   if (!final) { ensure(22); y -= 4; page.drawRectangle({ x: M, y: y - 16, width: W - 2 * M, height: 18, color: rgb(1, 0.97, 0.88), borderColor: rgb(0.82, 0.6, 0.13), borderWidth: 0.6 }); page.drawText(pdfText(`Interim report – the record is still in progress (stage "${rec.status}").`), { x: M + 6, y: y - 12, size: 8.5, font: FB, color: rgb(0.5, 0.35, 0) }); y -= 24; }
   const LW = 170; let skip = false;
   for (const f of mod.fields) {
-    if (f.type === 'section') { skip = !!(f.showIf && !f.showIf(d)); if (!skip) heading(f.label); continue; }
+    if (f.type === 'section') { skip = !!(f.showIf && !f.showIf(d, rec.status)); if (!skip) heading(f.label); continue; }
     if (!f.k || skip) continue; // sections that do not apply (e.g. evaluations the risk assessment does not require)
     const lab = wrap(f.label, F, 8, LW - 8), val = wrap(plainValue(f, d[f.k]), F, 8.8, W - 2 * M - LW).slice(0, 200);
     const hgt = Math.max(lab.length * 10, val.length * 11.2) + 4;
@@ -2062,7 +2005,7 @@ const server = http.createServer(async (req, res) => {
     send(res, e.code || 500, { error: e instanceof HttpError ? e.message : 'Unexpected server error', ...(e instanceof HttpError && e.extra ? e.extra : {}) });
   }
 });
-const STATE_MAP = { vendors: { Prospective: 'Under QA Review', 'Under Qualification': 'Evaluation', 'Conditionally Approved': 'Approved' }, customers: { Pending: 'Under QA Review', Requested: 'Under QA Review', Blocked: 'On Hold' }, investigations: { Initiated: 'Initiation', 'Number Assignment': 'Requested', 'QA Assessment': 'QA Review', 'Pre-Approval': 'QA Review', Evaluation: 'QA Evaluation' }, changes: { 'Number Assignment': 'Draft', Requested: 'Draft', Initiation: 'Draft', 'QA Assessment': 'QA Review', 'Pre-Approval': 'RP Review', 'Pending Closure': 'QA Closure Review' } };
+const STATE_MAP = { vendors: { Prospective: 'Risk Assessment', 'Under Qualification': 'Under Quality Review', 'Conditionally Approved': 'Approved', 'Under QA Review': 'Risk Assessment', Evaluation: 'Under Quality Review', Suspended: 'On Hold', Disqualified: 'Rejected' }, customers: { Pending: 'Under QA Review', Requested: 'Under QA Review', Blocked: 'On Hold' }, investigations: { Initiated: 'Initiation', 'Number Assignment': 'Requested', 'QA Assessment': 'QA Review', 'Pre-Approval': 'QA Review', Evaluation: 'QA Evaluation' }, changes: { 'Number Assignment': 'Draft', Requested: 'Draft', Initiation: 'Draft', 'QA Assessment': 'QA Review', 'Pre-Approval': 'RP Review', 'Pending Closure': 'QA Closure Review' } };
 for (const [type, map] of Object.entries(STATE_MAP)) for (const r of db.prepare(`SELECT * FROM records WHERE type=? AND status IN (${Object.keys(map).map(() => '?').join(',')})`).all(type, ...Object.keys(map)).map(rowToRecord)) {
   const from = r.status; r.status = map[from]; r.data.stateEnteredAt = now();
   ACTOR = { user: null, reason: 'Workflow updated' }; if (DERIVE[type]) DERIVE[type](r); saveRecord(r);

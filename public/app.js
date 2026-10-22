@@ -40,7 +40,7 @@ function dueOf(r) {
   if (r.type === 'documents') return r.status === 'Approved – Training' ? d.effectiveDate : r.status === 'Effective' ? d.nextReview : '';
   if (r.type === 'archives' && r.status === 'Retrieved') { const x = (d.retrievals || []).slice(-1)[0]; return x && x.date ? addWorkingDaysIso(x.date, 7) : ''; }
   if (r.type === 'customers') return r.status === 'Qualified' ? d.reviewDate : '';
-  if (r.type === 'vendors') return r.status === 'Approved' ? d.requalDate : r.status === 'Evaluation' && d.auditReportDate && !d.complianceReceived ? addDaysIso(d.auditReportDate, 30) : '';
+  if (r.type === 'vendors') return r.status === 'Approved' ? d.requalDate : r.status === 'Under Quality Review' && d.auditReportDate && !d.complianceReceived ? addDaysIso(d.auditReportDate, 30) : '';
   return { training: d.dueDate, comparators: d.neededBy, risks: d.reviewDate }[r.type];
 }
 const isOverdue = (r) => { const v = dueOf(r); return !!v && !DONE.has(r.status) && v < today(); };
@@ -229,7 +229,7 @@ function shell(active, html) {
     <div class="brand"><div>JRS eQMS<small>Quality Management System</small></div></div>
     ${link('dashboard', 'Dashboard', 'dashboard')}${link('tasks', 'My tasks', 'tasks')}${link('readiness', 'Inspection readiness', 'readiness')}
     ${Object.entries(groups).map(([g, list]) => `<h4>${esc(g)}</h4>${list.map(([k, m]) => link('m/' + k, m.name, k, openCount(k))).join('')}${g === 'Documents & training' ? link('matrix', 'Training matrix', 'matrix') : ''}`).join('')}
-    <h4>System</h4>${auditAccess() ? link('audit', 'Audit trail', 'audit') : ''}${link('signatures', 'Signature register', 'signatures')}${link('sharepoint', 'SharePoint', 'sharepoint')}${link('departments', 'Departments', 'departments')}${ME.canEditOrg ? link('organogram', 'Organogram', 'organogram') : ''}${isAdmin ? link('users', 'Users and roles', 'users') : ''}${link('password', 'Change password', 'password')}
+    <h4>System</h4>${auditAccess() ? link('audit', 'Audit trail', 'audit') + link('issued', 'Issued forms', 'issued') : ''}${link('signatures', 'Signature register', 'signatures')}${link('sharepoint', 'SharePoint', 'sharepoint')}${link('departments', 'Departments', 'departments')}${ME.canEditOrg ? link('organogram', 'Organogram', 'organogram') : ''}${isAdmin ? link('users', 'Users and roles', 'users') : ''}${link('password', 'Change password', 'password')}
     </nav><div class="main">${envBanner()}<header class="topbar"><button class="btn menu-btn" id="menu" aria-label="Menu">Menu</button><a class="topbar-logo" href="#/dashboard" title="Dashboard"><img src="/logo.png" alt="Jupiter Research Services"></a>
     <form id="gs" role="search" style="flex:1;max-width:420px"><input type="search" name="q" placeholder="Search records by number or title"></form>
     <div class="who"><a class="btn bell" href="#/notifications" title="Notifications">Notifications<span class="count" id="ncount" hidden></span></a><span title="Automatic lock after inactivity">Lock in <span id="idle" class="mono">${Math.floor(idleLeft / 60)}:${String(idleLeft % 60).padStart(2, '0')}</span></span>
@@ -250,7 +250,7 @@ async function route() {
   QS = new URLSearchParams(query || ''); // e.g. #/audit?from=2026-07-01&to=2026-09-30
   try {
     ALL = await api('GET', '/api/records');
-    const views = { dashboard, tasks, readiness, matrix, audit: auditView, history: historyView, signatures: signatureRegister, users: usersView, notifications: notificationsView, departments: departmentsView, organogram: organogramView, sharepoint: spView, password: () => renderPasswordChange(false), m: listView, new: newView, r: detailView, search: searchView, verify: verifyView };
+    const views = { dashboard, tasks, readiness, matrix, audit: auditView, history: historyView, signatures: signatureRegister, users: usersView, notifications: notificationsView, issued: issuedFormsView, departments: departmentsView, organogram: organogramView, sharepoint: spView, password: () => renderPasswordChange(false), m: listView, new: newView, r: detailView, search: searchView, verify: verifyView };
     await (views[view] || dashboard)(a);
     window.scrollTo(0, 0);
   } catch (x) { if (ME) { shell('', `<div class="panel"><h2>Something went wrong</h2><p>${esc(x.message)}</p></div>`); } }
@@ -337,10 +337,10 @@ function searchView(q = '') {
 // ---------- module list ----------
 function listView(type) {
   const m = MODS[type]; if (!m || !canSeeModule(m)) return dashboard();
-  const rows = ALL.filter(r => r.type === type);
+  const rows = ALL.filter(r => r.type === type); if (m.listSort) rows.sort(m.listSort);
   const canCreate = !m.noCreate && (type !== 'randomization' || hasRole(['unblinded'])) && !ME.roles.every(r => r === 'extaud');
   shell(type, `<div class="spread"><div><h1>${esc(m.name)}</h1><p class="muted">${esc(m.intro)}</p></div>
-    <div class="row">${canCreate ? `<a class="btn primary" href="#/new/${type}">${type === 'customers' ? 'Request customer qualification' : 'New ' + esc(singular(m))}</a>` : ''}${m.issueForm ? `<a class="btn" href="/api/forms/${type}" download title="Fillable PDF with an issue stamp; every issue is numbered and logged">Download ${esc(m.issueForm.label)}</a>` : ''}<button class="btn" id="exp">Export CSV</button></div></div>
+    <div class="row">${canCreate ? `<a class="btn primary" href="#/new/${type}">${esc(m.createTitle || 'New ' + singular(m))}</a>` : ''}${m.issueForm && !m.issueForm.fromRecordOnly && (!m.issueForm.roles || hasRole(m.issueForm.roles)) ? `<a class="btn" href="/api/forms/${type}" download title="PDF with an issue stamp; every issue is numbered and logged">Download ${esc(m.issueForm.label)}</a>` : ''}<button class="btn" id="exp">Export CSV</button></div></div>
     ${type === 'extensions' ? extensionKpis(rows) : ''}<div class="row no-print" style="margin-bottom:.8rem"><input type="search" id="flt" placeholder="Filter" style="max-width:280px">
     <select id="st" style="max-width:220px"><option value="">All statuses</option>${m.states.map(s => `<option>${esc(s)}</option>`).join('')}</select>
     <label class="small"><input type="checkbox" id="od"> Overdue only</label></div><div id="lt"></div>`);
@@ -366,6 +366,7 @@ function fieldHtml(f, v, disabled) {
   const optLabel = (o) => (f.optionLabels || {})[o] || CFG.ROLES[o] || o;
   switch (f.type) {
     case 'section': return `<h4 class="full form-section">${esc(f.label)}</h4>`;
+    case 'guide': return `<details class="full guide"><summary>${esc(f.label)}</summary>${f.rows.map(([title, rows]) => `<p class="guide-title">${esc(title)}</p><table class="t"><tbody>${rows.map(([a, b]) => `<tr><th>${esc(a)}</th><td>${esc(b)}</td></tr>`).join('')}</tbody></table>`).join('')}</details>`;
     case 'textarea': input = `<textarea id="${id}" name="${f.k}" rows="${f.rows || 4}" ${d}>${esc(v)}</textarea>`; break;
     case 'select': input = `<select id="${id}" name="${f.k}" ${d}><option value=""></option>${f.options.map(o => `<option value="${esc(o)}" ${o === v ? 'selected' : ''}>${esc(optLabel(o))}</option>`).join('')}</select>`; break;
     case 'user': input = `<select id="${id}" name="${f.k}" ${d}><option value=""></option>${USERS.filter(u => u.active || u.username === v).map(u => `<option value="${esc(u.username)}" ${u.username === v ? 'selected' : ''}>${esc(u.fullname)} (${esc(u.username)})${u.department ? ' – ' + esc(u.department) : ''}</option>`).join('')}</select>`; break;
@@ -550,11 +551,11 @@ async function detailView(id) {
     <div class="record"><div>
       <div class="panel no-print"><h3>Next steps</h3><div class="row">
         ${trans.length ? trans.map((t, i) => `<button class="btn ${t.sign ? 'primary sign' : ''}" data-act="tr" data-i="${i}" ${t.allowed ? '' : 'disabled title="Your roles do not permit this step"'}>${esc(t.label)}</button>`).join('') : extraBtns.length ? '' : '<span class="muted">No workflow steps available from this status.</span>'}
-        ${extraBtns.join('')}${m.issueForm ? `<a class="btn" href="/api/forms/${rec.type}?record=${rec.id}" download title="Fillable PDF with an issue stamp">Download ${esc(m.issueForm.label)} (issued copy)</a>` : ''}${rec.type === 'vendors' && d.auditDate && (d.agenda || []).length ? `<a class="btn" href="/api/records/${rec.id}/agenda.pdf" download>Audit agenda (JRS/FRM/QAS/021)</a>` : ''}<a class="btn" href="/api/records/${rec.id}/report.pdf" download title="One PDF: every part, signatures, all PDF and image attachments${det.auditAccess ? ', audit trail' : ''}">Download report (PDF)</a><a class="btn" href="/api/records/${rec.id}/report.pdf?inline=1" target="_blank" rel="noopener">Print report</a><a class="btn" href="/api/records/${rec.id}/report" download title="Original attachment files in a ZIP">Files (ZIP)</a></div></div>
+        ${extraBtns.join('')}${m.issueForm && (!m.issueForm.roles || hasRole(m.issueForm.roles)) && (!m.issueForm.when || m.issueForm.when(d, rec.status)) ? `<a class="btn" href="/api/forms/${rec.type}?record=${rec.id}" download title="Controlled form with a numbered issue stamp">Issue ${esc(m.issueForm.label)}</a>` : ''}${rec.type === 'vendors' && d.auditDate && (d.agenda || []).length ? `<a class="btn" href="/api/records/${rec.id}/agenda.pdf" download>Audit agenda (JRS/FRM/QAS/021)</a>` : ''}<a class="btn" href="/api/records/${rec.id}/report.pdf" download title="One PDF: every part, signatures, all PDF and image attachments${det.auditAccess ? ', audit trail' : ''}">Download report (PDF)</a><a class="btn" href="/api/records/${rec.id}/report.pdf?inline=1" target="_blank" rel="noopener">Print report</a><a class="btn" href="/api/records/${rec.id}/report" download title="Original attachment files in a ZIP">Files (ZIP)</a></div></div>
       <form class="panel" id="rf"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Record details</h3>${det.editable ? '<span class="small muted">Changes need a reason and are recorded in the audit trail.</span>' : '<span class="pill grey">Read-only in this status</span>'}</div>
         <div class="grid">${(() => { let s = null; return m.fields.map(f => {
-          if (f.type === 'section') { s = f; if (f.showIf && !f.showIf(d)) return ''; return fieldHtml(f) + sectionSignatures(m, f, det.signatures); }
-          if (s && s.showIf && !s.showIf(d)) return '';
+          if (f.type === 'section') { s = f; if (f.showIf && !f.showIf(d, rec.status)) return ''; return fieldHtml(f) + sectionSignatures(m, f, det.signatures); }
+          if (s && s.showIf && !s.showIf(d, rec.status)) return '';
           return fieldHtml(f, d[f.k], !det.editable || !!f.lock || !canEditSection(s, rec));
         }).join(''); })()}</div>
         ${det.editable ? '<div class="error" style="margin-top:.8rem"></div><button class="btn primary">Save changes</button>' : ''}</form>
@@ -985,6 +986,21 @@ async function usersView() {
     if (ok) { toast(ok.emailed ? `User updated – new password e-mailed to ${u.email}` : f_pwNote(ok, u)); usersView(); }
   }));
   $('#ux').addEventListener('click', () => download(`user_access_review_${today()}.csv`, toCsv([['User ID', 'Name', 'Department', 'Reports to', 'Roles', 'Active', 'Locked', 'Last login', 'Created'], ...USERS.map(u => [u.username, u.fullname, u.department, u.reports_to, u.roles.join('; '), u.active ? 'Yes' : 'No', u.locked ? 'Yes' : 'No', u.last_login, u.created_at])])));
+}
+
+// ---------- register of issued controlled forms (QA, administrators, management) ----------
+async function issuedFormsView() {
+  if (!auditAccess()) return dashboard();
+  const rows = await api('GET', '/api/form-issues');
+  shell('issued', `<div class="spread"><div><h1>Issued forms</h1><p class="muted">Every controlled form issued from the eQMS with its issue number (FI-YYYY-NNN), who it was issued to and for which record. Visible to QA, administrators and management.</p></div><button class="btn" id="fx">Export CSV</button></div>
+    <div class="row no-print" style="margin-bottom:.8rem"><input type="search" id="ff" placeholder="Filter" style="max-width:280px"></div><div id="fl"></div>`);
+  const draw = () => {
+    const q = $('#ff').value.toLowerCase(), list = rows.filter(r => !q || JSON.stringify(r).toLowerCase().includes(q));
+    $('#fl').innerHTML = list.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Issue no.</th><th>Form</th><th>Record</th><th>Issued to</th><th>Department</th><th>Issued on</th></tr></thead><tbody>${list.map(r => `<tr><td class="mono">${esc(r.no)}</td><td>${esc(r.form_code)}<br><span class="small muted">${esc(r.form_title || '')}</span></td>
+      <td>${r.record_id ? `<a class="mono" href="#/r/${r.record_id}">${esc(r.record_number)}</a><br><span class="small muted">${esc(r.record_title || '')}</span>` : '<span class="muted">Blank form</span>'}</td><td>${esc(r.issued_name || r.issued_to)}</td><td>${esc(deptName(r.dept))}</td><td class="small">${dmyt(r.ts)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="table-wrap"><div class="empty">No forms issued yet.</div></div>';
+  };
+  $('#ff').addEventListener('input', draw); draw();
+  $('#fx').addEventListener('click', () => download(`issued_forms_${today()}.csv`, toCsv([['Issue no.', 'Form', 'Title', 'Record', 'Record title', 'Issued to', 'Department', 'Issued on (UTC)'], ...rows.map(r => [r.no, r.form_code, r.form_title, r.record_number, r.record_title, r.issued_name || r.issued_to, r.dept, r.ts])])));
 }
 
 // ---------- notifications (also sent by e-mail when the server has e-mail set up) ----------

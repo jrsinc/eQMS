@@ -86,9 +86,28 @@
   };
 
   // JRS/SOP/QAS/005 Attachment 1 – supplier risk assessment: RPN = severity × occurrence × detection (1–125)
-  const SUP_SEVERITY = { 5: '5 – Catastrophic (API, parenteral excipients, high-risk location)', 4: '4 – High (primary packaging, non-sterile excipients, regulated printed packaging, depot)', 3: '3 – Moderate (logistics, validation, comparator supplier, CSV, specialty courier, shipping system, IRT)', 2: '2 – Low (ancillary material, destruction, pest control, calibration, maintenance, secondary material)', 1: '1 – Negligible (housekeeping, fire safety maintenance, tertiary packing material)' };
-  const SUP_OCCURRENCE = { 5: '5 – Frequent (> 90 %)', 4: '4 – Probable (60–89 %)', 3: '3 – Occasional (25–59 %)', 2: '2 – Remote (10–24 %)', 1: '1 – Unlikely (< 10 %)' };
-  const SUP_DETECTION = { 5: '5 – Very low (no known control to detect the failure)', 4: '4 – Low', 3: '3 – Moderate', 2: '2 – High', 1: '1 – Very high (failure almost certainly detected)' };
+  const SUP_SEVERITY = { 5: '5 – Catastrophic', 4: '4 – High risk', 3: '3 – Moderate risk', 2: '2 – Low risk', 1: '1 – Negligible' };
+  const SUP_OCCURRENCE = { 5: '5 – Frequent', 4: '4 – Probable', 3: '3 – Occasional', 2: '2 – Remote', 1: '1 – Unlikely' };
+  const SUP_DETECTION = { 5: '5 – Very low', 4: '4 – Low', 3: '3 – Moderate', 2: '2 – High', 1: '1 – Very high' };
+  // scoring criteria of JRS/SOP/QAS/005 Attachment 1, shown with the three scores
+  const SUP_GUIDE = [
+    ['Severity – criticality of the material / service and impact on end product quality', [
+      ['5 Catastrophic', 'Most important to product quality: API, excipients for parenteral products, any material sourced from (or with supply chain in) a high-risk location'],
+      ['4 High risk', 'Lower impact on product quality but associated with regulatory requirements: primary packaging, non-sterile excipients, regulated printed packaging, depot service provider'],
+      ['3 Moderate risk', 'Loss of operating capability, management intervention required: logistics, validation, comparator product supplier, CSV, specialty courier, validated shipping system, IRT'],
+      ['2 Low risk', 'Impact on operations and efficiency, not pervasive: ancillary material, destruction, pest control, calibration, preventive maintenance, secondary material'],
+      ['1 Negligible', 'Limited or no impact: housekeeping, fire safety equipment maintenance, tertiary packing material']]],
+    ['Occurrence – supply history and status of the supplier\'s quality system', [
+      ['5 Frequent', '> 90 % – expected to occur in most circumstances'], ['4 Probable', '60–89 % – will probably occur in most circumstances'],
+      ['3 Occasional', '25–59 % – will probably occur at some time'], ['2 Remote', '10–24 % – could occur at some time'], ['1 Unlikely', '< 10 % – may occur in exceptional circumstances']]],
+    ['Detection – possibility of detecting a quality failure and the stage at which it is detected', [
+      ['5 Very low', 'No known control to detect the failure, or very low probability of detection'], ['4 Low', 'Low probability of detection; failure not functionally obvious but can be detected'],
+      ['3 Moderate', 'Moderate probability of detection; failure not obvious but easily detected'], ['2 High', 'High probability of detection; failure obvious but may not be detected immediately'],
+      ['1 Very high', 'Detection almost certain; failure promptly and readily detected']]],
+    ['Risk ranking – RPN = severity × occurrence × detection', [
+      ['80–125 Catastrophic', 'Supplier questionnaire and site audit – every two years'], ['45–75 High risk', 'Site audit – every three years'],
+      ['20–40 Moderate risk', 'Questionnaire based audit – every five years'], ['1–18 Low risk', 'Certificate verification – annually or as needed']]]
+  ];
   // risk ranking table of the SOP (products of 1–5 scores fall in these bands)
   const supRisk = (d) => {
     const rpn = (+d.severity || 0) * (+d.occurrence || 0) * (+d.detection || 0);
@@ -758,14 +777,16 @@
       intro: 'Supplier qualification per JRS/SOP/QAS/005. Any department requests a supplier qualification; QA completes the supplier risk assessment (JRS/FRM/QAS/042). The risk priority number decides the evaluation: certificate verification, supplier questionnaire (JRS/FRM/QAS/004), site audit (agenda JRS/FRM/QAS/021, report JRS/FRM/QAS/020) or questionnaire and site audit. Approved suppliers form the approved supplier list (JRS/FRM/QAS/005).',
       numbering: (d, y) => ({ pre: `SUP-${y}-`, pad: 3 }),
       numberLabel: 'Supplier no.',
-      list: ['number', 'title', 'services', 'riskLevel', 'auditType', 'requalDate', 'status'],
+      list: ['number', 'title', 'services', 'rpn', 'riskLevel', 'auditType', 'requalDate', 'status'],
+      // highest risk first (risk priority number)
+      listSort: (a, b) => (+b.data.rpn || 0) - (+a.data.rpn || 0) || a.number.localeCompare(b.number),
       attachOnRequestOnly: true,
       createTitle: 'Request supplier qualification', createLabel: 'Submit request to QA',
       attachHint: 'attach any documents you already have (company profile, licences, certificates); after the request only QA can add documents',
       createHelp: 'Any department can request a supplier qualification (JRS/SOP/QAS/005 §5.1). Give the supplier, why it is needed, the sites and services, and the contact details; attach any documents you already have. QA then completes the risk assessment and evaluation.',
-      issueForm: { generate: 'supplierQuestionnaire', code: 'JRS/FRM/QAS/004', label: 'Supplier questionnaire (JRS/FRM/QAS/004)', prefill: { vendorName: 'title', vendorAddress: 'address', vendorServices: 'services', contactPerson: 'contactPerson', contactNo: 'contactPhone', contactEmail: 'contactEmail' } },
+      issueForm: { file: 'JRS-FRM-QAS-004 v3.0 Vendor qualification checklist.pdf', code: 'JRS/FRM/QAS/004', label: 'Supplier questionnaire (JRS/FRM/QAS/004)', roles: ['qa'], fromRecordOnly: true, when: (d, status) => status === 'Under Quality Review' && /uestionnaire/.test(d.auditType || '') },
       fields: [
-        sec('Supplier qualification request (any department)', { create: true, edit: { 'Under QA Review': ['qa'], Evaluation: ['qa'], Approved: ['qa'], Suspended: ['qa'] } }),
+        sec('Supplier qualification request (any department)', { create: true, edit: { 'Risk Assessment': ['qa'], 'Under Quality Review': ['qa'], Approved: ['qa'], 'On Hold': ['qa'] } }),
         { k: 'title', label: 'Supplier name', type: 'text', req: true, full: true },
         { k: 'reason', label: 'Reason to qualify (new requirement, quality improvement, discontinuation by current supplier, supplier rejection, business continuity …)', type: 'textarea', req: true, full: true },
         { k: 'sites', label: 'Applicable site(s)', type: 'multicheck', req: true, options: SITES },
@@ -775,23 +796,23 @@
         { k: 'contactPhone', label: 'Contact number', type: 'text' },
         { k: 'contactEmail', label: 'Contact e-mail', type: 'text', req: true },
         { k: 'requesterDept', label: 'Requesting department', type: 'readonly', optionLabels: DEPTS },
-        sec('Supplier risk assessment (JRS/FRM/QAS/042) – QA', { part: 'R', edit: { 'Under QA Review': ['qa'] } }),
-        { k: 'severity', label: 'Severity score (A) – criticality of the material / service and impact on product quality', type: 'select', options: ['5', '4', '3', '2', '1'], optionLabels: SUP_SEVERITY },
-        { k: 'occurrence', label: 'Occurrence score (B) – supply history and status of the supplier\'s quality system', type: 'select', options: ['5', '4', '3', '2', '1'], optionLabels: SUP_OCCURRENCE },
-        { k: 'detection', label: 'Detection score (C) – possibility and stage of detecting a quality failure', type: 'select', options: ['5', '4', '3', '2', '1'], optionLabels: SUP_DETECTION },
+        sec('Supplier risk assessment (JRS/FRM/QAS/042) – QA', { part: 'R', edit: { 'Risk Assessment': ['qa'] } }),
+        { type: 'guide', label: 'Scoring criteria (JRS/SOP/QAS/005 Attachment 1)', rows: SUP_GUIDE },
+        { k: 'severity', label: 'Severity score (A)', type: 'select', options: ['5', '4', '3', '2', '1'], optionLabels: SUP_SEVERITY },
+        { k: 'occurrence', label: 'Occurrence score (B)', type: 'select', options: ['5', '4', '3', '2', '1'], optionLabels: SUP_OCCURRENCE },
+        { k: 'detection', label: 'Detection score (C)', type: 'select', options: ['5', '4', '3', '2', '1'], optionLabels: SUP_DETECTION },
         { k: 'rpn', label: 'Risk priority number (RPN = A × B × C)', type: 'computed' },
         { k: 'riskLevel', label: 'Risk level', type: 'computed' },
         { k: 'auditType', label: 'Type of evaluation required', type: 'computed' },
         { k: 'auditFrequency', label: 'Requalification frequency', type: 'computed' },
-        { k: 'riskRemarks', label: 'Risk assessment remarks', type: 'textarea', full: true },
-        sec('Certificate verification (low risk)', { part: 'E', showIf: (d) => /Certificate/.test(d.auditType || ''), edit: { Evaluation: ['qa'] } }),
+        sec('Certificate verification (low risk)', { part: 'E', showIf: (d, st) => st !== 'Risk Assessment' && /Certificate/.test(d.auditType || ''), edit: { 'Under Quality Review': ['qa'], 'On Hold': ['qa'] } }),
         { k: 'certificates', label: 'Certificates received (attach copies)', type: 'table', full: true, cols: [{ k: 'type', label: 'Certificate', options: ['Regulatory accreditation / licence', 'ISO certification', 'GMP / GDP certificate', 'Business registration', 'Other'] }, { k: 'number', label: 'Number' }, { k: 'issuer', label: 'Issued by' }, { k: 'validUntil', label: 'Valid until', type: 'date' }] },
         { k: 'certReview', label: 'QA review of the certificates', type: 'textarea', full: true },
-        sec('Supplier questionnaire (JRS/FRM/QAS/004)', { part: 'E', showIf: (d) => /uestionnaire/.test(d.auditType || ''), edit: { Evaluation: ['qa'] } }),
-        { k: 'qSentOn', label: 'Questionnaire sent to the supplier on (download the issued copy above)', type: 'date' },
+        sec('Supplier questionnaire (JRS/FRM/QAS/004)', { part: 'E', showIf: (d, st) => st !== 'Risk Assessment' && /uestionnaire/.test(d.auditType || ''), edit: { 'Under Quality Review': ['qa'], 'On Hold': ['qa'] } }),
+        { k: 'qSentOn', label: 'Questionnaire sent to the supplier on (QA issues the copy with the button above)', type: 'date' },
         { k: 'qReceivedOn', label: 'Completed questionnaire received on (attach it)', type: 'date' },
         { k: 'qReview', label: 'QA verification of the completed questionnaire', type: 'textarea', full: true },
-        sec('Site audit – agenda and plan (JRS/FRM/QAS/021)', { part: 'E', showIf: (d) => /ite audit/.test(d.auditType || ''), edit: { Evaluation: ['qa'] } }),
+        sec('Site audit – agenda and plan (JRS/FRM/QAS/021)', { part: 'E', showIf: (d, st) => st !== 'Risk Assessment' && /ite audit/.test(d.auditType || ''), edit: { 'Under Quality Review': ['qa'], 'On Hold': ['qa'] } }),
         { k: 'auditCategory', label: 'Audit category', type: 'select', options: ['Prospective supplier audit', 'Planned supplier audit', 'Cause-based supplier audit'] },
         { k: 'auditMethod', label: 'Audit method', type: 'select', options: ['On-site', 'Virtual / remote'] },
         { k: 'auditDate', label: 'Audit date (mutually agreed)', type: 'date' },
@@ -801,19 +822,22 @@
         { k: 'auditeeRep', label: 'Auditee representative(s)', type: 'text' },
         { k: 'auditPurpose', label: 'Purpose and scope of the audit', type: 'textarea', full: true },
         { k: 'agenda', label: 'Audit schedule (agenda)', type: 'table', full: true, cols: [{ k: 'date', label: 'Date', type: 'date' }, { k: 'time', label: 'Time' }, { k: 'activity', label: 'Activity / area' }, { k: 'participants', label: 'Participants' }] },
-        sec('Site audit – report and compliance (JRS/FRM/QAS/020)', { part: 'E', showIf: (d) => /ite audit/.test(d.auditType || ''), edit: { Evaluation: ['qa'] } }),
+        sec('Site audit – report and compliance (JRS/FRM/QAS/020)', { part: 'E', showIf: (d, st) => st !== 'Risk Assessment' && /ite audit/.test(d.auditType || ''), edit: { 'Under Quality Review': ['qa'], 'On Hold': ['qa'] } }),
         { k: 'observations', label: 'Audit observations', type: 'table', full: true, cols: [{ k: 'system', label: 'System / sub-system' }, { k: 'category', label: 'Category', options: ['Critical', 'Major', 'Minor', 'Recommendation'] }, { k: 'description', label: 'Observation' }, { k: 'response', label: 'Supplier compliance response' }, { k: 'status', label: 'Status', options: ['Open', 'Closed'] }] },
         { k: 'auditReportDate', label: 'Audit report issued on (within 30 working days of the audit)', type: 'date' },
         { k: 'responseDue', label: 'Compliance report due (30 calendar days after the report)', type: 'computed' },
         { k: 'complianceReceived', label: 'Compliance report received on', type: 'date' },
         { k: 'auditConclusion', label: 'Audit conclusion (auditor recommendation)', type: 'textarea', full: true },
-        sec('QA decision – approved supplier list (JRS/FRM/QAS/005)', { part: 'A', edit: { Evaluation: ['qa'], Approved: ['qa'], Suspended: ['qa'] } }),
+        sec('Quality review result – attach the audit / evaluation report (approved supplier list JRS/FRM/QAS/005)', { part: 'A', showIf: (d, st) => st !== 'Risk Assessment', edit: { 'Under Quality Review': ['qa'], 'On Hold': ['qa'], Approved: ['qa'] } }),
         { k: 'approvedFor', label: 'Supplier approved for (materials / services)', type: 'text', full: true },
+        { k: 'effectiveDate', label: 'Effective date', type: 'date' },
+        { k: 'requalDate', label: 'Requalification date (suggested from the risk level frequency; can be changed)', type: 'date' },
         { k: 'qtaRef', label: 'Quality technical agreement (signed after a successful audit, before commercial procurement)', type: 'text' },
         { k: 'auditCertDate', label: 'Audit certificate (JRS/FRM/QAS/027) issued on', type: 'date' },
         { k: 'approvedOn', label: 'Approved on', type: 'readonly', fmt: 'date' },
-        { k: 'requalDate', label: 'Requalification due (from the requalification frequency)', type: 'readonly', fmt: 'date' },
-        { k: 'qaConclusion', label: 'QA conclusion', type: 'textarea', full: true }
+        { k: 'qaConclusion', label: 'QA conclusion', type: 'textarea', full: true },
+        sec('Qualification history (previous qualification cycles)', { showIf: (d) => (d.qualHistory || []).length > 0, edit: {} }),
+        { k: 'qualHistory', label: 'Previous qualifications', type: 'table', full: true, cols: [{ k: 'cycle', label: 'Cycle' }, { k: 'riskLevel', label: 'Risk level (RPN)' }, { k: 'auditType', label: 'Evaluation' }, { k: 'effectiveDate', label: 'Effective date', type: 'date' }, { k: 'requalDate', label: 'Requalification date', type: 'date' }, { k: 'outcome', label: 'Outcome' }] }
       ],
       compute: {
         rpn: (d) => supRisk(d).rpn ? String(supRisk(d).rpn) : '',
@@ -822,18 +846,20 @@
         auditFrequency: (d) => supRisk(d).frequency,
         responseDue: (d) => d.auditReportDate ? plusDays(d.auditReportDate, 30) : ''
       },
-      states: ['Under QA Review', 'Evaluation', 'Approved', 'Rejected', 'Suspended', 'Disqualified'],
+      // risk assessment → audit decided → Under Quality Review → Approved / Rejected / On Hold; requalification repeats the cycle
+      states: ['Risk Assessment', 'Under Quality Review', 'Approved', 'On Hold', 'Rejected'],
       transitions: [
-        t('Under QA Review', 'Evaluation', 'Approve risk assessment – start evaluation', ['qa'], { part: 'R', sign: 'Risk assessment approved – QA', needs: ['severity', 'occurrence', 'detection'] }),
-        t('Under QA Review', 'Rejected', 'Reject request', ['qa'], { part: 'R', sign: 'Supplier rejected – QA', reason: true }),
-        t('Evaluation', 'Under QA Review', 'Return to risk assessment', ['qa'], { reason: true }),
-        t('Evaluation', 'Approved', 'Approve supplier', ['qa'], { part: 'A', sign: 'Supplier approved – QA', needs: ['approvedFor', 'qaConclusion'], checks: ['supEvaluationDone'] }),
-        t('Evaluation', 'Rejected', 'Reject supplier', ['qa'], { part: 'A', sign: 'Supplier rejected – QA', reason: true }),
-        t('Approved', 'Suspended', 'Suspend supplier', ['qa'], { part: 'A', sign: 'Supplier suspended – QA', reason: true }),
-        t('Approved', 'Under QA Review', 'Start requalification', ['qa'], { reason: true }),
-        t('Approved', 'Disqualified', 'Disqualify supplier (rejection proposal)', ['qa'], { part: 'A', sign: 'Supplier disqualified – QA', reason: true }),
-        t('Suspended', 'Approved', 'Reinstate supplier', ['qa'], { part: 'A', sign: 'Supplier reinstated – QA', reason: true }),
-        t('Suspended', 'Disqualified', 'Disqualify supplier', ['qa'], { part: 'A', sign: 'Supplier disqualified – QA', reason: true })
+        t('Risk Assessment', 'Under Quality Review', 'Approve risk assessment – audit decided', ['qa'], { part: 'R', sign: 'Risk assessment approved – QA', needs: ['severity', 'occurrence', 'detection'] }),
+        t('Risk Assessment', 'Rejected', 'Reject supplier', ['qa'], { part: 'R', sign: 'Supplier rejected – QA', reason: true }),
+        t('Under Quality Review', 'Approved', 'Approve supplier', ['qa'], { part: 'A', sign: 'Supplier approved – QA', needs: ['approvedFor', 'effectiveDate', 'requalDate', 'qaConclusion'], checks: ['supEvaluationDone'] }),
+        t('Under Quality Review', 'On Hold', 'Put on hold', ['qa'], { part: 'A', sign: 'Supplier on hold – QA', reason: true }),
+        t('Under Quality Review', 'Rejected', 'Reject supplier', ['qa'], { part: 'A', sign: 'Supplier rejected – QA', reason: true }),
+        t('Under Quality Review', 'Risk Assessment', 'Return to risk assessment', ['qa'], { reason: true }),
+        t('On Hold', 'Under Quality Review', 'Resume quality review', ['qa'], { reason: true }),
+        t('On Hold', 'Approved', 'Approve supplier', ['qa'], { part: 'A', sign: 'Supplier approved – QA', needs: ['approvedFor', 'effectiveDate', 'requalDate', 'qaConclusion'], checks: ['supEvaluationDone'] }),
+        t('On Hold', 'Rejected', 'Reject supplier', ['qa'], { part: 'A', sign: 'Supplier rejected – QA', reason: true }),
+        t('Approved', 'On Hold', 'Put on hold', ['qa'], { part: 'A', sign: 'Supplier on hold – QA', reason: true }),
+        t('Approved', 'Risk Assessment', 'Start requalification (same process)', ['qa'], { reason: true })
       ]
     },
 
