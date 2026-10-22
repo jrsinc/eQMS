@@ -15,7 +15,9 @@ function dmy(v) { if (!v) return ''; const d = new Date(v.length === 10 ? v + 'T
 function dmyt(v) { if (!v) return ''; const d = new Date(v); return `${dmy(v)} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`; }
 const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const userName = (u) => (USERS.find(x => x.username === u) || {}).fullname || u || '';
-const hasRole = (roles) => ME && (roles.includes('any') || ME.roles.some(r => roles.includes(r)));
+// admin and management have all access (the server applies the same rule)
+const hasRole = (roles) => ME && (roles.includes('any') || ME.roles.some(r => roles.includes(r)) || (ME.allAccess && !roles.every(r => ['unblinded', 'extaud'].includes(r))));
+const deptName = (c) => CFG.DEPTS[c] || c || '';
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 3200); }
 function download(name, content, type = 'text/csv') { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([content], { type })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
 const csvCell = (v) => { const s = Array.isArray(v) ? v.join('; ') : String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
@@ -42,10 +44,10 @@ function dueOf(r) {
 const isOverdue = (r) => { const v = dueOf(r); return !!v && !DONE.has(r.status) && v < today(); };
 const dataFields = (m) => m.fields.filter(f => f.k);
 const singular = (m) => m.single || m.name.toLowerCase().replace(/s$/, '');
-// The audit trail, record history and version history are for QA and administrators only (the server enforces it too)
-const auditAccess = () => !!ME && (ME.roles.includes('qa') || ME.roles.includes('admin'));
-const canSeeModule = (m) => !(m.visibleTo && !ME.roles.some(r => m.visibleTo.includes(r))) && !(m.hideFrom && ME.roles.every(r => m.hideFrom.includes(r)));
-const NO_AUDIT_ACCESS = '<div class="panel"><h2>Audit trail</h2><p>The audit trail and version history are visible to QA and administrators only.</p></div>';
+// The audit trail, record history and version history are for QA, administrators and management only (the server enforces it too)
+const auditAccess = () => !!ME && (ME.roles.includes('qa') || ME.allAccess);
+const canSeeModule = (m) => ME.allAccess || !(m.visibleTo && !ME.roles.some(r => m.visibleTo.includes(r))) && !(m.hideFrom && ME.roles.every(r => m.hideFrom.includes(r)));
+const NO_AUDIT_ACCESS = '<div class="panel"><h2>Audit trail</h2><p>The audit trail and version history are visible to QA, administrators and management only.</p></div>';
 // Readable audit entries: field labels instead of internal keys, names instead of user IDs, dates as DD-MMM-YYYY
 function fieldLabel(type, key) {
   if (!key) return '';
@@ -59,7 +61,7 @@ function auditValue(type, key, v) {
   if (key === 'stateEnteredAt' && /^\d{4}-\d{2}-\d{2}T/.test(v)) return dmyt(v);
   const f = MODS[type] && MODS[type].fields.find(x => x.k === key);
   if (!f) return v;
-  if (f.type === 'user') return userName(v);
+  if (f.type === 'user' || f.fmt === 'user') return userName(v);
   if ((f.type === 'date' || f.fmt === 'date') && /^\d{4}-\d{2}-\d{2}/.test(v)) return dmy(v);
   if (f.type === 'checklist' || f.type === 'table') { try { return plain(f, JSON.parse(v)); } catch { return v; } }
   if (f.optionLabels && f.optionLabels[v]) return f.optionLabels[v];
@@ -160,6 +162,7 @@ function renderLogin(msg = '') {
 async function afterLogin() {
   if (ME.mustChange) return renderPasswordChange(true);
   USERS = await api('GET', '/api/users');
+  CFG.setDepartments(await api('GET', '/api/departments'));
   startIdle(); if (!location.hash) location.hash = '#/dashboard'; route();
 }
 function renderPasswordChange(forced) {
@@ -195,16 +198,16 @@ function shell(active, html) {
   for (const [k, m] of Object.entries(MODS)) if (canSeeModule(m)) (groups[m.group] ||= []).push([k, m]);
   const openCount = (k) => ALL.filter(r => r.type === k && !DONE.has(r.status)).length;
   const link = (href, label, key, count) => `<a href="#/${href}" class="${active === key ? 'active' : ''}">${esc(label)}${count ? `<span class="count">${count}</span>` : ''}</a>`;
-  const isAdmin = ME.roles.includes('admin');
+  const isAdmin = ME.allAccess;
   $('#app').innerHTML = `<div class="shell"><nav class="nav" id="nav" aria-label="Main">
     <div class="brand">${logo()}<div>QualiSuite eQMS<small>${esc(HEALTH.org || '')}</small></div></div>
     ${link('dashboard', 'Dashboard', 'dashboard')}${link('tasks', 'My tasks', 'tasks')}${link('readiness', 'Inspection readiness', 'readiness')}
     ${Object.entries(groups).map(([g, list]) => `<h4>${esc(g)}</h4>${list.map(([k, m]) => link('m/' + k, m.name, k, openCount(k))).join('')}${g === 'Documents & training' ? link('matrix', 'Training matrix', 'matrix') : ''}`).join('')}
-    <h4>System</h4>${auditAccess() ? link('audit', 'Audit trail', 'audit') : ''}${link('signatures', 'Signature register', 'signatures')}${link('sharepoint', 'SharePoint', 'sharepoint')}${isAdmin ? link('users', 'Users and roles', 'users') : ''}${link('password', 'Change password', 'password')}
+    <h4>System</h4>${auditAccess() ? link('audit', 'Audit trail', 'audit') : ''}${link('signatures', 'Signature register', 'signatures')}${link('sharepoint', 'SharePoint', 'sharepoint')}${link('departments', 'Departments', 'departments')}${ME.canEditOrg ? link('organogram', 'Organogram', 'organogram') : ''}${isAdmin ? link('users', 'Users and roles', 'users') : ''}${link('password', 'Change password', 'password')}
     </nav><div class="main">${envBanner()}<header class="topbar"><button class="btn menu-btn" id="menu" aria-label="Menu">Menu</button>
     <form id="gs" role="search" style="flex:1;max-width:420px"><input type="search" name="q" placeholder="Search records by number or title"></form>
     <div class="who"><span title="Automatic lock after inactivity">Lock in <span id="idle" class="mono">${Math.floor(idleLeft / 60)}:${String(idleLeft % 60).padStart(2, '0')}</span></span>
-    <span><b>${esc(ME.fullname)}</b><br><span class="small muted">${esc(ME.roles.map(r => CFG.ROLES[r]).join(', '))}</span></span>
+    <span><b>${esc(ME.fullname)}</b><br><span class="small muted">${esc([ME.department ? deptName(ME.department) : '', ...ME.roles.filter(r => r !== 'numgen').map(r => r === 'hod' ? 'Head of ' + ME.hodOf.join(', ') : CFG.ROLES[r].split(' (')[0])].filter(Boolean).join(' · '))}</span></span>
     <button class="btn" id="logout">Sign out</button></div></header><main class="content" id="content">${html}</main></div></div>`;
   $('#logout').addEventListener('click', async () => { await api('POST', '/api/logout'); ME = null; location.hash = ''; renderLogin(); });
   $('#menu').addEventListener('click', () => $('#nav').classList.toggle('open'));
@@ -220,7 +223,7 @@ async function route() {
   QS = new URLSearchParams(query || ''); // e.g. #/audit?from=2026-07-01&to=2026-09-30
   try {
     ALL = await api('GET', '/api/records');
-    const views = { dashboard, tasks, readiness, matrix, audit: auditView, history: historyView, signatures: signatureRegister, users: usersView, sharepoint: spView, password: () => renderPasswordChange(false), m: listView, new: newView, r: detailView, search: searchView, verify: verifyView };
+    const views = { dashboard, tasks, readiness, matrix, audit: auditView, history: historyView, signatures: signatureRegister, users: usersView, departments: departmentsView, organogram: organogramView, sharepoint: spView, password: () => renderPasswordChange(false), m: listView, new: newView, r: detailView, search: searchView, verify: verifyView };
     await (views[view] || dashboard)(a);
     window.scrollTo(0, 0);
   } catch (x) { if (ME) { shell('', `<div class="panel"><h2>Something went wrong</h2><p>${esc(x.message)}</p></div>`); } }
@@ -234,7 +237,7 @@ function recRow(r, cols) {
     if (c === 'status') return `<td>${pill(r.status)}${isOverdue(r) ? ' <span class="pill bad">Overdue</span>' : ''}</td>`;
     if (c === 'module') return `<td>${esc(m.name)}</td>`;
     const f = m.fields.find(x => x.k === c); const v = r.data[c];
-    return `<td>${f && (f.type === 'date' || f.fmt === 'date') ? dmy(v) : f && f.type === 'user' ? esc(userName(v)) : esc(Array.isArray(v) ? v.join(', ') : v)}</td>`;
+    return `<td>${f && (f.type === 'date' || f.fmt === 'date') ? dmy(v) : f && (f.type === 'user' || f.fmt === 'user') ? esc(userName(v)) : f && f.optionLabels && f.optionLabels[v] ? esc(f.optionLabels[v]) : esc(Array.isArray(v) ? v.join(', ') : v)}</td>`;
   }).join('')}</tr>`;
 }
 function bindRows(root = document) { $$('[data-go]', root).forEach(el => el.addEventListener('click', () => { location.hash = el.dataset.go; })); }
@@ -245,16 +248,23 @@ function myTasks() {
     if (r.type === 'documents' && r.status === 'In Review' && r.data.reviewer === ME.username) return true;
     if (r.type === 'documents' && r.status === 'Draft' && r.created_by === ME.username) return true;
     if (r.type === 'capa' && r.status === 'Implementation' && r.data.respPerson === ME.username) return true;
-    if (r.type === 'investigations' && r.status === 'Initiation' && r.created_by === ME.username) return true;
+    if (r.type === 'investigations') {
+      const d = r.data, mine = d.respPerson === ME.username || (!!ME.department && ME.department === d.respDept);
+      if (['Initiation', 'Part A Update'].includes(r.status) && (r.created_by === ME.username || mine)) return true;
+      if (r.status === 'Request Update' && r.created_by === ME.username) return true;
+      if (r.status === 'Investigation' && mine) return true;
+      if (r.status === 'HOD Approval' && d.hodApprover === ME.username) return true;
+    }
     if (r.type === 'changes' && r.status === 'Initiation' && r.created_by === ME.username) return true;
     if (r.type === 'changes' && r.status === 'Implementation' && [r.created_by, r.data.respPerson].includes(ME.username)) return true;
-    if (r.type === 'changes' && r.status === 'Optional Approvals' && hasRole(['hod'])) return (r.data.optionalDepts || []).some(x => !(r.data.deptApprovals || []).some(a => a.dept === x));
+    if (r.type === 'changes' && r.status === 'Optional Approvals') return (r.data.optionalDepts || []).some(x => (ME.deptsUnder || []).includes(x) && !(r.data.deptApprovals || []).some(a => a.dept === x));
     if (r.type === 'selfinspections') {
       const d = r.data, auditor = [d.leadAuditor, d.coAuditor].includes(ME.username);
       if (r.status === 'Report Issued' && d.auditee === ME.username) return true;
       if (['Notified', 'In Progress', 'Auditor Review'].includes(r.status) && auditor) return true;
     }
-    return MODS[r.type].transitions.some(t => t.from === r.status && !t.roles.includes('any') && hasRole(t.roles));
+    // steps held through a role (all-access users are not given every step as a task)
+    return MODS[r.type].transitions.some(t => t.from === r.status && !t.roles.includes('any') && ME.roles.some(x => t.roles.includes(x)));
   });
 }
 function dashboard() {
@@ -273,7 +283,9 @@ function dashboard() {
 }
 function table(rows, cols, empty = 'Nothing here.') {
   if (!rows.length) return `<div class="table-wrap"><div class="empty">${esc(empty)}</div></div>`;
-  const head = cols.map(c => c === 'module' ? 'Module' : c === 'number' ? 'Number' : c === 'status' ? 'Status' : (Object.values(MODS).flatMap(m => m.fields).find(f => f.k === c) || { label: c }).label);
+  // column headings from the rows' own module when they share one; the short form of the label (before any explanation in brackets)
+  const types = [...new Set(rows.map(r => r.type))], pool = types.length === 1 && MODS[types[0]] ? [...MODS[types[0]].fields, ...Object.values(MODS).flatMap(m => m.fields)] : Object.values(MODS).flatMap(m => m.fields);
+  const head = cols.map(c => c === 'module' ? 'Module' : c === 'number' ? 'Number' : c === 'status' ? 'Status' : (pool.find(f => f.k === c) || { label: c }).label.split(' (')[0]);
   return `<div class="table-wrap"><table class="t"><thead><tr>${head.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(r => recRow(r, cols)).join('')}</tbody></table></div>`;
 }
 function tasks() { shell('tasks', `<h1>My tasks</h1><p class="muted">Records waiting for an action your roles allow, your training and CAPA actions you own.</p>${table(myTasks(), ['number', 'module', 'title', 'status'], 'No open tasks.')}`); bindRows(); }
@@ -315,10 +327,10 @@ function fieldHtml(f, v, disabled) {
     case 'section': return `<h4 class="full form-section">${esc(f.label)}</h4>`;
     case 'textarea': input = `<textarea id="${id}" name="${f.k}" rows="${f.rows || 4}" ${d}>${esc(v)}</textarea>`; break;
     case 'select': input = `<select id="${id}" name="${f.k}" ${d}><option value=""></option>${f.options.map(o => `<option value="${esc(o)}" ${o === v ? 'selected' : ''}>${esc(optLabel(o))}</option>`).join('')}</select>`; break;
-    case 'user': input = `<select id="${id}" name="${f.k}" ${d}><option value=""></option>${USERS.filter(u => u.active || u.username === v).map(u => `<option value="${esc(u.username)}" ${u.username === v ? 'selected' : ''}>${esc(u.fullname)} (${esc(u.username)})</option>`).join('')}</select>`; break;
+    case 'user': input = `<select id="${id}" name="${f.k}" ${d}><option value=""></option>${USERS.filter(u => u.active || u.username === v).map(u => `<option value="${esc(u.username)}" ${u.username === v ? 'selected' : ''}>${esc(u.fullname)} (${esc(u.username)})${u.department ? ' – ' + esc(u.department) : ''}</option>`).join('')}</select>`; break;
     case 'checkbox': return `<div class="${f.full ? 'full' : ''}"><label class="f">&nbsp;</label><label class="row"><input type="checkbox" id="${id}" name="${f.k}" ${v ? 'checked' : ''} ${d}> ${esc(f.label)}</label></div>`;
     case 'multicheck': input = `<div class="checks" role="group" aria-label="${esc(f.label)}">${f.options.map(o => `<label><input type="checkbox" name="${f.k}" value="${esc(o)}" ${(v || []).includes(o) ? 'checked' : ''} ${d}> ${esc(optLabel(o))}</label>`).join('')}</div>`; break;
-    case 'computed': case 'readonly': input = `<div class="computed" id="${id}" data-computed="${f.k}">${f.fmt === 'date' ? dmy(v) : esc(v)}</div>`; break;
+    case 'computed': case 'readonly': input = `<div class="computed" id="${id}" data-computed="${f.k}">${f.fmt === 'date' ? dmy(v) : f.fmt === 'user' ? esc(userName(v)) : esc((f.optionLabels || {})[v] || v)}</div>`; break;
     case 'checklist': input = `<div class="table-wrap"><table class="t check-table" role="group" aria-label="${esc(f.label)}"><thead><tr><th>Area</th><th>Yes</th><th>No</th><th>Remarks</th></tr></thead><tbody>
       ${f.rows.map((row, i) => { const x = (v || {})[row] || {}; return `<tr><td>${esc(row)}</td>
         <td><input type="radio" name="${f.k}__${i}" value="Yes" ${x.v === 'Yes' ? 'checked' : ''} ${d} aria-label="${esc(row)}: yes"></td>
@@ -378,17 +390,32 @@ function liveCompute(root, m, base = {}) {
 }
 function newView(type) {
   const m = MODS[type]; if (!m || !canSeeModule(m)) return dashboard();
-  shell(type, `<div class="spread"><div><h1>New ${esc(singular(m))}</h1><p class="muted">${m.tempNumbering ? 'Your request gets a request number now. After QA approves it, the designated number generator assigns the record number and you complete Part 1.' : 'The record number is assigned when you save.'} Fields marked * are required.</p></div></div>
+  shell(type, `<div class="spread"><div><h1>New ${esc(singular(m))}</h1><p class="muted">${m.tempNumbering ? 'Your request goes to QA with a request number. When QA approves it the record number is assigned automatically; QA may also ask you to update the request, or reject it.' + (m.deptScoped ? ' The responsible department is the department of the responsible person.' : '') : 'The record number is assigned when you save.'} Fields marked * are required.</p></div></div>
    <form id="nf" class="panel"><div class="grid">${createFields(m).filter(f => f.type !== 'readonly').map(f => fieldHtml(f, undefined, false)).join('')}</div>
+   ${m.tempNumbering ? '<div style="margin-top:1rem"><label class="f" for="natt">Attachments (optional)</label><input type="file" id="natt" multiple></div>' : ''}
    <div class="error" style="margin-top:1rem"></div><div class="row"><button class="btn primary">${m.tempNumbering ? 'Submit request to QA' : 'Save record'}</button><a class="btn" href="#/m/${type}">Cancel</a></div></form>`);
   const form = $('#nf');
   if (type === 'investigations') { const o = $('[name=dateIdentified]', form); if (o) o.value = today(); }
   liveCompute(form, m, type === 'investigations' ? { qaNotified: today() } : {});
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    try { const rec = await api('POST', '/api/records', { type, data: readForm(form, m) }); toast(`${rec.number} created`); location.hash = '#/r/' + rec.id; }
+    try {
+      const files = [...($('#natt', form)?.files || [])]; if (files.some(f => f.size > 25 * 1024 * 1024)) throw new Error('Maximum file size is 25 MB in this build.');
+      const rec = await api('POST', '/api/records', { type, data: readForm(form, m) });
+      for (const f of files) await uploadFile(rec.id, f);
+      toast(`${rec.number} created${files.length ? ` with ${files.length} attachment(s)` : ''}`); location.hash = '#/r/' + rec.id;
+    }
     catch (x) { $('.error', form).textContent = x.message; }
   });
+}
+
+const fileB64 = (file) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(file); });
+const uploadFile = async (id, file) => api('POST', `/api/records/${id}/attachments`, { name: file.name, mime: file.type, base64: await fileB64(file) });
+// attachments grouped by the workflow stage they were added at
+function attachmentsTable(m, atts) {
+  if (!atts.length) return '<p class="muted">No attachments. Files can be added at every stage; each is stored with a SHA-256 checksum that is verified on every download.</p>';
+  const stages = [...new Set(atts.map(a => a.stage || ''))].sort((a, b) => m.states.indexOf(a) - m.states.indexOf(b));
+  return `<div class="table-wrap"><table class="t"><thead><tr><th>File</th><th>Size</th><th>SHA-256</th><th>Added</th></tr></thead><tbody>${stages.map(st => `<tr class="group-row"><td colspan="4">Stage: ${esc(st || 'Not recorded')}</td></tr>${atts.filter(a => (a.stage || '') === st).map(a => `<tr><td><a href="/api/attachments/${a.id}">${esc(a.name)}</a></td><td>${(a.size / 1024).toFixed(1)} KB</td><td class="mono small" title="${a.sha256}">${a.sha256.slice(0, 16)}…</td><td>${esc(userName(a.uploaded_by))}<br><span class="small muted">${dmyt(a.ts)}</span></td></tr>`).join('')}`).join('')}</tbody></table></div>`;
 }
 
 // ---------- record detail ----------
@@ -408,7 +435,7 @@ async function detailView(id) {
   }
   const open = !DONE.has(rec.status) && !rec.status.startsWith('Closed');
   const canWrite = !ME.roles.every(r => r === 'extaud');
-  const isRequest = ['investigations', 'changes'].includes(rec.type) && ['Requested', 'Number Assignment', 'Rejected'].includes(rec.status);
+  const isRequest = ['investigations', 'changes'].includes(rec.type) && ['Requested', 'Request Update', 'Rejected'].includes(rec.status);
   if (canWrite && !isRequest) {
     if (['investigations', 'selfinspections', 'extaudits'].includes(rec.type)) extraBtns.push(`<button class="btn" data-act="spawn" data-to="capa">Raise CAPA</button>`, `<button class="btn" data-act="spawn" data-to="rca">Start RCA</button>`);
     if (['investigations', 'capa', 'extaudits'].includes(rec.type)) extraBtns.push(`<button class="btn" data-act="spawn" data-to="changes">Raise change control</button>`);
@@ -425,7 +452,7 @@ async function detailView(id) {
     <div class="record"><div>
       <div class="panel no-print"><h3>Next steps</h3><div class="row">
         ${trans.length ? trans.map((t, i) => `<button class="btn ${t.sign ? 'primary sign' : ''}" data-act="tr" data-i="${i}" ${t.allowed ? '' : 'disabled title="Your roles do not permit this step"'}>${esc(t.label)}</button>`).join('') : extraBtns.length ? '' : '<span class="muted">No workflow steps available from this status.</span>'}
-        ${extraBtns.join('')}<button class="btn" data-act="print">Print record</button><button class="btn" data-act="export">Export JSON</button></div></div>
+        ${extraBtns.join('')}<a class="btn" href="/api/records/${rec.id}/report" download title="Report with every part, signatures, attachments${det.auditAccess ? ' and the audit trail' : ''} (ZIP)">Download report</a><button class="btn" data-act="print">Print record</button><button class="btn" data-act="export">Export JSON</button></div></div>
       <form class="panel" id="rf"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Record details</h3>${det.editable ? '<span class="small muted">Changes need a reason and are recorded in the audit trail.</span>' : '<span class="pill grey">Read-only in this status</span>'}</div>
         <div class="grid">${(() => { let s = null; return m.fields.map(f => {
           if (f.type === 'section') { s = f; return fieldHtml(f) + sectionSignatures(m, f, det.signatures); }
@@ -437,8 +464,8 @@ async function detailView(id) {
         <form id="lk" class="row no-print"><input type="text" name="number" placeholder="Record number, e.g. CAPA/QAS/001/26" list="dl_links" style="max-width:260px" aria-label="Record number to link">
         <datalist id="dl_links">${ALL.filter(r => r.id !== rec.id).slice(0, 300).map(r => `<option value="${esc(r.number)}">${esc(r.data.title || '')}</option>`).join('')}</datalist><button class="btn">Link</button></form></div>
         ${det.links.length ? table(det.links.map(l => ALL.find(r => r.id === l.id) || { ...l, data: { title: l.title } }), ['number', 'module', 'title', 'status']) : '<p class="muted small">No linked records. CAPA, RCA, change controls and extension requests raised from this record are linked automatically.</p>'}</div>
-      <div class="panel"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Attachments</h3><label class="btn no-print">Add file<input type="file" id="att" hidden></label></div>
-        ${det.attachments.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>File</th><th>Size</th><th>SHA-256</th><th>Added</th></tr></thead><tbody>${det.attachments.map(a => `<tr><td><a href="/api/attachments/${a.id}">${esc(a.name)}</a></td><td>${(a.size / 1024).toFixed(1)} KB</td><td class="mono small" title="${a.sha256}">${a.sha256.slice(0, 16)}…</td><td>${esc(userName(a.uploaded_by))}<br><span class="small muted">${dmyt(a.ts)}</span></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No attachments. Files are stored with a SHA-256 checksum that is verified on every download.</p>'}</div>
+      <div class="panel"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Attachments</h3>${canWrite && (open || hasRole(['qa'])) ? `<label class="btn no-print">Add file (stage: ${esc(rec.status)})<input type="file" id="att" hidden></label>` : ''}</div>
+        ${attachmentsTable(m, det.attachments)}</div>
     </div><aside class="rail">
       <div class="panel"><h3>Lifecycle</h3><ol class="lifecycle">${m.states.map((s, i) => `<li class="${s === rec.status ? 'now' : i < idx ? 'past' : ''}">${esc(s)}</li>`).join('')}</ol></div>
       <div class="panel"><h3>Electronic signatures</h3>${det.signatures.length ? det.signatures.map(s => `<div class="stamp ${s.current ? '' : 'stale'}"><div class="meaning">${esc(s.meaning)}</div><div class="name">${esc(s.fullname)}</div><div class="when">${dmyt(s.ts)} ${esc(tz)}</div><div class="small muted">${esc(s.from_state || '')} → ${esc(s.to_state || '')}</div>${s.current ? '' : '<div class="note">Signed an earlier version of this record; later changes are in the audit trail.</div>'}</div>`).join('') : '<p class="muted small">No signatures yet.</p>'}</div>
@@ -483,11 +510,10 @@ async function detailView(id) {
       perform: (v) => api('POST', `/api/records/${id}/issue-print`, { ...v, reprint: true }) });
     if (r) { printIssued(r); toast('Replacement copy issued'); route(); }
   });
-  $('#att').addEventListener('change', async (e) => {
+  $('#att')?.addEventListener('change', async (e) => {
     const file = e.target.files[0]; if (!file) return;
     if (file.size > 25 * 1024 * 1024) return toast('Maximum file size is 25 MB in this build.');
-    const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(file); });
-    await api('POST', `/api/records/${id}/attachments`, { name: file.name, mime: file.type, base64: b64 }); toast('Attachment added'); route();
+    try { await uploadFile(id, file); toast('Attachment added'); route(); } catch (x) { toast(x.message); }
   });
   if (rec.type === 'labels') labelPanel(rec);
   if (rec.type === 'randomization' && det.randList) randPanel(rec, det.randList);
@@ -508,16 +534,19 @@ function qmrPanel(rec) {
 }
 
 // Who may change a form section at the record's current stage (section opts.edit in modules.js)
-const canEditSection = (s, rec) => !s || !s.edit || (s.edit[rec.status] || []).some(r =>
-  r === 'initiator' ? rec.created_by === ME.username : r === 'responsible' ? rec.data.respPerson === ME.username : ME.roles.includes(r));
+// pseudo-roles: initiator, responsible (person), respdept (member of the responsible department), depthead (approving Head)
+const canEditSection = (s, rec) => !s || !s.edit || (ME.allAccess && (s.edit[rec.status] || []).length > 0) || (s.edit[rec.status] || []).some(r =>
+  r === 'initiator' ? rec.created_by === ME.username : r === 'responsible' ? rec.data.respPerson === ME.username
+    : r === 'respdept' ? !!ME.department && ME.department === rec.data.respDept : r === 'depthead' ? rec.data.hodApprover === ME.username : ME.roles.includes(r));
+const WHO_BY_CHECK = { isInitiator: 'Initiator', isResponsible: 'Initiator / responsible person', isPartAOwner: 'Initiator / responsible person / department', isPartCOwner: 'Responsible person / department', isHodApprover: 'Head of Department (organogram)' };
 // Sign-offs expected for a section, taken from the workflow (transitions with the same "part"), each with the
 // latest signature: name and date, or pending. Changing the workflow in modules.js changes these blocks automatically.
 function expectedSignoffs(m, s) {
   const seen = new Set();
   return m.transitions.filter(t => s.part && t.part === s.part && t.sign && !seen.has(t.sign) && seen.add(t.sign))
-    .map(t => ({ meaning: t.sign, alt: ['Rejected', 'Cancelled'].includes(t.to), who: t.roles.includes('any') ? (t.checks || []).includes('isInitiator') ? 'Initiator' : (t.checks || []).includes('isResponsible') ? 'Initiator / responsible person' : 'Any user' : t.roles.map(r => CFG.ROLES[r] || r).join(' / ') }));
+    .map(t => ({ meaning: t.sign, alt: ['Rejected', 'Cancelled'].includes(t.to) || /^Rejected/.test(t.sign) || !!t.optional, who: t.roles.includes('any') ? WHO_BY_CHECK[(t.checks || []).find(c => WHO_BY_CHECK[c])] || 'Any user' : t.roles.map(r => CFG.ROLES[r] || r).join(' / ') }));
 }
-// rejection / cancellation sign-offs are shown only when they happened
+// rejection, cancellation and resubmission sign-offs are shown only when they happened
 const signoffRows = (m, s, sigs) => expectedSignoffs(m, s).map(x => ({ ...x, sig: sigs.filter(z => z.meaning === x.meaning).pop() })).filter(x => !x.alt || x.sig);
 function sectionSignatures(m, s, sigs) {
   const rows = signoffRows(m, s, sigs); if (!rows.length) return '';
@@ -529,12 +558,12 @@ function sectionSignatures(m, s, sigs) {
 
 // Departmental approvals: change control optional approvals 1–4 (JRS/SOP/QAS/007 Part C), cross-functional document review (JRS/SOP/QAS/021)
 function optionalApprovalsPanel(rec) {
-  const cfg = MODS[rec.type].deptApproval, d = rec.data, done = d.deptApprovals || [], canSign = rec.status === cfg.state && hasRole(['hod']);
+  const cfg = MODS[rec.type].deptApproval, d = rec.data, done = d.deptApprovals || [], canSign = rec.status === cfg.state;
   const meaningFor = (dept) => rec.type === 'changes' ? `Approved – optional approval (${dept})` : `Reviewed – cross-functional (${dept})`;
   $('#special').innerHTML = `<div class="panel"><h3>${esc(cfg.label)}</h3><p class="muted small">Heads of the named departments sign at stage "${esc(cfg.state)}".</p>
     <div class="table-wrap"><table class="t"><thead><tr><th>Department</th><th>Signed by</th><th>Date</th><th>Comment</th><th></th></tr></thead><tbody>
     ${d[cfg.field].map(code => { const a = done.find(x => x.dept === code); return `<tr><td>${esc(CFG.DEPTS[code] || code)}</td><td>${a ? esc(a.name) : '<span class="pill warn">Pending</span>'}</td><td>${a ? dmyt(a.ts) : ''}</td><td>${a ? esc(a.comment) : ''}</td>
-      <td>${!a && canSign ? `<button class="btn primary sign" data-dept="${esc(code)}">Sign</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div></div>`;
+      <td>${!a && canSign && (ME.allAccess || (ME.deptsUnder || []).includes(code)) ? `<button class="btn primary sign" data-dept="${esc(code)}">Sign</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div></div>`;
   $$('[data-dept]').forEach(b => b.addEventListener('click', async () => {
     const dept = b.dataset.dept;
     const ok = await stepDialog({ title: `${cfg.label} – ${CFG.DEPTS[dept] || dept}`, meaning: meaningFor(dept),
@@ -831,17 +860,22 @@ async function signatureRegister() {
 
 // ---------- users ----------
 async function usersView() {
-  if (!ME.roles.includes('admin')) return dashboard();
+  if (!ME.allAccess) return dashboard();
   USERS = await api('GET', '/api/users');
-  const roleChecks = (sel = []) => `<div class="checks">${Object.entries(CFG.ROLES).map(([k, v]) => `<label><input type="checkbox" name="roles" value="${k}" ${sel.includes(k) ? 'checked' : ''}> ${esc(v)}</label>`).join('')}</div>`;
+  // Heads of Department come from the organogram and every QA user assigns numbers, so those two roles are not ticked here
+  const roleBox = (sel) => ([k, v]) => `<label><input type="checkbox" name="roles" value="${k}" ${sel.includes(k) ? 'checked' : ''}> ${esc(v)}</label>`;
+  const roleChecks = (sel = []) => `<p class="small muted" style="margin:.2rem 0">Main role</p><div class="checks">${CFG.MAIN_ROLES.map(k => [k, CFG.ROLES[k]]).map(roleBox(sel)).join('')}</div>
+    <p class="small muted" style="margin:.6rem 0 .2rem">Additional permissions for specific modules</p><div class="checks">${Object.entries(CFG.ROLES).filter(([k]) => !CFG.MAIN_ROLES.includes(k) && !CFG.DERIVED_ROLES.includes(k)).map(roleBox(sel)).join('')}</div>
+    <p class="small muted">Head of Department is set in the organogram; all QA users assign record numbers.</p>`;
   // register-of-signatures details (JRS/SOP/QAS/009)
   const regFields = (u = {}) => `<div class="grid"><div><label class="f">Designation</label><input type="text" name="designation" value="${esc(u.designation || '')}"></div>
     <div><label class="f">Department</label><select name="department"><option value=""></option>${Object.entries(CFG.DEPTS).map(([k, v]) => `<option value="${k}" ${u.department === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
+    <div><label class="f">Reports to (line manager)</label><select name="reportsTo"><option value=""></option>${USERS.filter(x => x.active && x.username !== u.username).map(x => `<option value="${esc(x.username)}" ${u.reports_to === x.username ? 'selected' : ''}>${esc(x.fullname)}</option>`).join('')}</select></div>
     <div><label class="f">Initials</label><input type="text" name="initials" value="${esc(u.initials || '')}"></div></div>`;
-  const regVals = (f) => ({ designation: val(f, 'designation'), department: val(f, 'department'), initials: val(f, 'initials') });
-  shell('users', `<div class="spread"><div><h1>Users and roles</h1><p class="muted">User IDs are unique and never reused. Deactivate instead of deleting. Administrators cannot approve GxP records unless also given a QA role (avoid this).</p></div><div class="row"><button class="btn primary" id="nu">New user</button><button class="btn" id="ux">Access review CSV</button></div></div>
-    <div class="table-wrap"><table class="t"><thead><tr><th>User ID</th><th>Name</th><th>Roles</th><th>Status</th><th>Last login</th><th></th></tr></thead><tbody>
-    ${USERS.map(u => `<tr><td class="mono">${esc(u.username)}</td><td>${esc(u.fullname)}</td><td class="small">${esc(u.roles.map(r => CFG.ROLES[r]).join(', '))}</td><td>${u.locked ? '<span class="pill bad">Locked</span>' : u.active ? '<span class="pill done">Active</span>' : '<span class="pill grey">Inactive</span>'}</td><td class="small">${dmyt(u.last_login)}</td><td><button class="btn" data-edit="${esc(u.username)}">Edit</button></td></tr>`).join('')}</tbody></table></div>`);
+  const regVals = (f) => ({ designation: val(f, 'designation'), department: val(f, 'department'), reportsTo: val(f, 'reportsTo'), initials: val(f, 'initials') });
+  shell('users', `<div class="spread"><div><h1>Users and roles</h1><p class="muted">User IDs are unique and never reused. Deactivate instead of deleting. Administrators and management have all access; department users raise deviations and complaints and write reports for their department.</p></div><div class="row"><button class="btn primary" id="nu">New user</button><button class="btn" id="ux">Access review CSV</button></div></div>
+    <div class="table-wrap"><table class="t"><thead><tr><th>User ID</th><th>Name</th><th>Department</th><th>Reports to</th><th>Roles</th><th>Status</th><th>Last login</th><th></th></tr></thead><tbody>
+    ${USERS.map(u => `<tr><td class="mono">${esc(u.username)}</td><td>${esc(u.fullname)}</td><td>${esc(deptName(u.department))}</td><td>${esc(userName(u.reports_to))}</td><td class="small">${esc(u.roles.map(r => CFG.ROLES[r]).join(', '))}</td><td>${u.locked ? '<span class="pill bad">Locked</span>' : u.active ? '<span class="pill done">Active</span>' : '<span class="pill grey">Inactive</span>'}</td><td class="small">${dmyt(u.last_login)}</td><td><button class="btn" data-edit="${esc(u.username)}">Edit</button></td></tr>`).join('')}</tbody></table></div>`);
   $('#nu').addEventListener('click', async () => {
     const ok = await modal({ title: 'New user', ok: 'Create user', html: `<div class="grid"><div><label class="f">User ID</label><input type="text" name="username"></div><div><label class="f">Full name</label><input type="text" name="fullname"></div>
       <div><label class="f">Email</label><input type="text" name="email"></div><div><label class="f">Initial password</label><input type="password" name="password" autocomplete="new-password"></div></div>
@@ -857,7 +891,75 @@ async function usersView() {
       onOk: (f) => api('PUT', '/api/users/' + u.username, { roles: $$('input[name=roles]:checked', f).map(x => x.value), active: f.active.checked, unlock: f.unlock ? f.unlock.checked : false, password: f.password.value || undefined, reason: val(f, 'reason'), ...regVals(f) }) });
     if (ok) { toast('User updated'); usersView(); }
   }));
-  $('#ux').addEventListener('click', () => download(`user_access_review_${today()}.csv`, toCsv([['User ID', 'Name', 'Roles', 'Active', 'Locked', 'Last login', 'Created'], ...USERS.map(u => [u.username, u.fullname, u.roles.join('; '), u.active ? 'Yes' : 'No', u.locked ? 'Yes' : 'No', u.last_login, u.created_at])])));
+  $('#ux').addEventListener('click', () => download(`user_access_review_${today()}.csv`, toCsv([['User ID', 'Name', 'Department', 'Reports to', 'Roles', 'Active', 'Locked', 'Last login', 'Created'], ...USERS.map(u => [u.username, u.fullname, u.department, u.reports_to, u.roles.join('; '), u.active ? 'Yes' : 'No', u.locked ? 'Yes' : 'No', u.last_login, u.created_at])])));
+}
+
+// ---------- departments (admin and management create them) ----------
+async function departmentsView() {
+  const deps = await api('GET', '/api/departments'); CFG.setDepartments(deps); USERS = await api('GET', '/api/users');
+  const members = (c) => USERS.filter(u => u.active && u.department === c).length;
+  shell('departments', `<div class="spread"><div><h1>Departments</h1><p class="muted">Department codes form CAPA and document numbers and are never reused. Administrators and management create and rename departments; the Head of each department and the hierarchy are kept in the organogram.</p></div>
+    <div class="row">${ME.allAccess ? '<button class="btn primary" id="nd">New department</button>' : ''}${ME.canEditOrg ? '<a class="btn" href="#/organogram">Open organogram</a>' : ''}</div></div>
+    <div class="table-wrap"><table class="t"><thead><tr><th>Code</th><th>Name</th><th>Part of</th><th>Head of Department</th><th>Members</th><th>Status</th><th></th></tr></thead><tbody>
+    ${deps.map(d => `<tr><td class="mono">${esc(d.code)}</td><td>${esc(d.name)}</td><td>${esc(d.parent ? deptName(d.parent) : '')}</td><td>${d.hod ? esc(userName(d.hod)) : '<span class="pill warn">Not set</span>'}</td><td>${members(d.code)}</td>
+      <td>${d.active ? '<span class="pill done">Active</span>' : '<span class="pill grey">Inactive</span>'}</td><td>${ME.allAccess ? `<button class="btn" data-ed="${esc(d.code)}">Edit</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`);
+  const parentSel = (cur, self) => `<select name="parent"><option value="">– none (top level) –</option>${deps.filter(d => d.code !== self).map(d => `<option value="${esc(d.code)}" ${cur === d.code ? 'selected' : ''}>${esc(deptName(d.code))}</option>`).join('')}</select>`;
+  $('#nd')?.addEventListener('click', async () => {
+    const ok = await modal({ title: 'New department', ok: 'Create department', html: `<div class="grid"><div><label class="f">Code (2–6 capital letters) <span class="req">*</span></label><input type="text" name="code" maxlength="6" style="text-transform:uppercase"></div>
+      <div><label class="f">Name <span class="req">*</span></label><input type="text" name="name"></div><div><label class="f">Part of (parent department)</label>${parentSel('', '')}</div></div>
+      <div><label class="f">Reason</label><input type="text" name="reason"></div>`,
+      onOk: (f) => api('POST', '/api/departments', { code: val(f, 'code').toUpperCase(), name: val(f, 'name'), parent: val(f, 'parent'), reason: val(f, 'reason') }) });
+    if (ok) { toast('Department created'); departmentsView(); }
+  });
+  $$('[data-ed]').forEach(b => b.addEventListener('click', async () => {
+    const d = deps.find(x => x.code === b.dataset.ed);
+    const ok = await modal({ title: 'Edit ' + d.code, ok: 'Save', html: `<div class="grid"><div><label class="f">Name</label><input type="text" name="name" value="${esc(d.name)}"></div><div><label class="f">Part of (parent department)</label>${parentSel(d.parent, d.code)}</div></div>
+      <label class="row"><input type="checkbox" name="active" ${d.active ? 'checked' : ''}> Active</label><div><label class="f">Reason <span class="req">*</span></label><input type="text" name="reason"></div>`,
+      onOk: (f) => api('PUT', '/api/departments/' + d.code, { name: val(f, 'name'), parent: val(f, 'parent'), active: f.active.checked, reason: val(f, 'reason') }) });
+    if (ok) { toast('Department updated'); departmentsView(); }
+  }));
+}
+
+// ---------- organogram (management, the Head of QA and administrators) ----------
+// Each department shows its Head and members by reporting line. Approvals follow it: the Head of the responsible
+// department approves; without a Head (or when the Head is the person approved) the Head of the parent department does.
+async function organogramView() {
+  if (!ME.canEditOrg) return dashboard();
+  const og = await api('GET', '/api/organogram'); CFG.setDepartments(og.departments);
+  const deps = og.departments, users = og.users.filter(u => u.active), byCode = Object.fromEntries(deps.map(d => [d.code, d]));
+  const kids = (code) => code ? deps.filter(d => d.parent === code) : deps.filter(d => !d.parent || !byCode[d.parent]);
+  const person = (u, all) => { const reports = all.filter(x => x.reports_to === u.username);
+    return `<li><button class="link" data-person="${esc(u.username)}">${esc(u.fullname)}</button> <span class="small muted">${esc(u.designation || u.roles.map(r => CFG.ROLES[r]).filter(Boolean)[0] || '')}</span>${reports.length ? `<ul>${reports.map(x => person(x, all)).join('')}</ul>` : ''}</li>`; };
+  const node = (d) => {
+    const mem = users.filter(u => u.department === d.code), top = mem.filter(u => !mem.some(x => x.username === u.reports_to));
+    const head = d.hod ? users.find(u => u.username === d.hod) : null;
+    return `<li><div class="org-node ${d.active ? '' : 'inactive'}"><div class="spread"><b>${esc(d.name)}</b> <span class="mono small">${esc(d.code)}</span></div>
+      <div class="small">Head: ${head ? esc(head.fullname) : '<span class="pill warn">Not set – the Head of the parent department approves</span>'}</div>
+      <button class="btn small-btn" data-dept="${esc(d.code)}">Set Head / position</button>
+      ${mem.length ? `<ul class="org-people">${top.map(u => person(u, mem)).join('')}</ul>` : '<p class="small muted">No members yet.</p>'}</div>
+      ${kids(d.code).length ? `<ul>${kids(d.code).map(node).join('')}</ul>` : ''}</li>`;
+  };
+  const noDept = users.filter(u => !u.department || !byCode[u.department]);
+  shell('organogram', `<div class="spread"><div><h1>Organogram</h1><p class="muted">Departments, their Heads and reporting lines. Approvals follow this hierarchy: the Head of the responsible department approves; if a department has no Head, or the Head is the person whose work is approved, the Head of the department above approves (then the line manager). Every change is recorded in the audit trail.</p></div>
+    <a class="btn" href="#/departments">Departments list</a></div>
+    <div class="panel"><ul class="org-tree">${kids('').map(node).join('')}</ul></div>
+    ${noDept.length ? `<div class="panel"><h3>Not assigned to a department</h3><ul class="org-people">${noDept.map(u => `<li><button class="link" data-person="${esc(u.username)}">${esc(u.fullname)}</button> <span class="small muted">${esc(u.roles.map(r => CFG.ROLES[r]).join(', '))}</span></li>`).join('')}</ul></div>` : ''}`);
+  const userSel = (name, cur, skip) => `<select name="${name}"><option value="">– none –</option>${users.filter(u => u.username !== skip).map(u => `<option value="${esc(u.username)}" ${cur === u.username ? 'selected' : ''}>${esc(u.fullname)}${u.department ? ' – ' + esc(u.department) : ''}</option>`).join('')}</select>`;
+  $$('[data-dept]').forEach(b => b.addEventListener('click', async () => {
+    const d = byCode[b.dataset.dept];
+    const ok = await modal({ title: d.name, ok: 'Save', html: `<div class="grid"><div><label class="f">Head of Department</label>${userSel('hod', d.hod)}</div>
+      <div><label class="f">Part of (parent department)</label><select name="parent"><option value="">– none (top level) –</option>${deps.filter(x => x.code !== d.code).map(x => `<option value="${esc(x.code)}" ${d.parent === x.code ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div></div>
+      <div><label class="f">Reason <span class="req">*</span></label><input type="text" name="reason"></div>`,
+      onOk: (f) => api('PUT', '/api/departments/' + d.code, { hod: val(f, 'hod'), parent: val(f, 'parent'), reason: val(f, 'reason') }) });
+    if (ok) { toast('Organogram updated'); organogramView(); }
+  }));
+  $$('[data-person]').forEach(b => b.addEventListener('click', async () => {
+    const u = og.users.find(x => x.username === b.dataset.person);
+    const ok = await modal({ title: u.fullname, ok: 'Save', html: `<div class="grid"><div><label class="f">Department</label><select name="department"><option value=""></option>${deps.map(x => `<option value="${esc(x.code)}" ${u.department === x.code ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
+      <div><label class="f">Reports to</label>${userSel('reportsTo', u.reports_to, u.username)}</div></div><div><label class="f">Reason <span class="req">*</span></label><input type="text" name="reason"></div>`,
+      onOk: (f) => api('PUT', '/api/organogram/users/' + u.username, { department: val(f, 'department'), reportsTo: val(f, 'reportsTo'), reason: val(f, 'reason') }) });
+    if (ok) { toast('Organogram updated'); USERS = await api('GET', '/api/users'); organogramView(); }
+  }));
 }
 
 // ---------- SharePoint ----------

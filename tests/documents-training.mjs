@@ -54,7 +54,7 @@ ok((await qa.sig(d1.id,'Approved – Training')).s===400,'effective date must be
 await qa.put(d1.id,{effectiveDate:addD(T,10)});
 ok((await qa.sig(d1.id,'Approved – Training')).ok,'Head QA approves the document');
 let t1=(await trainings()).filter(t=>t.data.docRef===d1.number);
-ok(t1.length===2&&t1.every(t=>t.data.dueDate===addD(T,10)&&t.data.docVersion==='1.0')&&t1.map(t=>t.data.trainee).sort().join()==='cs.manager,operator1','training assigned on approval, due by the effective date; author, reviewer and approvers exempt');
+ok(t1.length===3&&t1.every(t=>t.data.dueDate===addD(T,10)&&t.data.docVersion==='1.0')&&t1.map(t=>t.data.trainee).sort().join()==='cs.manager,operator1,packer1','training assigned on approval, due by the effective date; author, reviewer and approvers exempt');
 ok((await qa.sig(d1.id,'Effective')).s===400,'cannot become effective before the effective date');
 
 // ===== Certified trainers – FRM/QAS/032 / 033 =====
@@ -71,7 +71,9 @@ await au.sig(d2.id,'In Review'); await hod.sig(d2.id,'QA Review'); await qr.sig(
 await qa.put(d2.id,{effectiveDate:T,shortNotice:'Urgent CAPA implementation'});
 ok((await qa.sig(d2.id,'Approved – Training')).ok,'approved with a QA-justified short effective period');
 ok((await qa.sig(d2.id,'Effective')).s===400,'cannot become effective until training is completed');
-let t2=(await trainings()).find(t=>t.data.docRef===d2.number);
+let t2=(await trainings()).find(t=>t.data.docRef===d2.number&&t.data.trainee==='operator1');
+// packer1 (department user) is assigned too; out of scope here
+for (const x of (await trainings()).filter(t=>t.data.docRef===d2.number&&t.data.trainee!=='operator1')) await qa.go(x.id,'Cancelled',{reason:'Not in scope of this test'});
 ok(t2.data.assessment===true&&t2.data.trainee==='operator1','assessment training assigned to operator1');
 ok((await qa.go(t2.id,'In Progress')).s===403,'only the trainee starts the training');
 await op.go(t2.id,'In Progress');

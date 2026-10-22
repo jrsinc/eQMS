@@ -3,9 +3,15 @@
  * which roles may perform them and which require an e-signature.
  * Edit this file to configure the system; both server and UI read it. */
 (function (root) {
+  // Main roles: admin and management have all access; QA approves and assigns all record numbers;
+  // department staff (Operation, Packaging, IT, HR …) hold the general role and belong to a department.
+  // 'hod' and 'numgen' are not assigned by hand: Heads of Department come from the organogram and QA assigns numbers.
+  // The other roles are additional permissions for specific modules.
   const ROLES = {
-    admin: 'System administrator',
-    qa: 'QA reviewer / QA head / QP',
+    admin: 'System administrator (all access)',
+    mgmt: 'Management (all access)',
+    qa: 'QA (reviews, approvals and record number assignment)',
+    user: 'Department user (raise deviations / complaints, write reports)',
     rp: 'Responsible Person (GDP)',
     author: 'Document author / owner',
     sme: 'Department reviewer / SME',
@@ -13,23 +19,27 @@
     unblinded: 'Unblinded randomization officer',
     trainer: 'Training coordinator',
     auditor: 'Internal auditor',
-    hod: 'Department Head',
     pm: 'Project Manager (client communication)',
-    mgmt: 'Senior leadership / Management Representative',
-    numgen: 'Record number generator (QA)',
     extaud: 'External auditor / inspector (read-only)',
-    user: 'General user'
+    hod: 'Head of Department (set in the organogram)',
+    numgen: 'Record number assignment (all QA users)'
   };
+  const MAIN_ROLES = ['admin', 'mgmt', 'qa', 'user'], DERIVED_ROLES = ['hod', 'numgen'];
 
   const CLASS = ['Critical', 'Major', 'Minor'];
   const SITES = ['JRS INC', 'JRS IND', 'JRS INC SMT'];
-  // Division codes per JRS/SOP/QAS/021 (also used in CAPA numbers, JRS/SOP/QAS/006)
+  // Departments are maintained in the eQMS (System → Departments). Their codes also form CAPA numbers (JRS/SOP/QAS/006)
+  // and document division codes (JRS/SOP/QAS/021). Every select field refers to these two objects, so they are
+  // updated in place when the department list changes (setDepartments).
   const DEPTS = {
-    QAS: 'QAS – Quality Assurance', OPS: 'OPS – Operations', ADM: 'ADM – Administration', PKG: 'PKG – Packaging',
-    ENG: 'ENG – Engineering', PMT: 'PMT – Project Management', HRM: 'HRM – Human Resource Management',
-    ITS: 'ITS – IT Services', SMT: 'SMT – JRS INC Somerset facility'
+    OPS: 'OPS – Operation', HRM: 'HRM – HR', PKG: 'PKG – Packaging', QAS: 'QAS – QA', ITS: 'ITS – IT'
   };
   const DEPT_CODES = Object.keys(DEPTS);
+  const setDepartments = (list) => {
+    for (const k of Object.keys(DEPTS)) delete DEPTS[k];
+    DEPT_CODES.length = 0;
+    for (const d of list) { DEPTS[d.code] = d.code + ' – ' + d.name + (d.active === 0 || d.active === false ? ' (inactive)' : ''); DEPT_CODES.push(d.code); }
+  };
   const EC_DUE = ['3 months', '6 months', '9 months', '12 months', 'Not applicable'];
 
   // Helpers shared by browser and server (dates are ISO yyyy-mm-dd, calculated in UTC)
@@ -280,25 +290,27 @@
 
     investigations: {
       name: 'Deviations & complaints', single: 'deviation or complaint', group: 'Quality events', prefix: 'INV',
-      intro: 'Quality event investigations per JRS/SOP/QAS/022 (form JRS/FRM/QAS/054, register JRS/FRM/QAS/055). Deviation = event while the item is in JRS custody; complaint = event outside JRS custody reported by a customer, sponsor or other external party.',
+      intro: 'Quality event investigations per JRS/SOP/QAS/022 (form JRS/FRM/QAS/054, register JRS/FRM/QAS/055). Deviation = event while the item is in JRS custody; complaint = event outside JRS custody reported by a customer, sponsor or other external party. A record is visible to its initiator, the responsible department and its Head, QA and management.',
       numbering: (d, y) => ({ pre: `JRS-${d.invType === 'Complaint' ? 'COM' : 'DEVN'}-${y}-`, pad: 3 }),
-      list: ['number', 'invType', 'title', 'criticality', 'dueDate', 'status'],
+      list: ['number', 'invType', 'title', 'respDept', 'criticality', 'dueDate', 'status'],
+      // only the people involved see a record: initiator, responsible person, responsible department and its Head (plus QA, admin, management)
+      deptScoped: true,
       fields: [
-        sec('Request to QA', { part: 'R', create: true, edit: { Requested: ['initiator', 'qa'] } }),
+        sec('Request to QA', { part: 'R', create: true, edit: { Requested: ['initiator', 'qa'], 'Request Update': ['initiator'] } }),
         { k: 'invType', label: 'Investigation type', type: 'select', req: true, lock: true, options: ['Deviation', 'Complaint'] },
         { k: 'site', label: 'Applicable JRS site', type: 'select', req: true, options: SITES },
         { k: 'title', label: 'Short description', type: 'text', req: true, full: true },
         { k: 'dateIdentified', label: 'Date identified / received', type: 'date', req: true },
+        { k: 'respPerson', label: 'Responsible person (sets the responsible department)', type: 'user' },
+        { k: 'respDept', label: 'Responsible department (department of the responsible person)', type: 'readonly', optionLabels: DEPTS },
         { k: 'qaNotified', label: 'Date reported to QA (request date)', type: 'readonly', fmt: 'date' },
         { k: 'reporting', label: '24-hour reporting to QA', type: 'computed' },
         { k: 'requestDetails', label: 'What happened – request details for QA', type: 'textarea', req: true, full: true },
         { k: 'requestNo', label: 'Request no.', type: 'readonly' },
-        sec('Part 1 (A) – Initiation', { part: 'A', edit: { Initiation: ['initiator'], 'QA Assessment': ['qa'] } }),
+        sec('Part A – Initiation (initiator / responsible department)', { part: 'A', edit: { Initiation: ['initiator', 'responsible', 'respdept'], 'Part A Update': ['initiator', 'responsible', 'respdept'] } }),
         { k: 'dateOpened', label: 'Date opened (number assigned)', type: 'readonly', fmt: 'date' },
         { k: 'dueDate', label: 'Date due (30 calendar days; Critical: 10 working days)', type: 'readonly', fmt: 'date' },
         { k: 'extendedDue', label: 'Extended due date (approved extension request)', type: 'readonly', fmt: 'date' },
-        { k: 'respPerson', label: 'Responsible person / SME', type: 'user' },
-        { k: 'respDept', label: 'Responsible department', type: 'select', options: DEPT_CODES, optionLabels: DEPTS },
         { k: 'eventOrigin', label: 'Event origin (area / process / party)', type: 'text' },
         { k: 'receivedVia', label: 'Received via (if complaint)', type: 'select', options: ['Email', 'Phone', 'Fax', 'Customer portal', 'Letter', 'Other'] },
         { k: 'clientComplaintNo', label: 'Client complaint no. (if applicable)', type: 'text' },
@@ -309,7 +321,7 @@
         { k: 'notifyStatus', label: 'Customer notification (3 calendar days)', type: 'computed' },
         { k: 'description', label: 'Detailed description', type: 'textarea', full: true },
         { k: 'immediate', label: 'Immediate action taken (containment, segregation, data and evidence preserved)', type: 'textarea', full: true },
-        sec('Part 2 (B) – Initial quality review and pre-approval', { part: 'B', edit: { 'QA Assessment': ['qa'] } }),
+        sec('Part B – QA review (locked once QA submits it)', { part: 'B', edit: { 'QA Review': ['qa'] } }),
         { k: 'criticality', label: 'Criticality (if unclear between two, assign the higher)', type: 'select', options: ['Minor', 'Major', 'Critical'] },
         { k: 'fieldAlert', label: 'Field alert report (if complaint)', type: 'select', options: ['No', 'Yes'] },
         { k: 'recall', label: 'Product recall', type: 'select', options: ['No', 'Yes – per JRS/SOP/OPS/013'] },
@@ -319,8 +331,9 @@
         { k: 'impactedProducts', label: 'Impacted product(s)', type: 'multicheck', options: ['Blinded', 'Unblinded / open label', 'Randomized', 'Non-randomized', 'Shipper boxes', 'Ancillary supply', 'Bulk drug', 'Finished kit(s)', 'Comparator drug / NIMP', 'Labels', 'TempTale(s)', 'Other'] },
         { k: 'productDetails', label: 'Product / material details (name, lot, kit nos.)', type: 'text', full: true },
         { k: 'tempRange', label: 'Temperature range', type: 'select', options: ['Not applicable', 'Controlled ambient (+15 to +25 °C)', 'Cold chain / refrigerated (+2 to +8 °C)', 'Frozen (-25 to -15 °C)', 'Uncontrolled'] },
-        { k: 'qaReviewComment', label: 'Quality approver comment', type: 'textarea', full: true },
-        sec('Part 3 (C) – Investigation and evaluation (QA and RP)', { part: 'C', edit: { Investigation: ['qa', 'rp'] } }),
+        { k: 'qaReviewComment', label: 'QA review comment', type: 'textarea', full: true },
+        sec('Part C – Investigation and root cause analysis (responsible person / department)', { part: 'C', edit: { Investigation: ['responsible', 'respdept'] } }),
+        { k: 'invLog', label: 'Investigation log – add an entry each time the investigation is updated', type: 'table', full: true, cols: [{ k: 'date', label: 'Date', type: 'date' }, { k: 'entry', label: 'Investigation update / finding' }] },
         { k: 'invPlan', label: 'Investigation plan', type: 'textarea', full: true },
         { k: 'investigation', label: 'Investigation (process records, equipment, data-logger data, training of personnel involved, recall assessment)', type: 'textarea', full: true },
         { k: 'historicalReview', label: 'Historical review (prior deviations, complaints, CAPA, recurring failure modes)', type: 'textarea', full: true },
@@ -331,8 +344,12 @@
         { k: 'conclusion', label: 'Conclusion', type: 'textarea', full: true },
         { k: 'capaRequired', label: 'CAPA required?', type: 'select', options: ['Yes', 'No'] },
         { k: 'capaJustification', label: 'Justification if no CAPA is required', type: 'textarea', full: true },
-        sec('Part 4 (D) – QA / RP evaluation, customer approval and closure', { part: 'D', edit: { Evaluation: ['qa', 'rp'], 'Customer Approval': ['qa', 'pm'] } }),
+        sec('Part D – Head of Department approval', { part: 'D', edit: { 'HOD Approval': ['depthead'] } }),
+        { k: 'hodApprover', label: 'Approving Head of Department (from the organogram)', type: 'readonly', fmt: 'user' },
+        { k: 'hodComment', label: 'Head of Department comment', type: 'textarea', full: true },
+        sec('Part E – QA evaluation and closure (final report)', { part: 'E', edit: { 'QA Evaluation': ['qa'], 'Customer Approval': ['qa', 'pm'] } }),
         { k: 'finalDisposition', label: 'Final disposition', type: 'select', options: ['Not applicable', 'Release / use as is', 'Reject', 'Return to sponsor / supplier', 'Destroy', 'Hold pending customer decision'] },
+        { k: 'qaEvalComment', label: 'QA evaluation comment', type: 'textarea', full: true },
         { k: 'customerApproval', label: 'Customer approval (per QTA)', type: 'select', options: ['Pending', 'Approved by customer', 'Deemed closed – no response after 3 follow-ups', 'Not applicable (no customer impact)'] },
         { k: 'reportSent', label: 'QA-approved report shared with customer on', type: 'date' },
         { k: 'followUp1', label: 'Customer follow-up 1', type: 'date' },
@@ -355,31 +372,28 @@
           return n < 3 ? `Follow-up ${n + 1} due ${plusDays(d.reportSent, 15 * (n + 1))}` : `Deemed closure possible from ${plusDays(d.reportSent, 45)}`;
         }
       },
-      // Request → QA approval → number assigned → Part 1 (initiator) → Part 2 (QA) → pre-approval (QA + RP) → Part 3 → Part 4 (QA + RP) → customer → closed
+      // Request → QA (approve: number assigned automatically / need to update / reject) → Part A (initiator or responsible department)
+      // → Part B (QA; may return Part A for update; A and B lock when QA submits) → Part C investigation → Head of Department → QA evaluation and closure
       tempNumbering: (d, y) => ({ pre: `REQ-${y}-`, pad: 4 }),
-      states: ['Requested', 'Number Assignment', 'Initiation', 'QA Assessment', 'Pre-Approval', 'Investigation', 'Evaluation', 'Customer Approval', 'Closed', 'Rejected', 'Cancelled'],
+      states: ['Requested', 'Request Update', 'Initiation', 'QA Review', 'Part A Update', 'Investigation', 'HOD Approval', 'QA Evaluation', 'Customer Approval', 'Closed', 'Rejected', 'Cancelled'],
       transitions: [
-        t('Requested', 'Number Assignment', 'Approve request', ['qa'], { part: 'R', sign: 'Request approved – QA', sod: true }),
+        t('Requested', 'Initiation', 'Approve request – assign number', ['qa'], { part: 'R', sign: 'Request approved – QA (number assigned)', sod: true, needs: ['respPerson'] }),
+        t('Requested', 'Request Update', 'Need to update – return to initiator', ['qa'], { part: 'R', reason: true }),
         t('Requested', 'Rejected', 'Reject request', ['qa'], { part: 'R', sign: 'Request rejected – QA', reason: true }),
-        t('Number Assignment', 'Initiation', 'Assign deviation / complaint number', ['numgen'], { part: 'R', sign: 'Number assigned – number generator' }),
-        t('Initiation', 'QA Assessment', 'Submit Part 1 to QA', ['any'], { part: 'A', sign: 'Initiated – investigation initiator', needs: ['description', 'immediate'], checks: ['isInitiator'] }),
+        t('Request Update', 'Requested', 'Resubmit request to QA', ['any'], { part: 'R', checks: ['isInitiator'] }),
+        t('Initiation', 'QA Review', 'Submit Part A to QA', ['any'], { part: 'A', sign: 'Part A submitted – initiator / responsible person', needs: ['description', 'immediate'], checks: ['isPartAOwner'] }),
         t('Initiation', 'Cancelled', 'Cancel (raised in error)', ['qa'], { reason: true, sign: 'Cancelled – QA' }),
-        t('QA Assessment', 'Initiation', 'Return Part 1 to initiator', ['qa'], { reason: true }),
-        t('QA Assessment', 'Pre-Approval', 'Complete Part 2 – submit for pre-approval', ['qa'], { part: 'B', sign: 'Assessed – QA (Part 2)', needs: ['description', 'immediate', 'respDept', 'criticality', 'impactedAreas'] }),
-        t('Pre-Approval', 'Pre-Approval', 'Pre-approve – QA', ['qa'], { part: 'B', sign: 'Pre-approved – QA', cosign: true, sod: true }),
-        t('Pre-Approval', 'Pre-Approval', 'Pre-approve – RP', ['rp'], { part: 'B', sign: 'Pre-approved – RP', cosign: true, sod: true }),
-        t('Pre-Approval', 'QA Assessment', 'Return to QA assessment', ['qa', 'rp'], { reason: true }),
-        t('Investigation', 'Evaluation', 'Submit investigation (Part 3)', ['qa', 'rp'], { part: 'C', sign: 'Investigation completed – QA / RP', needs: ['investigation', 'historicalReview', 'rootCause', 'riskAssessment', 'conclusion', 'capaRequired'], checks: ['capaDecision'] }),
-        t('Evaluation', 'Investigation', 'Return for further investigation', ['qa', 'rp'], { reason: true }),
-        t('Evaluation', 'Evaluation', 'Approve Part 4 – QA', ['qa'], { part: 'D', sign: 'Approved – QA evaluation', cosign: true, sod: true, needs: ['finalDisposition', 'customerApproval'], checks: ['capaDecision', 'capaLinked'] }),
-        t('Evaluation', 'Evaluation', 'Approve Part 4 – RP', ['rp'], { part: 'D', sign: 'Approved – RP evaluation', cosign: true, sod: true, needs: ['finalDisposition', 'customerApproval'], checks: ['capaDecision', 'capaLinked'] }),
-        t('Customer Approval', 'Closed', 'Close – customer approved or deemed closed', ['qa', 'pm'], { part: 'D', sign: 'Closed – customer approval recorded', checks: ['customerClosure'] })
-      ],
-      // Steps that need two signatures from different people; the record moves on once both are given
-      cosign: {
-        'Pre-Approval': { meanings: ['Pre-approved – QA', 'Pre-approved – RP'], next: () => 'Investigation' },
-        'Evaluation': { meanings: ['Approved – QA evaluation', 'Approved – RP evaluation'], next: (r) => String(r.data.customerApproval).startsWith('Not applicable') ? 'Closed' : 'Customer Approval' }
-      }
+        t('QA Review', 'Part A Update', 'Need to update – return Part A', ['qa'], { reason: true }),
+        t('Part A Update', 'QA Review', 'Resubmit Part A to QA', ['any'], { part: 'A', optional: true, sign: 'Part A updated – initiator / responsible person', needs: ['description', 'immediate'], checks: ['isPartAOwner'] }),
+        t('QA Review', 'Investigation', 'Submit Part B – start investigation', ['qa'], { part: 'B', sign: 'Part B approved – QA', sod: true, needs: ['respPerson', 'criticality', 'impactedAreas'] }),
+        t('Investigation', 'HOD Approval', 'Submit investigation (Part C) to Head of Department', ['any'], { part: 'C', sign: 'Investigation completed – responsible person', needs: ['investigation', 'rootCause', 'riskAssessment', 'conclusion', 'capaRequired'], checks: ['isPartCOwner', 'capaDecision', 'hodAvailable'] }),
+        t('HOD Approval', 'QA Evaluation', 'Approve – Head of Department', ['any'], { part: 'D', sign: 'Approved – Head of Department', checks: ['isHodApprover'] }),
+        t('HOD Approval', 'Investigation', 'Reject – return to responsible person', ['any'], { part: 'D', sign: 'Rejected – Head of Department', reason: true, checks: ['isHodApprover'] }),
+        t('QA Evaluation', 'Closed', 'Approve and close – QA', ['qa'], { part: 'E', sign: 'Approved and closed – QA', sod: true, needs: ['finalDisposition', 'customerApproval', 'qaEvalComment'], checks: ['capaDecision', 'capaLinked', 'customerNotInvolved'] }),
+        t('QA Evaluation', 'Customer Approval', 'Approve – send report to customer', ['qa'], { part: 'E', sign: 'Approved – QA (report to customer)', sod: true, needs: ['finalDisposition', 'customerApproval', 'qaEvalComment'], checks: ['capaDecision', 'capaLinked', 'customerInvolved'] }),
+        t('QA Evaluation', 'Investigation', 'Reject – return for further investigation', ['qa'], { part: 'E', sign: 'Rejected – QA evaluation', reason: true, needs: ['qaEvalComment'] }),
+        t('Customer Approval', 'Closed', 'Close – customer approved or deemed closed', ['qa', 'pm'], { part: 'E', sign: 'Closed – customer approval recorded', checks: ['customerClosure'] })
+      ]
     },
 
     rca: {
@@ -535,11 +549,10 @@
         { k: 'ecRespComment', label: 'Responsible person comment', type: 'textarea', full: true },
         { k: 'ecQaComment', label: 'QA comment', type: 'textarea', full: true }
       ],
-      states: ['Requested', 'Number Assignment', 'Initiation', 'QA Assessment', 'Pre-Approval', 'Optional Approvals', 'Implementation', 'Pending Closure', 'Closed – EC Pending', 'Closed', 'Rejected', 'Cancelled'],
+      states: ['Requested', 'Initiation', 'QA Assessment', 'Pre-Approval', 'Optional Approvals', 'Implementation', 'Pending Closure', 'Closed – EC Pending', 'Closed', 'Rejected', 'Cancelled'],
       transitions: [
-        t('Requested', 'Number Assignment', 'Approve request', ['qa'], { part: 'R', sign: 'Request approved – QA', sod: true }),
+        t('Requested', 'Initiation', 'Approve request – assign number', ['qa'], { part: 'R', sign: 'Request approved – QA (number assigned)', sod: true }),
         t('Requested', 'Rejected', 'Reject request', ['qa'], { part: 'R', sign: 'Request rejected – QA', reason: true }),
-        t('Number Assignment', 'Initiation', 'Assign change control number', ['numgen'], { part: 'R', sign: 'Number assigned – number generator' }),
         t('Initiation', 'QA Assessment', 'Submit Part A to QA', ['any'], { part: 'A', sign: 'Initiated – change initiator', needs: ['respPerson', 'respDept', 'dueDate', 'changeType', 'description', 'justification'], checks: ['isInitiator', 'ccDue90', 'ccTemp'] }),
         t('Initiation', 'Cancelled', 'Cancel (raised in error)', ['qa'], { reason: true, sign: 'Cancelled – QA' }),
         t('QA Assessment', 'Initiation', 'Return Part A to initiator', ['qa'], { reason: true }),
@@ -582,8 +595,8 @@
       states: ['Draft', 'HOD Review', 'Head of Quality Approval', 'Approved', 'Rejected'],
       transitions: [
         t('Draft', 'HOD Review', 'Submit request', ['any'], { sign: 'Requested', checks: ['erValid'] }),
-        t('HOD Review', 'Head of Quality Approval', 'Head of Department approval', ['hod'], { sign: 'Approved – Head of Department', checks: ['erValid'] }),
-        t('HOD Review', 'Rejected', 'Reject', ['hod'], { sign: 'Rejected', reason: true }),
+        t('HOD Review', 'Head of Quality Approval', 'Head of Department approval', ['hod'], { sign: 'Approved – Head of Department', checks: ['erHod', 'erValid'] }),
+        t('HOD Review', 'Rejected', 'Reject', ['hod'], { sign: 'Rejected', reason: true, checks: ['erHod'] }),
         t('Head of Quality Approval', 'Approved', 'Head of Quality approval', ['qa'], { sign: 'Approved – Head of Quality', sod: true, checks: ['erValid'] }),
         t('Head of Quality Approval', 'Rejected', 'Reject', ['qa'], { sign: 'Rejected', reason: true })
       ]
@@ -993,6 +1006,6 @@
   MODULES.atreviews.fields.find(f => f.k === 'scope').optionLabels = Object.fromEntries([...Object.entries(MODULES).map(([k, m]) => [k, m.name]), ['system', 'System events (sign-ins, users, settings)']]);
 
   // Enrich: every transition from any open state to "Reopened" is not allowed; closures are final.
-  const api = { ROLES, MODULES, SITES, DEPTS, rpnLevel, fmeaRow, trainingScore, PASS_MARK, TRAINER_PARAMS, TRAINER_PASS, RETENTION };
+  const api = { ROLES, MAIN_ROLES, DERIVED_ROLES, MODULES, SITES, DEPTS, DEPT_CODES, setDepartments, rpnLevel, fmeaRow, trainingScore, PASS_MARK, TRAINER_PARAMS, TRAINER_PASS, RETENTION };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.QMS_CONFIG = api;
 })(typeof window !== 'undefined' ? window : globalThis);

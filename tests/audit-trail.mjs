@@ -1,4 +1,4 @@
-// Audit trail, version history and audit trail review: access for QA and admin only, filters, readable data,
+// Audit trail, version history and audit trail review: access for QA, admin and management only, filters, readable data,
 // saved versions and comparison, document versions, periodic review with summary and two signatures.
 import { spawn } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
@@ -26,17 +26,17 @@ const addD=(d,n)=>{const x=D(d);x.setUTCDate(x.getUTCDate()+n);return iso(x)};
 
 // a failed sign-in, picked up later by the review summary
 await fetch(B+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'operator1',password:'wrong-password'})});
-const qa=await login('qa.lead'), qr=await login('qa.reviewer'), op=await login('operator1'), au=await login('author1'), dc=await login('docctrl1'), insp=await login('inspector1'), ad=await login('admin','ChangeMe-2026!');
+const qa=await login('qa.lead'), qr=await login('qa.reviewer'), op=await login('operator1'), au=await login('author1'), dir=await login('director1'), insp=await login('inspector1'), ad=await login('admin','ChangeMe-2026!');
 
 // ===== a record with several versions =====
-let d=await op.create('investigations',{invType:'Deviation',site:'JRS INC',title:'Freezer door seal damaged',dateIdentified:T,requestDetails:'Seal torn at the hinge side'});
+let d=await op.create('investigations',{invType:'Deviation',site:'JRS INC',title:'Freezer door seal damaged',dateIdentified:T,requestDetails:'Seal torn at the hinge side',respPerson:'operator1'});
 const reqNo=d.number;
 await op.put(d.id,{title:'Walk-in freezer door seal damaged'},'More precise title');
 await op.put(d.id,{title:'Walk-in freezer door seal damaged'},'No real change');
-await qa.sig(d.id,'Number Assignment'); await dc.sig(d.id,'Initiation');
+await qa.sig(d.id,'Initiation');
 d=(await qa.get(d.id)).record;
 
-// ===== access: QA and admin only =====
+// ===== access: QA, admin and management only =====
 ok((await op.call('GET','/api/audit')).s===403,'general user cannot open the audit trail');
 ok((await op.call('GET','/api/audit/verify')).s===403,'general user cannot run the integrity check');
 ok((await insp.call('GET','/api/audit')).s===403,'external auditor cannot open the audit trail');
@@ -44,13 +44,14 @@ let od=await op.get(d.id);ok(od.auditAccess===false&&od.audit.length===0&&od.ver
 ok((await op.call('GET',`/api/records/${d.id}/versions`)).s===403,'general user cannot see version history');
 let ex=await op.call('GET','/api/export/'+d.id);ok(ex.record&&ex.audit===undefined,'record export leaves out the audit trail for a general user');
 ok((await ad.call('GET','/api/audit')).s===200,'administrator can open the audit trail');
-let qd=await qa.get(d.id);ok(qd.auditAccess===true&&qd.audit.length>0&&qd.versionCount>=4,'QA sees the record audit trail and '+qd.versionCount+' versions');
+ok((await dir.call('GET','/api/audit')).s===200,'management can open the audit trail');
+let qd=await qa.get(d.id);ok(qd.auditAccess===true&&qd.audit.length>0&&qd.versionCount>=3,'QA sees the record audit trail and '+qd.versionCount+' versions');
 ok((await qa.call('GET','/api/export/'+d.id)).audit.length>0,'record export includes the audit trail for QA');
 
 // ===== version history =====
 let vh=await qa.call('GET',`/api/records/${d.id}/versions`);
 const vs=vh.versions.slice().reverse(); // oldest first
-ok(vs.length===4,'versions: created, edited, approved, numbered ('+vs.length+'); the save without a change added none');
+ok(vs.length===3,'versions: created, edited, approved with the number assigned ('+vs.length+'); the save without a change added none');
 let v1=await qa.call('GET',`/api/records/${d.id}/versions/1`), v2=await qa.call('GET',`/api/records/${d.id}/versions/2`), vl=await qa.call('GET',`/api/records/${d.id}/versions/${vs.length}`);
 ok(v1.data.title==='Freezer door seal damaged'&&v1.status==='Requested'&&v1.number===reqNo,'version 1 keeps the original title, status and request number');
 ok(v2.data.title==='Walk-in freezer door seal damaged'&&v2.reason==='More precise title'&&v2.username==='operator1','version 2 records the change, who made it and the reason');

@@ -34,16 +34,16 @@ let a1=await aud('qa.reviewer','QAS');
 ok(a1.number==='AUDR-001','auditor list entry '+a1.number);
 ok((await qa.sig(a1.id,'Qualified')).s===403,'the person proposing an auditor cannot approve the entry');
 ok((await qr.sig(a1.id,'Qualified')).ok,'Head of Quality adds the auditor to the qualified list');
-for (const [u,dpt] of [['cs.manager','PMT'],['hod.ops','OPS']]) { const a=await aud(u,dpt); await qr.sig(a.id,'Qualified'); }
+for (const [u,dpt] of [['cs.manager','PKG'],['hod.ops','OPS']]) { const a=await aud(u,dpt); await qr.sig(a.id,'Qualified'); }
 await aud('author1','QAS'); // proposed only, not qualified
 ok((await aud('qa.reviewer','QAS')).s===409,'one active auditor entry per person');
 
 // ===== Annual self-inspection schedule (FRM/QAS/038) =====
 const P=addD(T,10), PM=MONTHS[D(P).getUTCMonth()];
-let sc=await qa.create('sischedule',{year:+Y,plan:[{dept:'OPS',month:PM},{dept:'QAS',month:'March'},{dept:'PMT',month:'June'}]});
+let sc=await qa.create('sischedule',{year:+Y,plan:[{dept:'OPS',month:PM},{dept:'QAS',month:'March'},{dept:'PKG',month:'June'}]});
 ok(sc.number===`SIS-${Y}`,'schedule numbered '+sc.number);
 ok((await qr.sig(sc.id,'Approved')).s===400,'at least four self-inspections a year are required');
-await qa.put(sc.id,{plan:[{dept:'OPS',month:PM},{dept:'QAS',month:'March'},{dept:'PMT',month:'June'},{dept:'ENG',month:'September'}]});
+await qa.put(sc.id,{plan:[{dept:'OPS',month:PM},{dept:'QAS',month:'March'},{dept:'PKG',month:'June'},{dept:'ITS',month:'September'}]});
 ok((await qr.sig(sc.id,'Approved')).ok,'Head of Quality approves the schedule');
 ok((await qa.create('sischedule',{year:+Y})).s===409,'one schedule per year');
 
@@ -159,10 +159,9 @@ ok((await qa.sig(ra.id,'Approved')).ok,'residual risk assessment approved');
 g=await qa.get(ra.id);ok(g.record.data.fmea[0].prpn==='10'&&g.record.data.highestRisk==='27 – Moderate','residual RPN 10; highest risk now '+g.record.data.highestRisk);
 
 // ===== Management review – JRS/SOP/QAS/019 =====
-const dc=await login('docctrl1');
-let dv=await op.create('investigations',{invType:'Deviation',site:'JRS INC',title:'Excursion in cold room 2',dateIdentified:T,requestDetails:'Logger alarm'});
-await qa.sig(dv.id,'Number Assignment'); await dc.sig(dv.id,'Initiation');
-await op.put(dv.id,{description:'x',immediate:'x'}); await op.sig(dv.id,'QA Assessment');
+let dv=await op.create('investigations',{invType:'Deviation',site:'JRS INC',title:'Excursion in cold room 2',dateIdentified:T,requestDetails:'Logger alarm',respPerson:'operator1'});
+await qa.sig(dv.id,'Initiation');
+await op.put(dv.id,{description:'x',immediate:'x'}); await op.sig(dv.id,'QA Review');
 await qa.put(dv.id,{tempRange:'Cold chain / refrigerated (+2 to +8 °C)'});
 const q=Math.floor(D(T).getUTCMonth()/3)+1, QQ='Q'+q;
 const att=[{name:'',designation:'Manager Quality Assurance',mandatory:'Yes',attendance:''},{name:'',designation:'Director International Business',mandatory:'Yes',attendance:''}];

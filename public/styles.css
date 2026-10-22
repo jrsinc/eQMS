@@ -186,3 +186,18 @@ table.audit-table td { font-size: .86rem; }
 .hist-group { margin-top: .9rem; }
 .hist-head { padding: .35rem .6rem; background: var(--surface-2); border: 1px solid var(--line-2); border-bottom: 0; border-radius: var(--radius-s) var(--radius-s) 0 0; font-size: .9rem; }
 .hist-group table.t td { font-size: .86rem; }
+/* attachments grouped by workflow stage */
+tr.group-row td { background: var(--surface-2); font-weight: 600; font-size: .85rem; }
+/* organogram */
+.org-tree, .org-tree ul { list-style: none; margin: 0; padding-left: 1.4rem; }
+.org-tree { padding-left: 0; }
+.org-tree li { position: relative; margin: .6rem 0; }
+.org-tree ul > li::before { content: ''; position: absolute; left: -1rem; top: 0; bottom: -.6rem; border-left: 1px solid var(--line-2); }
+.org-tree ul > li::after { content: ''; position: absolute; left: -1rem; top: 1.1rem; width: .8rem; border-top: 1px solid var(--line-2); }
+.org-tree ul > li:last-child::before { bottom: auto; height: 1.1rem; }
+.org-node { border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: var(--radius-s); padding: .6rem .8rem; background: var(--surface); max-width: 560px; }
+.org-node.inactive { opacity: .6; border-left-color: var(--line-2); }
+.org-node .small-btn { margin: .4rem 0; padding: .2rem .6rem; font-size: .82rem; }
+.org-people { margin: .3rem 0 0; padding-left: 1.1rem; font-size: .9rem; }
+.org-people li { margin: .2rem 0; }
+button.link { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline; }

@@ -7,8 +7,9 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const zlib = require('node:zlib');
 const { DatabaseSync } = require('node:sqlite');
-const { MODULES, ROLES, trainingScore, PASS_MARK, TRAINER_PARAMS, TRAINER_PASS, RETENTION } = require('./public/modules.js');
+const { MODULES, ROLES, DERIVED_ROLES, DEPTS, setDepartments, trainingScore, PASS_MARK, TRAINER_PARAMS, TRAINER_PASS, RETENTION } = require('./public/modules.js');
 // change control states from pre-approval onwards (the change may be implemented)
 const CC_APPROVED = ['Optional Approvals', 'Implementation', 'Pending Closure', 'Closed – EC Pending', 'Closed'];
 
@@ -77,10 +78,13 @@ CREATE TABLE IF NOT EXISTS versions (record_id TEXT NOT NULL, no INTEGER NOT NUL
   status TEXT NOT NULL, number TEXT, data TEXT NOT NULL, reason TEXT, PRIMARY KEY (record_id, no));
 CREATE TRIGGER IF NOT EXISTS versions_no_update BEFORE UPDATE ON versions BEGIN SELECT RAISE(ABORT, 'version history is read-only'); END;
 CREATE TRIGGER IF NOT EXISTS versions_no_delete BEFORE DELETE ON versions BEGIN SELECT RAISE(ABORT, 'version history is read-only'); END;
+CREATE TABLE IF NOT EXISTS departments (code TEXT PRIMARY KEY, name TEXT NOT NULL, parent TEXT, hod TEXT, active INTEGER DEFAULT 1,
+  created_by TEXT NOT NULL, created_at TEXT NOT NULL);
 `);
 // register of signatures (JRS/SOP/QAS/009) – columns added to existing databases
-for (const col of ['designation', 'department', 'initials', 'inactive_date']) { try { db.exec(`ALTER TABLE users ADD COLUMN ${col} TEXT`); } catch { /* already present */ } }
+for (const col of ['designation', 'department', 'initials', 'inactive_date', 'reports_to']) { try { db.exec(`ALTER TABLE users ADD COLUMN ${col} TEXT`); } catch { /* already present */ } }
 const REREGISTER_YEARS = 5;
+try { db.exec('ALTER TABLE attachments ADD COLUMN stage TEXT'); } catch { /* already present */ } // workflow stage the file was added at
 
 const now = () => new Date().toISOString();
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -137,6 +141,37 @@ if (!db.prepare('SELECT 1 FROM users LIMIT 1').get()) {
   audit(null, 'User created', null, 'username', null, 'admin', 'Initial installation');
   console.log('Created initial user "admin". Initial password: ' + (process.env.ADMIN_INITIAL_PASSWORD ? '(from ADMIN_INITIAL_PASSWORD)' : pw));
 }
+// ---------- departments and organogram ----------
+// Departments are created by admin / management (System → Departments). Each department has a Head (HOD) and may sit under a
+// parent department; users belong to a department and report to a manager. Approvals follow this hierarchy: when a department
+// has no Head (or the Head is the person whose work is approved), the Head of the parent department approves.
+if (!db.prepare('SELECT 1 FROM departments LIMIT 1').get()) {
+  for (const [code, name] of [['OPS', 'Operation'], ['HRM', 'HR'], ['PKG', 'Packaging'], ['QAS', 'QA'], ['ITS', 'IT']])
+    db.prepare('INSERT INTO departments (code,name,active,created_by,created_at) VALUES (?,?,1,?,?)').run(code, name, 'system', now());
+  audit(null, 'Departments created', null, null, null, 'OPS Operation, HRM HR, PKG Packaging, QAS QA, ITS IT', 'Initial installation');
+}
+const deptRows = () => db.prepare('SELECT * FROM departments ORDER BY name').all();
+const deptMap = () => Object.fromEntries(deptRows().map(d => [d.code, d]));
+const loadDepartments = () => setDepartments(deptRows()); // the shared select options (modules.js) follow the department list
+loadDepartments();
+// the department and its parents, nearest first
+function deptChain(code, map = deptMap()) { const out = []; let d = map[code]; while (d && !out.includes(d.code)) { out.push(d.code); d = map[d.parent]; } return out; }
+const activeUser = (u) => !!u && !!db.prepare('SELECT 1 FROM users WHERE username=? AND active=1').get(u);
+// Head of Department who approves work of a department: its own Head, otherwise up the hierarchy; never the person approved
+// (then the parent department's Head, or the line manager from the organogram)
+function hodFor(code, exclude) {
+  const map = deptMap();
+  for (const c of deptChain(code, map)) { const h = map[c].hod; if (h && h !== exclude && activeUser(h)) return h; }
+  const mgr = exclude && (db.prepare('SELECT reports_to FROM users WHERE username=?').get(exclude) || {}).reports_to;
+  return mgr && activeUser(mgr) ? mgr : '';
+}
+// departments a user heads directly, and every department below them in the hierarchy
+function deptsHeaded(username) {
+  const map = deptMap();
+  return { direct: Object.values(map).filter(d => d.hod === username).map(d => d.code),
+    under: Object.keys(map).filter(c => deptChain(c, map).some(x => map[x].hod === username)) };
+}
+const userDept = (u) => (db.prepare('SELECT department FROM users WHERE username=?').get(u || '') || {}).department || '';
 if (process.env.SEED_DEMO === 'true') seedDemo();
 
 function seedDemo() {
@@ -145,15 +180,37 @@ function seedDemo() {
     ['author1', 'Lena Ortiz (Document Author)', ['author', 'sme']], ['cs.manager', 'Sam Okafor (Clinical Supply)', ['cs', 'author']],
     ['stat1', 'Mei Chen (Unblinded Statistician)', ['unblinded']], ['rp1', 'Jonas Weber (Responsible Person)', ['rp']],
     ['trainer1', 'Ana Silva (Training Coordinator)', ['trainer']], ['operator1', 'Ravi Patel (Operator)', ['user']],
-    ['hod.ops', 'Dana Fischer (Head of Operations)', ['hod', 'sme']], ['pm1', 'Chris Novak (Project Manager)', ['pm']],
+    ['hod.ops', 'Dana Fischer (Head of Operations)', ['user', 'sme']], ['pm1', 'Chris Novak (Project Manager)', ['pm']],
     ['director1', 'Alex Morgan (Director / Management Representative)', ['mgmt']], ['inspector1', 'Kim Yates (External Auditor – read-only)', ['extaud']],
-    ['docctrl1', 'Sara Lind (QA Document Control – number generator)', ['numgen']]
+    ['docctrl1', 'Sara Lind (QA Document Control)', ['qa']], ['packer1', 'Nina Kowalski (Packaging Operator)', ['user']]
   ].filter(([u]) => !db.prepare('SELECT 1 FROM users WHERE username=?').get(u));
-  if (!demo.length) return;
+  if (!demo.length) return seedOrganogram();
   for (const [u, n, r] of demo) db.prepare('INSERT INTO users (username,fullname,roles,pw_hash,must_change,created_at) VALUES (?,?,?,?,0,?)')
     .run(u, n, JSON.stringify(r), hashPw(CFG.demoPassword), now());
   audit(null, 'Demo users created', null, null, null, demo.map(d => d[0]).join(', '), 'SEED_DEMO=true');
   console.log('Demo users created with ' + (process.env.DEMO_PASSWORD ? 'the password from DEMO_PASSWORD' : 'password Demo-Pass-2026') + ' (disable SEED_DEMO in production).');
+  seedOrganogram();
+}
+// demo organogram: departments, Heads and reporting lines (only fills what is still empty)
+function seedOrganogram() {
+    const people = { 'qa.lead': ['QAS', 'director1'], 'qa.reviewer': ['QAS', 'qa.lead'], docctrl1: ['QAS', 'qa.lead'], rp1: ['QAS', 'qa.lead'],
+      'hod.ops': ['OPS', 'director1'], operator1: ['OPS', 'hod.ops'], pm1: ['OPS', 'hod.ops'], stat1: ['OPS', 'hod.ops'], author1: ['OPS', 'hod.ops'],
+      'cs.manager': ['PKG', 'hod.ops'], packer1: ['PKG', 'cs.manager'], trainer1: ['HRM', 'director1'] };
+    for (const [u, [dept, mgr]] of Object.entries(people)) {
+      const row = db.prepare('SELECT department, reports_to FROM users WHERE username=?').get(u); if (!row) continue;
+      if (!row.department || !deptMap()[row.department]) db.prepare('UPDATE users SET department=? WHERE username=?').run(dept, u);
+      if (!row.reports_to) db.prepare('UPDATE users SET reports_to=? WHERE username=?').run(mgr, u);
+    }
+    for (const [code, hod, parent] of [['QAS', 'qa.lead'], ['OPS', 'hod.ops'], ['PKG', 'cs.manager', 'OPS'], ['HRM', 'trainer1']]) {
+      const d = deptMap()[code]; if (!d) continue;
+      if (!d.hod) db.prepare('UPDATE departments SET hod=? WHERE code=?').run(hod, code);
+      if (parent && !d.parent) db.prepare('UPDATE departments SET parent=? WHERE code=?').run(parent, code);
+    }
+    // roles that are now derived from the organogram / QA are not stored on the user
+    for (const u of db.prepare('SELECT username, roles FROM users').all()) {
+      const r = JSON.parse(u.roles), keep = r.filter(x => !DERIVED_ROLES.includes(x));
+      if (keep.length !== r.length) db.prepare('UPDATE users SET roles=? WHERE username=?').run(JSON.stringify(keep.length ? keep : [r.includes('numgen') ? 'qa' : 'user']), u.username);
+    }
 }
 
 // ---------- sessions ----------
@@ -167,13 +224,26 @@ function getUser(req) {
   s.last = Date.now();
   const u = db.prepare('SELECT * FROM users WHERE username=? AND active=1 AND locked=0').get(s.username);
   if (!u) return null;
-  u.roles = JSON.parse(u.roles); u.sid = m[1]; u.csrf = s.csrf;
+  withOrg(u); u.sid = m[1]; u.csrf = s.csrf;
   return u;
 }
-const hasRole = (u, roles) => roles.includes('any') || u.roles.some(r => roles.includes(r)) || (u.roles.includes('qa') && roles.includes('qa'));
+// Roles held through the organisation: 'hod' for Heads of Department (organogram); 'numgen' for QA, who assign all record numbers
+function withOrg(u) {
+  const stored = (Array.isArray(u.roles) ? u.roles : JSON.parse(u.roles)).filter(r => !DERIVED_ROLES.includes(r));
+  const heads = deptsHeaded(u.username);
+  u.hodOf = heads.direct; u.deptsUnder = heads.under; u.department = u.department || '';
+  u.roles = [...stored, ...(heads.direct.length ? ['hod'] : []), ...(stored.includes('qa') ? ['numgen'] : [])];
+  return u;
+}
+// admin and management have all access (except blinded randomization data, which stays with unblinded officers)
+const allAccess = (u) => u.roles.includes('admin') || u.roles.includes('mgmt');
+// organogram: management, the Head of QA and administrators
+const canEditOrg = (u) => allAccess(u) || u.hodOf.includes('QAS');
+const hasRole = (u, roles) => roles.includes('any') || u.roles.some(r => roles.includes(r)) || (allAccess(u) && !roles.every(r => ['unblinded', 'extaud'].includes(r)));
 // JRS/SOP/QAS/009: signature registration is renewed every 5 years
 const esigCurrent = (u) => !!u.esig_accepted && new Date(u.esig_accepted) > new Date(Date.now() - REREGISTER_YEARS * 365.25 * 864e5);
-const pub = (u) => ({ username: u.username, fullname: u.fullname, email: u.email, roles: u.roles, mustChange: !!u.must_change, esigAccepted: esigCurrent(u), csrf: u.csrf });
+const pub = (u) => ({ username: u.username, fullname: u.fullname, email: u.email, roles: u.roles, mustChange: !!u.must_change, esigAccepted: esigCurrent(u), csrf: u.csrf,
+  department: u.department || '', hodOf: u.hodOf || [], deptsUnder: u.deptsUnder || [], allAccess: allAccess(u), canEditOrg: canEditOrg(u) });
 
 // ---------- helpers ----------
 class HttpError extends Error { constructor(code, msg) { super(msg); this.code = code; } }
@@ -342,26 +412,41 @@ function linkRefs(user, rec, ip) {
 }
 // Form sections: who may change a section's fields at which stage (section opts.edit in modules.js)
 function sectionOf(mod, k) { let s = null; for (const f of mod.fields) { if (f.type === 'section') s = f; else if (f.k === k) return s; } return null; }
+// pseudo-roles: initiator, responsible (person), respdept (member of the responsible department), depthead (Head approving the record)
 const canEditSection = (s, rec, user) => !s || !s.edit || (s.edit[rec.status] || []).some(r =>
-  r === 'initiator' ? rec.created_by === user.username : r === 'responsible' ? rec.data.respPerson === user.username : hasRole(user, [r]));
+  r === 'initiator' ? rec.created_by === user.username : r === 'responsible' ? rec.data.respPerson === user.username
+    : r === 'respdept' ? !!user.department && user.department === rec.data.respDept : r === 'depthead' ? rec.data.hodApprover === user.username
+    : hasRole(user, [r])) || (allAccess(user) && (s.edit[rec.status] || []).length > 0);
 // Confidential modules: hideFrom = invisible to users whose roles are all listed (e.g. external auditors);
 // visibleTo = visible only to users holding one of the listed roles (e.g. audit trail reviews: QA and admin)
 const hiddenFor = (user, type) => {
   const m = MODULES[type]; if (!m) return false;
+  if (allAccess(user)) return false;
   if (m.visibleTo && !user.roles.some(r => m.visibleTo.includes(r))) return true;
   return !!m.hideFrom && user.roles.every(r => m.hideFrom.includes(r));
 };
 const HIDEABLE = Object.keys(MODULES).filter(k => MODULES[k].hideFrom || MODULES[k].visibleTo);
-// The audit trail, record history and version history are visible to QA and administrators only
-const canSeeAudit = (user) => user.roles.includes('qa') || user.roles.includes('admin');
-const needAudit = (user) => { if (!canSeeAudit(user)) fail(403, 'The audit trail and version history are visible to QA and administrators only.'); };
-function visibleRecord(user, rec) { if (hiddenFor(user, rec.type)) fail(404, 'Record not found'); return rec; }
+// The audit trail, record history and version history are visible to QA, administrators and management only
+const canSeeAudit = (user) => user.roles.includes('qa') || allAccess(user);
+const needAudit = (user) => { if (!canSeeAudit(user)) fail(403, 'The audit trail and version history are visible to QA, administrators and management only.'); };
+// Department-scoped modules (modules.js "deptScoped"): only the initiator, the responsible person, members of the responsible
+// department, the Heads above it and the approving Head see the record – plus QA, admin, management and read-only inspectors.
+// Project managers see events that go to the customer.
+function canSee(user, rec) {
+  if (hiddenFor(user, rec.type)) return false;
+  if (!MODULES[rec.type].deptScoped || allAccess(user) || user.roles.includes('qa') || user.roles.includes('extaud')) return true;
+  const d = rec.data, me = user.username;
+  if (rec.created_by === me || d.respPerson === me || d.hodApprover === me) return true;
+  if (d.respDept && (user.department === d.respDept || (user.deptsUnder || []).includes(d.respDept))) return true;
+  return user.roles.includes('pm') && (rec.status === 'Customer Approval' || (rec.status === 'Closed' && d.customerApproval && !String(d.customerApproval).startsWith('Not applicable')));
+}
+function visibleRecord(user, rec) { if (!canSee(user, rec)) fail(404, 'Record not found'); return rec; }
 
 // ---------- SOP business rules ----------
 // Derived values recalculated whenever a record is created, edited or moves state.
 const DERIVE = {
   // JRS/SOP/QAS/022: investigation complete within 30 calendar days of opening; Critical events within 10 working days
-  investigations: (r) => { const d = r.data; d.dueDate = !d.criticality ? '' : d.criticality === 'Critical' ? addWorkingDays(d.dateOpened, 10) : addDays(d.dateOpened, 30); },
+  investigations: (r) => { const d = r.data; d.respDept = d.respPerson ? userDept(d.respPerson) : ''; d.dueDate = !d.criticality ? '' : d.criticality === 'Critical' ? addWorkingDays(d.dateOpened, 10) : addDays(d.dateOpened, 30); },
   // JRS/SOP/QAS/021: titles in capitals, "[GLB]" when the document applies to more than one site
   documents: (r) => { const d = r.data, base = String(d.title || '').replace(/^\[GLB\]\s*/i, '').toUpperCase(); d.title = ((d.sites || []).length > 1 ? '[GLB] ' : '') + base; }
 };
@@ -389,7 +474,18 @@ function erCheck(d, selfId) {
 }
 // Named checks referenced by transitions in modules.js (opts.checks)
 const CHECKS = {
-  isInitiator: (r, u) => { if (r.created_by !== u.username) fail(403, 'Only the initiator completes and submits this part.'); },
+  isInitiator: (r, u) => { if (r.created_by !== u.username && !allAccess(u)) fail(403, 'Only the initiator completes and submits this part.'); },
+  // deviations and complaints: Part A by the initiator or the responsible department, Part C by the responsible person / department,
+  // Part D by the Head of the responsible department (from the organogram)
+  isPartAOwner: (r, u) => { if (![r.created_by, r.data.respPerson].includes(u.username) && !(u.department && u.department === r.data.respDept) && !allAccess(u)) fail(403, 'Only the initiator, the responsible person or the responsible department submits Part A.'); },
+  isPartCOwner: (r, u) => { if (r.data.respPerson !== u.username && !(u.department && u.department === r.data.respDept) && !allAccess(u)) fail(403, 'Only the responsible person or the responsible department submits the investigation.'); },
+  hodAvailable: (r) => need(hodFor(r.data.respDept, r.data.respPerson), `No Head of Department can approve for ${DEPTS[r.data.respDept] || 'the responsible department'}. Ask management or the Head of QA to set the Head in the organogram.`),
+  // extension requests: the Head of the department responsible for the record being extended (organogram)
+  erHod: (r, u) => {
+    const t = byNumber(r.data.documentId), dept = t && (t.data.respDept || t.data.auditeeDept);
+    if (dept && !allAccess(u) && !u.deptsUnder.includes(dept)) fail(403, `Only the Head of ${DEPTS[dept] || dept} (organogram) approves this extension.`);
+  },
+  isHodApprover: (r, u) => { if (r.data.hodApprover !== u.username && !allAccess(u)) fail(403, `Only the Head of Department named on the record (${userLabel(r.data.hodApprover)}) can approve or reject.`); },
   // audit trail review
   atrPeriod: (r) => need(r.data.periodFrom <= r.data.periodTo && r.data.periodTo <= today(), 'The review period must end today or earlier, and start before it ends.'),
   atrOutcome: (r) => { if (String(r.data.anomalies).startsWith('Anomalies')) need(r.data.investigationRef, 'Anomalies found: raise a deviation or CAPA and enter its number.'); },
@@ -620,6 +716,11 @@ function qualifiedAuditor(username, scope) {
 const AFTER = {
   // the designated number generator assigns the record number once QA has approved the request
   'investigations:Initiation': (u, r, ip) => assignNumber(u, r, ip),
+  // the approving Head of Department comes from the organogram when the investigation is submitted
+  'investigations:HOD Approval': (u, r, ip) => {
+    const old = r.data.hodApprover; r.data.hodApprover = hodFor(r.data.respDept, r.data.respPerson);
+    if (old !== r.data.hodApprover) audit(u, 'Approver assigned from the organogram', r, 'hodApprover', old, r.data.hodApprover, null, ip);
+  },
   'documents:Approved – Training': (u, r, ip) => { r.data.approvedOn = today(); assignDocTraining(u, r, ip); },
   'documents:Effective': (u, r, ip) => makeEffective(u, r, ip),
   'training:Assigned': (u, r) => { // retraining after an unsatisfactory assessment
@@ -755,13 +856,81 @@ route('POST', '/api/login', async (ctx) => {
   db.prepare('UPDATE users SET failed=0, last_login=? WHERE username=?').run(now(), u.username);
   audit(u, 'Login', null, null, null, null, null, ctx.ip);
   ctx.setCookie = `qms_sid=${sid}; HttpOnly; SameSite=Strict; Path=/${CFG.cookieSecure ? '; Secure' : ''}`;
-  u.roles = JSON.parse(u.roles); u.csrf = csrf;
+  withOrg(u); u.csrf = csrf;
   return pub(u);
 }, { public: true });
 
 route('POST', '/api/logout', (ctx) => { sessions.delete(ctx.user.sid); audit(ctx.user, 'Logout', null, null, null, null, null, ctx.ip); ctx.setCookie = 'qms_sid=; Max-Age=0; Path=/'; return { ok: true }; });
 route('GET', '/api/me', (ctx) => ({ ...pub(ctx.user), idleMinutes: CFG.idleMinutes }));
-route('GET', '/api/config', () => ({ roles: ROLES, org: CFG.orgName }));
+route('GET', '/api/config', () => ({ roles: ROLES, org: CFG.orgName, departments: deptRows() }));
+
+// Departments (System → Departments): everyone can read the list; admin and management create and change departments
+route('GET', '/api/departments', () => deptRows());
+const DEPT_CODE = /^[A-Z]{2,6}$/;
+function checkParent(code, parent) {
+  if (!parent) return null;
+  const map = deptMap(); if (!map[parent]) fail(400, `Unknown parent department ${parent}.`);
+  if (deptChain(parent, map).includes(code)) fail(400, 'A department cannot sit under itself or under one of its own sub-departments.');
+  return parent;
+}
+route('POST', '/api/departments', (ctx) => {
+  if (!allAccess(ctx.user)) fail(403, 'Only administrators and management can create departments.');
+  const code = String(ctx.body.code || '').trim().toUpperCase(), name = String(ctx.body.name || '').trim().slice(0, 80);
+  if (!DEPT_CODE.test(code)) fail(400, 'Department code: 2–6 capital letters (it is used in CAPA and document numbers).');
+  if (!name) fail(400, 'Department name is required.');
+  if (deptMap()[code]) fail(409, `Department ${code} already exists. Codes are never reused.`);
+  const parent = checkParent(code, String(ctx.body.parent || '').toUpperCase());
+  db.prepare('INSERT INTO departments (code,name,parent,active,created_by,created_at) VALUES (?,?,?,1,?,?)').run(code, name, parent, ctx.user.username, now());
+  audit(ctx.user, 'Department created', null, 'department', null, `${code} – ${name}${parent ? ' (under ' + parent + ')' : ''}`, ctx.body.reason, ctx.ip);
+  loadDepartments();
+  return { ok: true };
+});
+route('PUT', '/api/departments/:code', (ctx) => {
+  const d = deptMap()[ctx.params.code]; if (!d) fail(404, 'Department not found');
+  const reason = String(ctx.body.reason || '').trim(); if (!reason) fail(400, 'Reason for change is required.');
+  const { name, active, parent, hod } = ctx.body;
+  // name and active status: admin / management; Head and parent (the organogram): also the Head of QA
+  if ((name !== undefined || active !== undefined) && !allAccess(ctx.user)) fail(403, 'Only administrators and management can rename or deactivate departments.');
+  if ((parent !== undefined || hod !== undefined) && !canEditOrg(ctx.user)) fail(403, 'Only management, the Head of QA and administrators can change the organogram.');
+  const set = (k, v, label) => { if (String(v ?? '') === String(d[k] ?? '')) return; db.prepare(`UPDATE departments SET ${k}=? WHERE code=?`).run(v, d.code); audit(ctx.user, 'Department ' + label + ' changed', null, d.code, d[k], v, reason, ctx.ip); };
+  if (name !== undefined) { const n = String(name).trim().slice(0, 80); if (!n) fail(400, 'Department name is required.'); set('name', n, 'name'); }
+  if (active !== undefined) set('active', active ? 1 : 0, 'status');
+  if (parent !== undefined) set('parent', checkParent(d.code, String(parent || '').toUpperCase()), 'parent');
+  if (hod !== undefined) { const h = String(hod || ''); if (h && !activeUser(h)) fail(400, 'The Head of Department must be an active user.'); set('hod', h || null, 'Head'); }
+  loadDepartments();
+  return { ok: true };
+});
+// Organogram: departments with their Heads, parents and members, and each person's line manager
+route('GET', '/api/organogram', (ctx) => {
+  if (!canEditOrg(ctx.user)) fail(403, 'The organogram is available to management, the Head of QA and administrators.');
+  const users = db.prepare('SELECT username, fullname, designation, department, reports_to, roles, active FROM users ORDER BY fullname').all().map(u => ({ ...u, roles: JSON.parse(u.roles) }));
+  return { departments: deptRows(), users };
+});
+route('PUT', '/api/organogram/users/:u', (ctx) => {
+  if (!canEditOrg(ctx.user)) fail(403, 'Only management, the Head of QA and administrators can change the organogram.');
+  const u = db.prepare('SELECT * FROM users WHERE username=?').get(ctx.params.u); if (!u) fail(404, 'User not found');
+  const reason = String(ctx.body.reason || '').trim(); if (!reason) fail(400, 'Reason for change is required.');
+  setOrg(ctx, u, ctx.body, reason);
+  return { ok: true };
+});
+// department and line manager of a user (organogram and user administration)
+function setOrg(ctx, u, body, reason) {
+  if (body.department !== undefined && String(body.department || '') !== String(u.department || '')) {
+    const dep = String(body.department || '').toUpperCase(); if (dep && !deptMap()[dep]) fail(400, `Unknown department ${dep}.`);
+    db.prepare('UPDATE users SET department=? WHERE username=?').run(dep, u.username);
+    audit(ctx.user, 'User department changed', null, u.username, u.department, dep, reason, ctx.ip);
+  }
+  if (body.reportsTo !== undefined && String(body.reportsTo || '') !== String(u.reports_to || '')) {
+    const m = String(body.reportsTo || '');
+    if (m) {
+      if (!activeUser(m)) fail(400, 'The line manager must be an active user.');
+      for (let x = m, n = 0; x && n < 50; x = (db.prepare('SELECT reports_to FROM users WHERE username=?').get(x) || {}).reports_to, n++)
+        if (x === u.username) fail(400, 'Reporting lines cannot form a loop.');
+    }
+    db.prepare('UPDATE users SET reports_to=? WHERE username=?').run(m || null, u.username);
+    audit(ctx.user, 'User line manager changed', null, u.username, u.reports_to, m, reason, ctx.ip);
+  }
+}
 
 route('POST', '/api/password', (ctx) => {
   const { current, next } = ctx.body;
@@ -779,34 +948,37 @@ route('POST', '/api/esig-accept', (ctx) => {
   return { ok: true };
 });
 
-route('GET', '/api/users', () => db.prepare('SELECT username,fullname,email,roles,active,locked,last_login,created_at,designation,department,initials,inactive_date,esig_accepted FROM users ORDER BY username').all()
-  .map(u => ({ ...u, roles: JSON.parse(u.roles), esigCurrent: esigCurrent(u), reregisterBy: u.esig_accepted ? addDays(u.esig_accepted, Math.round(REREGISTER_YEARS * 365.25)) : '' })));
+route('GET', '/api/users', () => db.prepare('SELECT username,fullname,email,roles,active,locked,last_login,created_at,designation,department,reports_to,initials,inactive_date,esig_accepted FROM users ORDER BY username').all()
+  .map(u => ({ ...u, roles: withOrg({ username: u.username, roles: u.roles }).roles, esigCurrent: esigCurrent(u), reregisterBy: u.esig_accepted ? addDays(u.esig_accepted, Math.round(REREGISTER_YEARS * 365.25)) : '' })));
 route('POST', '/api/users', (ctx) => {
-  if (!ctx.user.roles.includes('admin')) fail(403, 'Administrator role required.');
+  if (!allAccess(ctx.user)) fail(403, 'Administrator or management role required.');
   const { username, fullname, email, roles, password } = ctx.body;
   const un = String(username || '').toLowerCase().trim();
   if (!/^[a-z0-9._-]{3,40}$/.test(un)) fail(400, 'User ID: 3–40 characters, letters, numbers, dot, dash, underscore.');
   if (db.prepare('SELECT 1 FROM users WHERE username=?').get(un)) fail(409, 'User ID already exists. User IDs are never reused.');
   const p = pwPolicy(password); if (p) fail(400, p);
-  const r = (roles || []).filter(x => ROLES[x]); if (!r.length) fail(400, 'Select at least one role.');
+  const r = (roles || []).filter(x => ROLES[x] && !DERIVED_ROLES.includes(x)); if (!r.length) fail(400, 'Select at least one role.');
   const s = (v) => String(v || '').slice(0, 100);
-  db.prepare('INSERT INTO users (username,fullname,email,roles,pw_hash,must_change,created_at,designation,department,initials) VALUES (?,?,?,?,?,1,?,?,?,?)')
-    .run(un, String(fullname || un), String(email || ''), JSON.stringify(r), hashPw(password), now(), s(ctx.body.designation), s(ctx.body.department), s(ctx.body.initials).toUpperCase());
+  const dep = String(ctx.body.department || '').toUpperCase(); if (dep && !deptMap()[dep]) fail(400, `Unknown department ${dep}.`);
+  const mgr = String(ctx.body.reportsTo || ''); if (mgr && !activeUser(mgr)) fail(400, 'The line manager must be an active user.');
+  db.prepare('INSERT INTO users (username,fullname,email,roles,pw_hash,must_change,created_at,designation,department,initials,reports_to) VALUES (?,?,?,?,?,1,?,?,?,?,?)')
+    .run(un, String(fullname || un), String(email || ''), JSON.stringify(r), hashPw(password), now(), s(ctx.body.designation), dep, s(ctx.body.initials).toUpperCase(), mgr || null);
   audit(ctx.user, 'User created', null, 'roles', null, `${un}: ${r.join(', ')}`, ctx.body.reason, ctx.ip);
   return { ok: true };
 });
 route('PUT', '/api/users/:u', (ctx) => {
-  if (!ctx.user.roles.includes('admin')) fail(403, 'Administrator role required.');
+  if (!allAccess(ctx.user)) fail(403, 'Administrator or management role required.');
   const u = db.prepare('SELECT * FROM users WHERE username=?').get(ctx.params.u); if (!u) fail(404, 'User not found');
   const { roles, active, unlock, password, reason } = ctx.body;
   if (!reason) fail(400, 'Reason for change is required.');
   const tag = { username: ctx.user.username, fullname: ctx.user.fullname };
-  if (roles) { const r = roles.filter(x => ROLES[x]); db.prepare('UPDATE users SET roles=? WHERE username=?').run(JSON.stringify(r), u.username); audit(tag, 'User roles changed', null, u.username, JSON.parse(u.roles).join(', '), r.join(', '), reason, ctx.ip); }
+  if (roles) { const r = roles.filter(x => ROLES[x] && !DERIVED_ROLES.includes(x)); db.prepare('UPDATE users SET roles=? WHERE username=?').run(JSON.stringify(r), u.username); audit(tag, 'User roles changed', null, u.username, JSON.parse(u.roles).join(', '), r.join(', '), reason, ctx.ip); }
   if (active !== undefined && !!active !== !!u.active) { // the register keeps the separation / inactive date (JRS/SOP/QAS/009)
     db.prepare('UPDATE users SET active=?, inactive_date=? WHERE username=?').run(active ? 1 : 0, active ? null : today(), u.username);
     audit(tag, active ? 'User activated' : 'User deactivated', null, u.username, null, active ? null : 'Inactive from ' + today(), reason, ctx.ip);
   }
-  for (const k of ['designation', 'department', 'initials']) if (ctx.body[k] !== undefined && String(ctx.body[k]) !== String(u[k] || '')) {
+  setOrg(ctx, u, ctx.body, reason);
+  for (const k of ['designation', 'initials']) if (ctx.body[k] !== undefined && String(ctx.body[k]) !== String(u[k] || '')) {
     const v = String(ctx.body[k]).slice(0, 100)[k === 'initials' ? 'toUpperCase' : 'trim']();
     db.prepare(`UPDATE users SET ${k}=? WHERE username=?`).run(v, u.username);
     audit(tag, 'User ' + k + ' changed', null, u.username, u[k], v, reason, ctx.ip);
@@ -820,19 +992,19 @@ route('GET', '/api/records', (ctx) => {
   const type = ctx.query.get('type');
   const rows = type ? db.prepare('SELECT * FROM records WHERE type=? AND deleted=0 ORDER BY created_at DESC').all(type)
     : db.prepare('SELECT * FROM records WHERE deleted=0 ORDER BY updated_at DESC LIMIT 2000').all();
-  return rows.filter(r => !hiddenFor(ctx.user, r.type)).map(rowToRecord);
+  return rows.map(rowToRecord).filter(r => canSee(ctx.user, r));
 });
 route('GET', '/api/records/:id', (ctx) => {
   const rec = visibleRecord(ctx.user, getRecord(ctx.params.id)), h = contentHash(rec);
   const sigs = db.prepare('SELECT * FROM signatures WHERE record_id=? ORDER BY id').all(rec.id).map(s => ({ ...s, current: s.content_hash === h }));
-  const atts = db.prepare('SELECT id,name,mime,size,sha256,uploaded_by,ts FROM attachments WHERE record_id=? ORDER BY ts').all(rec.id);
+  const atts = db.prepare('SELECT id,name,mime,size,sha256,uploaded_by,ts,stage FROM attachments WHERE record_id=? ORDER BY ts').all(rec.id);
   const auditAccess = canSeeAudit(ctx.user);
   const trail = auditAccess ? db.prepare('SELECT * FROM audit WHERE record_id=? ORDER BY id DESC').all(rec.id) : [];
   const rl = rec.type === 'randomization' ? db.prepare('SELECT generated_by, ts FROM rand_lists WHERE record_id=?').get(rec.id) : null;
   const mod = MODULES[rec.type];
   const editable = EDITABLE_ALWAYS.has(rec.type) || !LOCKED.has(rec.status);
   const transitions = mod.transitions.filter(t => t.from === rec.status).map(t => ({ ...t, allowed: hasRole(ctx.user, t.roles) }));
-  const links = linked(rec.id).filter(r => !hiddenFor(ctx.user, r.type)).map(r => ({ id: r.id, number: r.number, type: r.type, title: r.data.title || '', status: r.status }));
+  const links = linked(rec.id).filter(r => canSee(ctx.user, r)).map(r => ({ id: r.id, number: r.number, type: r.type, title: r.data.title || '', status: r.status }));
   const versionCount = auditAccess ? db.prepare('SELECT COUNT(*) AS n FROM versions WHERE record_id=?').get(rec.id).n : 0;
   return { record: rec, signatures: sigs, attachments: atts, audit: trail, auditAccess, versionCount, transitions, editable, randList: rl, links };
 });
@@ -945,8 +1117,8 @@ route('POST', '/api/records/:id/links', (ctx) => {
 route('POST', '/api/records/:id/dept-approve', (ctx) => {
   const rec = getRecord(ctx.params.id), cfg = MODULES[rec.type].deptApproval;
   if (!cfg || rec.status !== cfg.state) fail(409, cfg ? `${cfg.label} are recorded at stage "${cfg.state}".` : 'This record has no departmental approvals.');
-  if (!hasRole(ctx.user, ['hod'])) fail(403, 'Department Head role required.');
   const dept = String(ctx.body.dept || ''), list = rec.data.deptApprovals || [];
+  if (!allAccess(ctx.user) && !ctx.user.deptsUnder.includes(dept)) fail(403, `Only the Head of ${DEPTS[dept] || dept} (organogram) can give this approval.`);
   if (!(rec.data[cfg.field] || []).includes(dept)) fail(400, `${dept || 'This department'} is not named for ${cfg.label.toLowerCase()} on ${rec.number}.`);
   if (list.some(a => a.dept === dept)) fail(409, `${dept} has already approved ${rec.number}.`);
   verifySignature(ctx.user, ctx.body);
@@ -1100,13 +1272,15 @@ route('POST', '/api/records/:id/revise', (ctx) => {
   link(ctx.user, rec, rev, ctx.ip);
   return rev;
 });
+// Attachments can be added at every stage; each file keeps the stage it was added at. Closed records take files from QA only.
 route('POST', '/api/records/:id/attachments', (ctx) => {
-  const rec = getRecord(ctx.params.id);
+  const rec = visibleRecord(ctx.user, getRecord(ctx.params.id));
+  if (LOCKED.has(rec.status) && !EDITABLE_ALWAYS.has(rec.type) && !hasRole(ctx.user, ['qa'])) fail(409, `Record is ${rec.status}. Only QA can add attachments now.`);
   const buf = Buffer.from(String(ctx.body.base64 || ''), 'base64'); if (!buf.length) fail(400, 'Empty file');
   const id = uid(), h = crypto.createHash('sha256').update(buf).digest('hex');
-  db.prepare('INSERT INTO attachments (id,record_id,name,mime,size,sha256,blob,uploaded_by,ts) VALUES (?,?,?,?,?,?,?,?,?)')
-    .run(id, rec.id, String(ctx.body.name).slice(0, 200), String(ctx.body.mime || ''), buf.length, h, buf, ctx.user.username, now());
-  audit(ctx.user, 'Attachment added', rec, 'attachment', null, `${ctx.body.name} (SHA-256 ${h.slice(0, 16)}…)`, ctx.body.reason, ctx.ip);
+  db.prepare('INSERT INTO attachments (id,record_id,name,mime,size,sha256,blob,uploaded_by,ts,stage) VALUES (?,?,?,?,?,?,?,?,?,?)')
+    .run(id, rec.id, String(ctx.body.name).slice(0, 200), String(ctx.body.mime || ''), buf.length, h, buf, ctx.user.username, now(), rec.status);
+  audit(ctx.user, 'Attachment added', rec, 'attachment', null, `${ctx.body.name} (stage ${rec.status}; SHA-256 ${h.slice(0, 16)}…)`, ctx.body.reason, ctx.ip);
   return { id, sha256: h };
 });
 route('GET', '/api/attachments/:id', (ctx) => {
@@ -1249,6 +1423,77 @@ route('POST', '/api/audit/report', (ctx) => { // logs that a filtered audit trai
   audit(ctx.user, 'Audit trail ' + (ctx.body.kind === 'print' ? 'report printed' : 'exported'), null, 'filters', null, String(ctx.body.filters || 'none').slice(0, 500), null, ctx.ip);
   return { ok: true };
 });
+// ---------- full record report (any stage): report.html, every attachment and the audit trail, in one ZIP ----------
+function zipFiles(files) { // stored with deflate, UTF-8 names; no dependencies
+  const d = new Date(), time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  const parts = [], central = []; let offset = 0;
+  for (const f of files) {
+    const name = Buffer.from(f.name, 'utf8'), raw = Buffer.isBuffer(f.data) ? f.data : Buffer.from(f.data, 'utf8'), body = zlib.deflateRawSync(raw), crc = zlib.crc32(raw);
+    const h = Buffer.alloc(30); h.writeUInt32LE(0x04034b50, 0); h.writeUInt16LE(20, 4); h.writeUInt16LE(0x0800, 6); h.writeUInt16LE(8, 8); h.writeUInt16LE(time, 10); h.writeUInt16LE(date, 12);
+    h.writeUInt32LE(crc, 14); h.writeUInt32LE(body.length, 18); h.writeUInt32LE(raw.length, 22); h.writeUInt16LE(name.length, 26); h.writeUInt16LE(0, 28);
+    const c = Buffer.alloc(46); c.writeUInt32LE(0x02014b50, 0); c.writeUInt16LE(20, 4); c.writeUInt16LE(20, 6); c.writeUInt16LE(0x0800, 8); c.writeUInt16LE(8, 10); c.writeUInt16LE(time, 12); c.writeUInt16LE(date, 14);
+    c.writeUInt32LE(crc, 16); c.writeUInt32LE(body.length, 20); c.writeUInt32LE(raw.length, 24); c.writeUInt16LE(name.length, 28); c.writeUInt32LE(offset, 42);
+    parts.push(h, name, body); central.push(c, name); offset += 30 + name.length + body.length;
+  }
+  const cd = Buffer.concat(central), end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10); end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, cd, end]);
+}
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const csvCell = (v) => /[",\n\r]/.test(String(v ?? '')) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v ?? '');
+const safeName = (n) => String(n).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').slice(0, 120);
+function reportValue(f, v) {
+  if (v === '' || v == null || (Array.isArray(v) && !v.length)) return '<span class="empty">—</span>';
+  if (f.type === 'table') return `<table><tr>${f.cols.map(c => `<th>${esc(c.label)}</th>`).join('')}</tr>${v.map(row => `<tr>${f.cols.map(c => `<td>${esc(row[c.k])}</td>`).join('')}</tr>`).join('')}</table>`;
+  if (f.type === 'checklist') return `<table>${f.rows.map(r => `<tr><td>${esc(r)}</td><td>${esc((v[r] || {}).v)}</td><td>${esc((v[r] || {}).r)}</td></tr>`).join('')}</table>`;
+  if (f.type === 'user' || f.fmt === 'user') return esc(userLabel(v));
+  if (f.optionLabels && f.optionLabels[v]) return esc(f.optionLabels[v]);
+  return esc(fmt(v)).replace(/\n/g, '<br>');
+}
+function reportZip(user, rec) {
+  const mod = MODULES[rec.type], h = contentHash(rec), withAudit = canSeeAudit(user);
+  const sigs = db.prepare('SELECT * FROM signatures WHERE record_id=? ORDER BY id').all(rec.id);
+  const atts = db.prepare('SELECT * FROM attachments WHERE record_id=? ORDER BY ts').all(rec.id);
+  const trail = withAudit ? db.prepare('SELECT * FROM audit WHERE record_id=? ORDER BY id').all(rec.id) : [];
+  const links = linked(rec.id).filter(r => canSee(user, r));
+  const files = [], attRows = atts.map((a, i) => {
+    const p = `attachments/${String(i + 1).padStart(2, '0')} ${safeName(a.stage || 'Unknown stage')} - ${safeName(a.name)}`;
+    files.push({ name: p, data: Buffer.from(a.blob) });
+    return `<tr><td>${i + 1}</td><td>${esc(a.stage || '')}</td><td>${esc(a.name)}<br><small>${esc(p)}</small></td><td>${a.size}</td><td>${esc(userLabel(a.uploaded_by))}</td><td>${esc(a.ts.slice(0, 16).replace('T', ' '))}</td><td><small>${esc(a.sha256)}</small></td></tr>`;
+  });
+  let body = '', open = false;
+  for (const f of mod.fields) {
+    if (f.type === 'section') { body += (open ? '</table>' : '') + `<h2>${esc(f.label)}</h2><table class="kv">`; open = true; continue; }
+    if (!open) { body += '<table class="kv">'; open = true; }
+    body += `<tr><th>${esc(f.label)}</th><td>${reportValue(f, rec.data[f.k])}</td></tr>`;
+  }
+  if (open) body += '</table>';
+  const final = LOCKED.has(rec.status) || rec.status.startsWith('Closed');
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(rec.number)} report</title><style>
+body{font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#1b1f24;margin:24px;max-width:1000px}h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;margin:22px 0 6px;padding-bottom:4px;border-bottom:2px solid #1f4e79;color:#1f4e79}
+table{border-collapse:collapse;width:100%;margin:4px 0}th,td{border:1px solid #c9d1d9;padding:5px 7px;text-align:left;vertical-align:top}th{background:#f3f6f9}.kv th{width:34%;font-weight:600}
+.meta{color:#555;margin-bottom:12px}.banner{padding:8px 10px;margin:10px 0;border:1px solid #d29922;background:#fff8e5}.empty{color:#999}small{color:#666;word-break:break-all}
+@media print{body{margin:0}h2{break-after:avoid}}</style></head><body>
+<h1>${esc(mod.name)} – ${esc(rec.number)}</h1>
+<div class="meta">${esc(rec.data.title || '')}<br>Status: <b>${esc(rec.status)}</b> · Created by ${esc(userLabel(rec.created_by))} on ${esc(rec.created_at.slice(0, 10))} · Report generated by ${esc(user.fullname)} on ${esc(now().slice(0, 16).replace('T', ' '))} UTC</div>
+${final ? '' : '<div class="banner">Interim report – the record is still in progress (stage "' + esc(rec.status) + '").</div>'}
+${body}
+<h2>Electronic signatures</h2>${sigs.length ? `<table><tr><th>Meaning</th><th>Name</th><th>User ID</th><th>Date / time (UTC)</th><th>Stage</th><th>Valid for current content</th></tr>${sigs.map(x => `<tr><td>${esc(x.meaning)}</td><td>${esc(x.fullname)}</td><td>${esc(x.username)}</td><td>${esc(x.ts.slice(0, 19).replace('T', ' '))}</td><td>${esc(x.from_state)} → ${esc(x.to_state)}</td><td>${x.content_hash === h ? 'Yes' : 'Signed an earlier version'}</td></tr>`).join('')}</table>` : '<p class="empty">No signatures yet.</p>'}
+<h2>Attachments (${atts.length})</h2>${atts.length ? `<table><tr><th>#</th><th>Stage</th><th>File (path in this ZIP)</th><th>Bytes</th><th>Added by</th><th>Added (UTC)</th><th>SHA-256</th></tr>${attRows.join('')}</table>` : '<p class="empty">No attachments.</p>'}
+<h2>Linked records</h2>${links.length ? `<table><tr><th>Number</th><th>Module</th><th>Title</th><th>Status</th></tr>${links.map(l => `<tr><td>${esc(l.number)}</td><td>${esc(MODULES[l.type].name)}</td><td>${esc(l.data.title || '')}</td><td>${esc(l.status)}</td></tr>`).join('')}</table>` : '<p class="empty">None.</p>'}
+<h2>Audit trail</h2>${withAudit ? `<table><tr><th>Date / time (UTC)</th><th>User</th><th>Action</th><th>Field</th><th>Old value</th><th>New value</th><th>Reason</th></tr>${trail.map(a => `<tr><td>${esc(a.ts.slice(0, 19).replace('T', ' '))}</td><td>${esc(a.fullname)}</td><td>${esc(a.action)}</td><td>${esc(a.field || '')}</td><td>${esc(a.old_value || '')}</td><td>${esc(a.new_value || '')}</td><td>${esc(a.reason || '')}</td></tr>`).join('')}</table>` : '<p class="empty">The audit trail is included in reports downloaded by QA, administrators and management.</p>'}
+</body></html>`;
+  files.unshift({ name: `${safeName(rec.number)} report.html`, data: html });
+  if (withAudit) files.push({ name: 'audit-trail.csv', data: '\ufeff' + [['ID', 'Date / time (UTC)', 'User ID', 'Name', 'Action', 'Field', 'Old value', 'New value', 'Reason', 'Hash'],
+    ...trail.map(a => [a.id, a.ts, a.username, a.fullname, a.action, a.field, a.old_value, a.new_value, a.reason, a.hash])].map(r => r.map(csvCell).join(',')).join('\r\n') });
+  return zipFiles(files);
+}
+route('GET', '/api/records/:id/report', (ctx) => {
+  const rec = visibleRecord(ctx.user, getRecord(ctx.params.id));
+  const buf = reportZip(ctx.user, rec);
+  audit(ctx.user, 'Report downloaded', rec, null, null, `ZIP at stage ${rec.status}`, null, ctx.ip);
+  return { __raw: buf, headers: { 'Content-Type': 'application/zip', 'Content-Disposition': `attachment; filename="${safeName(rec.number).replace(/[^ -~]/g, '_')} report.zip"; filename*=UTF-8''${encodeURIComponent(safeName(rec.number) + ' report.zip')}` } };
+});
 route('GET', '/api/export/:id', (ctx) => {
   const rec = visibleRecord(ctx.user, getRecord(ctx.params.id));
   audit(ctx.user, 'Record exported', rec, null, null, 'JSON', null, ctx.ip);
@@ -1306,6 +1551,12 @@ const server = http.createServer(async (req, res) => {
     send(res, e.code || 500, { error: e instanceof HttpError ? e.message : 'Unexpected server error' });
   }
 });
+const STATE_MAP = { investigations: { Initiated: 'Initiation', 'Number Assignment': 'Requested', 'QA Assessment': 'QA Review', 'Pre-Approval': 'QA Review', Evaluation: 'QA Evaluation' }, changes: { 'Number Assignment': 'Requested' } };
+for (const [type, map] of Object.entries(STATE_MAP)) for (const r of db.prepare(`SELECT * FROM records WHERE type=? AND status IN (${Object.keys(map).map(() => '?').join(',')})`).all(type, ...Object.keys(map)).map(rowToRecord)) {
+  const from = r.status; r.status = map[from]; r.data.stateEnteredAt = now();
+  ACTOR = { user: null, reason: 'Workflow updated' }; if (DERIVE[type]) DERIVE[type](r); saveRecord(r);
+  audit(null, 'Status changed (workflow updated)', r, 'status', from, r.status, 'Workflow updated: departments and organogram');
+}
 // records that existed before version history was introduced get a baseline version 1 (once)
 for (const r of db.prepare('SELECT * FROM records WHERE id NOT IN (SELECT DISTINCT record_id FROM versions)').all().map(rowToRecord)) {
   ACTOR = { user: null, reason: 'Baseline – version history started for an existing record' }; snapshot(r);

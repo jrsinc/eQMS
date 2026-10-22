@@ -34,7 +34,7 @@ let rv=await au.call('POST',`/api/records/${d.id}/revise`,{revisionType:'Periodi
 let dv=await op.call('POST','/api/records',{type:'investigations',data:{invType:'Deviation',site:'JRS INC',title:'Temp excursion WH-2',dateIdentified:'2026-10-19',requestDetails:'Logger showed 9°C for 2h'}});
 ok(/^REQ-\d{4}-0001$/.test(dv.number),'deviation request numbered '+dv.number);
 let up=await op.call('PUT',`/api/records/${dv.id}`,{data:{title:'x'}});ok(up.s===400,'edit without reason blocked');
-await op.call('POST',`/api/records/${dv.id}/transition`,{to:'Number Assignment',sigUsername:'operator1',password:'Demo-Pass-2026'}).then(r=>ok(r.s===403,'operator cannot approve the request (role)'));
+await op.call('POST',`/api/records/${dv.id}/transition`,{to:'Initiation',sigUsername:'operator1',password:'Demo-Pass-2026'}).then(r=>ok(r.s===403,'operator cannot approve the request (role)'));
 // randomization
 let rn=await st.call('POST','/api/records',{type:'randomization',data:{title:'Kit list',study:'ABC-301',arms:'A,B',ratio:'2:1',blockSize:6,kits:60,startKit:1001,seed:'test-seed'}});
 ok(rn.number,'rand created');
