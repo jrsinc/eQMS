@@ -30,7 +30,7 @@ async function readLocked(buf){
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const { PDFDocument } = createRequire(import.meta.url)('../vendor/pdf-lib.min.js');
 const PORT = 27000 + Math.floor(Math.random() * 1000);
-const srv = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], { cwd: root, env: { ...process.env, DATA_DIR: mkdtempSync(join(tmpdir(), 'qms-su-')), PORT: String(PORT), HOST: '127.0.0.1', SEED_DEMO: 'true', SMTP_HOST: '' }, stdio: 'ignore' });
+const srv = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], { cwd: root, env: { ...process.env, DATA_DIR: mkdtempSync(join(tmpdir(), 'qms-su-')), PORT: String(PORT), HOST: '127.0.0.1', SEED_DEMO: 'true', MODULE_GROUPS_OFF: '', SMTP_HOST: '' }, stdio: 'ignore' });
 const B = 'http://127.0.0.1:' + PORT;
 for (let i = 0; i < 150; i++) { try { await fetch(B + '/api/health'); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
 let failed = 0;

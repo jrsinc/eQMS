@@ -48,7 +48,8 @@ const dataFields = (m) => m.fields.filter(f => f.k);
 const singular = (m) => m.single || m.name.toLowerCase().replace(/s$/, '');
 // The audit trail, record history and version history are for QA, administrators and management only (the server enforces it too)
 const auditAccess = () => !!ME && (ME.roles.includes('qa') || ME.allAccess);
-const canSeeModule = (m) => ME.allAccess || !(m.visibleTo && !ME.roles.some(r => m.visibleTo.includes(r))) && !(m.hideFrom && ME.roles.every(r => m.hideFrom.includes(r)));
+const isOff = (k) => !!ME && (ME.modulesOff || []).includes(k); // switched-off module groups: hidden from everyone
+const canSeeModule = (m) => !isOff(Object.keys(MODS).find(k => MODS[k] === m)) && (ME.allAccess || !(m.visibleTo && !ME.roles.some(r => m.visibleTo.includes(r))) && !(m.hideFrom && ME.roles.every(r => m.hideFrom.includes(r))));
 const NO_AUDIT_ACCESS = '<div class="panel"><h2>Audit trail</h2><p>The audit trail and version history are visible to QA, administrators and management only.</p></div>';
 // Readable audit entries: field labels instead of internal keys, names instead of user IDs, dates as DD-MMM-YYYY
 function fieldLabel(type, key) {
@@ -228,7 +229,8 @@ function shell(active, html) {
   $('#app').innerHTML = `<div class="shell"><nav class="nav" id="nav" aria-label="Main">
     <div class="brand"><div>JRS eQMS<small>Quality Management System</small></div></div>
     ${link('dashboard', 'Dashboard', 'dashboard')}${link('tasks', 'My tasks', 'tasks')}${link('readiness', 'Inspection readiness', 'readiness')}
-    ${Object.entries(groups).map(([g, list]) => `<h4>${esc(g)}</h4>${list.map(([k, m]) => link('m/' + k, m.name, k, openCount(k))).join('')}${g === 'Documents & training' ? link('matrix', 'Training matrix', 'matrix') + link('forms', 'Controlled forms', 'forms') + link('sops', 'Controlled SOPs', 'sops') : ''}`).join('')}
+    ${Object.entries(groups).map(([g, list]) => `<h4>${esc(g)}</h4>${list.map(([k, m]) => link('m/' + k, m.name, k, openCount(k))).join('')}${g === 'Documents & training' ? link('matrix', 'Training matrix', 'matrix') : ''}`).join('')}
+    <h4>Controlled documents</h4>${link('forms', 'Controlled forms', 'forms')}${link('sops', 'Controlled SOPs', 'sops')}
     <h4>System</h4>${auditAccess() ? link('audit', 'Audit trail', 'audit') + link('issued', 'Issued forms', 'issued') : ''}${link('signatures', 'Signature register', 'signatures')}${link('sharepoint', 'SharePoint', 'sharepoint')}${link('departments', 'Departments', 'departments')}${ME.canEditOrg ? link('organogram', 'Organogram', 'organogram') : ''}${isAdmin ? link('users', 'Users and roles', 'users') : ''}${link('password', 'Change password', 'password')}
     </nav><div class="main">${envBanner()}<header class="topbar"><button class="btn menu-btn" id="menu" aria-label="Menu">Menu</button><a class="topbar-logo" href="#/dashboard" title="Dashboard"><img src="/logo.png" alt="Jupiter Research Services"></a>
     <form id="gs" role="search" style="flex:1;max-width:420px"><input type="search" name="q" placeholder="Search records by number or title"></form>
@@ -251,7 +253,8 @@ async function route() {
   try {
     ALL = await api('GET', '/api/records');
     const views = { dashboard, tasks, readiness, matrix, audit: auditView, history: historyView, signatures: signatureRegister, users: usersView, notifications: notificationsView, issued: issuedFormsView, forms: formsView, form: formView, sops: sopsView, sop: sopView, departments: departmentsView, organogram: organogramView, sharepoint: spView, password: () => renderPasswordChange(false), m: listView, new: newView, r: detailView, search: searchView, verify: verifyView };
-    await (views[view] || dashboard)(a);
+    const offView = (['m', 'new'].includes(view) && isOff(a)) || (view === 'matrix' && isOff('training'));
+    await (offView ? dashboard : views[view] || dashboard)(a);
     window.scrollTo(0, 0);
   } catch (x) { if (ME) { shell('', `<div class="panel"><h2>Something went wrong</h2><p>${esc(x.message)}</p></div>`); } }
 }
@@ -316,7 +319,7 @@ function dashboard() {
    ${k('Open deviations', cnt('investigations', r => r.data.invType === 'Deviation'), '#/m/investigations', '')}${k('Open complaints', cnt('investigations', r => r.data.invType === 'Complaint'), '#/m/investigations', '')}
    ${k('Critical events open', cnt('investigations', r => r.data.criticality === 'Critical'), '#/m/investigations', cnt('investigations', r => r.data.criticality === 'Critical') ? 'alert' : 'ok')}
    ${k('Open CAPA', cnt('capa'), '#/m/capa', '')}${k('Change controls in progress', cnt('changes'), '#/m/changes', '')}
-   ${k('Extension requests pending', cnt('extensions', r => r.status !== 'Draft'), '#/m/extensions', '')}${k('Documents in workflow', cnt('documents'), '#/m/documents', '')}</div>
+   ${k('Extension requests pending', cnt('extensions', r => r.status !== 'Draft'), '#/m/extensions', '')}${isOff('documents') ? '' : k('Documents in workflow', cnt('documents'), '#/m/documents', '')}</div>
    <div class="two"><div><h2>My tasks</h2>${table(mine.slice(0, 12), ['number', 'module', 'title', 'status'])}</div>
    <div><h2>Overdue</h2>${table(over.slice(0, 12), ['number', 'module', 'title', 'status'])}</div></div>`);
   bindRows();
@@ -800,6 +803,8 @@ function atrTile() {
   const due = !last || last.data.periodTo < addDaysIso(today(), -92);
   return `<a class="kpi ${due ? 'alert' : 'ok'}" href="#/m/atreviews"><b>${last ? dmy(last.data.periodTo) : 'None'}</b>Audit trail reviewed up to (quarterly review${due ? ' overdue' : ''})</a>`;
 }
+// readiness items that belong to modules which can be switched off
+const READINESS_OFF = { 'Self-inspection responses overdue': 'selfinspections', 'Self-inspection observations not yet complied': 'selfinspections', 'External audit findings past their due date': 'extaudits', 'Risk assessments past review date': 'risks', 'Documents past periodic review': 'documents', 'Overdue training assignments': 'training', 'Approved documents waiting for training past the effective date': 'documents', 'Failed training assessments awaiting retraining': 'training', 'Archived records not returned within 7 working days': 'archives' };
 function readiness() {
   const in90 = new Date(Date.now() + 90 * 864e5).toISOString().slice(0, 10), t = today();
   const docsOverdue = ALL.filter(r => r.type === 'documents' && r.status === 'Effective' && r.data.nextReview && r.data.nextReview < t);
@@ -815,17 +820,17 @@ function readiness() {
     ['Overdue CAPA (incl. effectiveness checks)', ALL.filter(r => r.type === 'capa' && isOverdue(r))],
     ['Change controls past due date (incl. effectiveness checks)', ALL.filter(r => r.type === 'changes' && isOverdue(r))],
     ['Temporary changes past their end date', ALL.filter(r => r.type === 'changes' && r.data.nature === 'Temporary' && r.data.tempEnd && r.data.tempEnd < t && !DONE.has(r.status) && !r.status.startsWith('Closed'))],
-    ['Self-inspection responses overdue', ALL.filter(r => r.type === 'selfinspections' && r.status === 'Report Issued' && isOverdue(r))],
+    ...[['Self-inspection responses overdue', ALL.filter(r => r.type === 'selfinspections' && r.status === 'Report Issued' && isOverdue(r))],
     ['Self-inspection observations not yet complied', ALL.filter(r => r.type === 'selfinspections' && !DONE.has(r.status) && (r.data.observations || []).some(o => o.status !== 'Complied'))],
     ['External audit findings past their due date', ALL.filter(r => r.type === 'extaudits' && !DONE.has(r.status) && (r.data.findings || []).some(f => f.status !== 'Closed' && f.due && f.due < t))],
     ['Risk assessments past review date', ALL.filter(r => r.type === 'risks' && r.data.reviewDate && r.data.reviewDate < t)],
     ['Documents past periodic review', docsOverdue], ['Overdue training assignments', trn.filter(isOverdue)],
     ['Approved documents waiting for training past the effective date', ALL.filter(r => r.type === 'documents' && r.status === 'Approved – Training' && isOverdue(r))],
     ['Failed training assessments awaiting retraining', ALL.filter(r => r.type === 'training' && r.status === 'Failed')],
-    ['Archived records not returned within 7 working days', ALL.filter(r => r.type === 'archives' && isOverdue(r))],    ['Vendor / customer licences expiring within 90 days', licences]
+    ['Archived records not returned within 7 working days', ALL.filter(r => r.type === 'archives' && isOverdue(r))]].filter(([l]) => !READINESS_OFF[l] || !isOff(READINESS_OFF[l])),    ['Vendor / customer licences expiring within 90 days', licences]
   ];
   shell('readiness', `<div class="spread"><div><h1>Inspection readiness</h1><p class="muted">Items an inspector is likely to ask about first. Each list links to the records.</p></div></div>
-    <div class="kpis"><div class="kpi ${compliance >= 95 ? 'ok' : 'alert'}"><b>${compliance}%</b>Training compliance (target 95%)</div>${atrTile()}${items.map(([l, list], i) => `<a class="kpi ${list.length ? 'alert' : 'ok'}" href="#/readiness" data-scroll="r${i}"><b>${list.length}</b>${esc(l)}</a>`).join('')}</div>
+    <div class="kpis">${isOff('training') ? '' : `<div class="kpi ${compliance >= 95 ? 'ok' : 'alert'}"><b>${compliance}%</b>Training compliance (target 95%)</div>`}${isOff('atreviews') ? '' : atrTile()}${items.map(([l, list], i) => `<a class="kpi ${list.length ? 'alert' : 'ok'}" href="#/readiness" data-scroll="r${i}"><b>${list.length}</b>${esc(l)}</a>`).join('')}</div>
     <div class="panel no-print"><h2>Inspection pack</h2><p class="muted small">Export record lists for a period — for the front room / back room during an inspection.</p>
       <div class="row"><label>From <input type="date" id="pf" value="${new Date(Date.now() - 365 * 864e5).toISOString().slice(0, 10)}"></label><label>To <input type="date" id="pt" value="${t}"></label>
       <select id="pm" style="max-width:240px">${Object.entries(MODS).filter(([, m]) => canSeeModule(m)).map(([k, m]) => `<option value="${k}">${esc(m.name)}</option>`).join('')}</select><button class="btn primary" id="pe">Export list</button></div></div>

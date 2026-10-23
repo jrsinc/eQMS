@@ -1124,6 +1124,8 @@
   // Enrich: every transition from any open state to "Reopened" is not allowed; closures are final.
   // phone: country code and a 10-digit number (+1 6315551234, +91-9876543210); e-mail: name@domain.tld
   const PHONE_RE = /^\+\d{1,3}[ -]?\d{10}$/, EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
-  const api = { PHONE_RE, EMAIL_RE, supRisk, ROLES, MAIN_ROLES, DERIVED_ROLES, MODULES, SITES, DEPTS, DEPT_CODES, setDepartments, rpnLevel, fmeaRow, trainingScore, PASS_MARK, TRAINER_PARAMS, TRAINER_PASS, RETENTION };
+  // module groups switched off for now: nobody sees them, administrators included (MODULE_GROUPS_OFF in .env overrides the list)
+  const GROUPS_OFF = ['Compliance', 'Clinical supply', 'Documents & training'];
+  const api = { GROUPS_OFF, PHONE_RE, EMAIL_RE, supRisk, ROLES, MAIN_ROLES, DERIVED_ROLES, MODULES, SITES, DEPTS, DEPT_CODES, setDepartments, rpnLevel, fmeaRow, trainingScore, PASS_MARK, TRAINER_PARAMS, TRAINER_PASS, RETENTION };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.QMS_CONFIG = api;
 })(typeof window !== 'undefined' ? window : globalThis);

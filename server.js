@@ -13,7 +13,7 @@ const tls = require('node:tls');
 const { DatabaseSync } = require('node:sqlite');
 // pdf-lib 1.17.1 (MIT, vendor/pdf-lib.LICENSE.md) – builds the merged PDF report; vendored so the app still installs no npm packages
 const PDFLib = require('./vendor/pdf-lib.min.js');
-const { MODULES, ROLES, DERIVED_ROLES, DEPTS, setDepartments, supRisk, PHONE_RE, EMAIL_RE, trainingScore, PASS_MARK, TRAINER_PARAMS, TRAINER_PASS, RETENTION } = require('./public/modules.js');
+const { GROUPS_OFF, MODULES, ROLES, DERIVED_ROLES, DEPTS, setDepartments, supRisk, PHONE_RE, EMAIL_RE, trainingScore, PASS_MARK, TRAINER_PARAMS, TRAINER_PASS, RETENTION } = require('./public/modules.js');
 // change control states from pre-approval onwards (the change may be implemented)
 const CC_APPROVED = ['Optional Approvals', 'Implementation', 'QA Closure Review', 'Closed – EC Pending', 'Closed'];
 
@@ -257,7 +257,7 @@ const hasRole = (u, roles) => roles.includes('any') || u.roles.some(r => roles.i
 // JRS/SOP/QAS/009: signature registration is renewed every 5 years
 const esigCurrent = (u) => !!u.esig_accepted && new Date(u.esig_accepted) > new Date(Date.now() - REREGISTER_YEARS * 365.25 * 864e5);
 const pub = (u) => ({ username: u.username, fullname: u.fullname, email: u.email, roles: u.roles, mustChange: !!u.must_change, esigAccepted: esigCurrent(u), csrf: u.csrf,
-  department: u.department || '', hodOf: u.hodOf || [], deptsUnder: u.deptsUnder || [], allAccess: allAccess(u), canEditOrg: canEditOrg(u) });
+  department: u.department || '', hodOf: u.hodOf || [], deptsUnder: u.deptsUnder || [], allAccess: allAccess(u), canEditOrg: canEditOrg(u), modulesOff: [...OFF_TYPES] });
 
 // ---------- helpers ----------
 class HttpError extends Error { constructor(code, msg, extra) { super(msg); this.code = code; this.extra = extra; } }
@@ -449,13 +449,17 @@ const canEditSection = (s, rec, user) => !s || !s.edit || (s.edit[rec.status] ||
     : hasRole(user, [r])) || (allAccess(user) && (s.edit[rec.status] || []).length > 0);
 // Confidential modules: hideFrom = invisible to users whose roles are all listed (e.g. external auditors);
 // visibleTo = visible only to users holding one of the listed roles (e.g. audit trail reviews: QA and admin)
+// switched-off module groups (modules.js GROUPS_OFF, or MODULE_GROUPS_OFF="Group A,Group B" in .env; empty = none): hidden from everyone
+const OFF_GROUPS = process.env.MODULE_GROUPS_OFF !== undefined ? process.env.MODULE_GROUPS_OFF.split(',').map(s => s.trim()).filter(Boolean) : GROUPS_OFF;
+const OFF_TYPES = new Set(Object.keys(MODULES).filter(k => OFF_GROUPS.includes(MODULES[k].group)));
 const hiddenFor = (user, type) => {
   const m = MODULES[type]; if (!m) return false;
+  if (OFF_TYPES.has(type)) return true;
   if (allAccess(user)) return false;
   if (m.visibleTo && !user.roles.some(r => m.visibleTo.includes(r))) return true;
   return !!m.hideFrom && user.roles.every(r => m.hideFrom.includes(r));
 };
-const HIDEABLE = Object.keys(MODULES).filter(k => MODULES[k].hideFrom || MODULES[k].visibleTo);
+const HIDEABLE = Object.keys(MODULES).filter(k => MODULES[k].hideFrom || MODULES[k].visibleTo || OFF_TYPES.has(k));
 // The audit trail, record history and version history are visible to QA, administrators and management only
 const canSeeAudit = (user) => user.roles.includes('qa') || allAccess(user);
 const needAudit = (user) => { if (!canSeeAudit(user)) fail(403, 'The audit trail and version history are visible to QA, administrators and management only.'); };

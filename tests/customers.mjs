@@ -15,7 +15,7 @@ const rects=(doc,p)=>{const look=(x)=>x instanceof PL.PDFRef?doc.context.lookup(
 // page content streams as text
 const contents=(doc,p)=>{const look=(x)=>x instanceof PL.PDFRef?doc.context.lookup(x):x;const c=look(p.node.get(PL.PDFName.of('Contents')));const parts=c instanceof PL.PDFArray?c.asArray().map(look):[c];return parts.map(s=>{let b=Buffer.from(s.contents);if(String(s.dict.get(PL.PDFName.of('Filter'))||'').includes('Flate'))b=inflateSync(b);return b.toString('latin1');}).join(' ');};
 const PORT = 26000 + Math.floor(Math.random() * 1000);
-const srv = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], { cwd: root, env: { ...process.env, DATA_DIR: mkdtempSync(join(tmpdir(), 'qms-cu-')), PORT: String(PORT), HOST: '127.0.0.1', SEED_DEMO: 'true', SMTP_HOST: '' }, stdio: 'ignore' });
+const srv = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], { cwd: root, env: { ...process.env, DATA_DIR: mkdtempSync(join(tmpdir(), 'qms-cu-')), PORT: String(PORT), HOST: '127.0.0.1', SEED_DEMO: 'true', MODULE_GROUPS_OFF: '', SMTP_HOST: '' }, stdio: 'ignore' });
 const B = 'http://127.0.0.1:' + PORT;
 for (let i = 0; i < 150; i++) { try { await fetch(B + '/api/health'); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
 let failed = 0;

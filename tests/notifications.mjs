@@ -35,7 +35,7 @@ const smtp = net.createServer((s) => {
 });
 await new Promise(r => smtp.listen(0, '127.0.0.1', r));
 const PORT = 25000 + Math.floor(Math.random() * 1000);
-const srv = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], { cwd: root, env: { ...process.env, DATA_DIR: mkdtempSync(join(tmpdir(), 'qms-nt-')), PORT: String(PORT), HOST: '127.0.0.1', SEED_DEMO: 'true',
+const srv = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], { cwd: root, env: { ...process.env, DATA_DIR: mkdtempSync(join(tmpdir(), 'qms-nt-')), PORT: String(PORT), HOST: '127.0.0.1', SEED_DEMO: 'true', MODULE_GROUPS_OFF: '',
   SMTP_HOST: '127.0.0.1', SMTP_PORT: String(smtp.address().port), SMTP_FROM: 'eqms@jrs.test', SMTP_USER: '', APP_URL: 'http://qms.test:8080' }, stdio: 'ignore' });
 const B = 'http://127.0.0.1:' + PORT;
 for (let i = 0; i < 150; i++) { try { await fetch(B + '/api/health'); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
