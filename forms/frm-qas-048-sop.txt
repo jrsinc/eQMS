@@ -1,0 +1,81 @@
+# List of Controlled Documents – SOP, JRS/FRM/QAS/048 v1.0 (list version 2.0, updated 05-Oct-2026, related SOP JRS/SOP/QAS/021)
+# Loaded once into the controlled SOP register when it has no SOPs. "## " lines are the sections.
+# number | title | version | effective date
+## Administrations SOP
+JRS/SOP/ADM/001|JRS Assets Management|1.0|2024-01-22
+## Operations SOP
+JRS/SOP/OPS/001|Receive inquiry and Order Process for Comparator Sourcing and ancillary supplies|3.0|2026-08-07
+JRS/SOP/OPS/002|Handling of Client communication|3.0|2026-08-03
+JRS/SOP/OPS/003|Receipt and inspection of Supplies|3.0|2025-04-15
+JRS/SOP/OPS/004|Procedure for Storage and Distribution|9.0|2025-10-15
+JRS/SOP/OPS/005|Logistic Management|3.0|2026-08-03
+JRS/SOP/OPS/006|Controlled temperature packing and use of loggers|3.0|2026-08-07
+JRS/SOP/OPS/007|Use of Validated package|3.0|2026-08-06
+JRS/SOP/OPS/008|Inventory verification and Balance sheet|3.0|2026-08-06
+JRS/SOP/OPS/009|Managing third party warehouse|3.0|2026-08-06
+JRS/SOP/OPS/010|Return of Clinical trial Material|4.0|2026-08-31
+JRS/SOP/OPS/011|Storage of Returned Clinical trial Material|3.0|2024-01-22
+JRS/SOP/OPS/012|Destruction of Clinical trial Material|3.0|2025-03-31
+JRS/SOP/OPS/013|Recall or Withdrawal Supplies|3.0|2025-03-31
+JRS/SOP/OPS/014|Anti-Counterfeiting Process|3.0|2026-08-06
+JRS/SOP/OPS/015|Cleaning, disinfection procedure and Pest Control Procedure|4.0|2025-03-31
+JRS/SOP/OPS/016|Equipment and Maintenance|4.0|2024-05-07
+JRS/SOP/OPS/017|Security and Surveillance|3.0|2024-06-10
+JRS/SOP/OPS/019|Personal and Records|3.0|2026-08-06
+JRS/SOP/OPS/020|Control, Containment and Clearance of Spillage|2.0|2024-06-10
+JRS/SOP/OPS/021|Handling used and returned shipper box|2.0|2026-08-06
+JRS/SOP/OPS/022|Disaster Recovery and Business Continuity Plan|4.0|2025-01-30
+JRS/SOP/OPS/023|Use of Electronic Signature|1.0|2024-01-22
+JRS/SOP/OPS/024|Bartender Software Validation|1.0|2024-01-22
+JRS/SOP/OPS/025|Validation of Zebra Printer|1.0|2024-01-22
+JRS/SOP/OPS/026|Final Trial Accountability and Reconciliation|1.0|2024-09-16
+JRS/SOP/OPS/027|Usage of track and trace Rx for DSCSA compliance|1.0|2024-09-16
+JRS/SOP/OPS/030|Handling Of Hazardous Materials as Per 49 CFR/IATA|1.0|2025-07-16
+JRS/SOP/OPS/031|Operation and Cleaning of Freezer|1.0|2026-01-06
+JRS/SOP/OPS/032|Operation And Cleaning of FRC-510 Sealing Machine|2.0|2026-08-14
+JRS/SOP/OPS/033|Communication Of Unblinded Information|1.0|2026-03-12
+JRS/SOP/OPS/034|Refurbishment of Reusable Validated Shippers|1.0|2026-04-27
+## Packaging SOP
+JRS/SOP/PKG/001|Management of Secondary Packaging activities|5.0|2026-09-01
+JRS/SOP/PKG/003|Label Design|2.0|2025-05-15
+JRS/SOP/PKG/004|Label Printing|4.0|2026-09-30
+JRS/SOP/PKG/005|Designing and ordering the packaging components|2.0|2026-07-10
+JRS/SOP/PKG/006|Retention of Sample Packaged Kit|2.0|2026-07-10
+JRS/SOP/PKG/007|Issuance of Packaging Material from Warehouse|1.0|2024-01-22
+JRS/SOP/PKG/009|Blank Label Stock Creation|1.0|2024-01-22
+JRS/SOP/PKG/010|Additional Labeling of Clinical Trial Material After Initial Release|1.0|2024-09-16
+JRS/SOP/PKG/011|Creation and Maintenance of Medication list 1.0|1.0|2024-09-16
+## Human Resource Management SOP
+JRS/SOP/HRM/001|Human Resource Management|3.0|2023-12-01
+JRS/SOP/HRM/002|Onboarding Process for New Employee|1.0|2024-01-22
+## Quality Assurance SOP
+JRS/SOP/QAS/001|Quality Management Manual|3.0|2025-02-07
+JRS/SOP/QAS/002|Handling External Audit|6.0|2025-04-30
+JRS/SOP/QAS/003|Training, Plan and Record|5.0|2026-09-11
+JRS/SOP/QAS/004|Self-Inspection|4.0|2025-04-15
+JRS/SOP/QAS/005|Supplier Qualification Program|7.0|2025-05-15
+JRS/SOP/QAS/006|Corrective and Preventive Action|3.0|2026-08-31
+JRS/SOP/QAS/007|Change Control|5.0|2026-02-16
+JRS/SOP/QAS/008|Regulatory and Compliance|3.0|2024-05-27
+JRS/SOP/QAS/009|Register of Signature|3.0|2026-08-21
+JRS/SOP/QAS/010|New Customer Creation|3.0|2025-04-30
+JRS/SOP/QAS/011|Good Documentation Practice|2.0|2026-08-21
+JRS/SOP/QAS/012|Record Retention Program|2.0|2024-06-10
+JRS/SOP/QAS/013|Calibration Program|2.0|2026-08-21
+JRS/SOP/QAS/015|Current Good Manufacturing Practices (21 CFR Part 210)|1.0|2024-01-22
+JRS/SOP/QAS/016|Current Good Manufacturing Practices (21 CFR Part 211)|1.0|2024-01-22
+JRS/SOP/QAS/017|Current Good Manufacturing Practices (21 CFR Part 212)|1.0|2024-01-22
+JRS/SOP/QAS/018|[GLB] Master Validation Plan|3.0|2026-10-05
+JRS/SOP/QAS/019|[GLB] Quality Management Review|1.0|2025-03-07
+JRS/SOP/QAS/020|Quality Risk Management|1.0|2025-04-15
+JRS/SOP/QAS/021|[GLB] Document Management Procedure|1.0|2026-06-15
+JRS/SOP/QAS/022|[GLB] Investigation Management|1.0|2026-09-30
+## Policies
+JRS/POL/HRM/001|Quality Policy|1.0|2023-07-15
+JRS/POL/HRM/002|Anti-Bribery and Anti-Corruption Policy|1.0|2023-07-15
+JRS/POL/HRM/003|Modern Slavery and Human Trafficking Policy|1.0|2023-07-15
+JRS/POL/HRM/004|Environment, Health, and Safety Policy|2.0|2026-09-23
+JRS/POL/HRM/005|Data Retention Policy|1.0|2023-07-15
+JRS/POL/HRM/006|Information Technology Policy|1.0|2023-07-15
+JRS/POL/HRM/007|Data Integrity Policy|1.0|2023-07-15
+JRS/POL/HRM/008|Data Protection Policy|2.0|2026-04-28

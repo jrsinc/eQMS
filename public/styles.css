@@ -237,3 +237,4 @@ tr.unread td { background: var(--accent-soft); }
 .doc-req .doc-label { font-weight: 600; min-width: 190px; }
 .small-btn { padding: .2rem .6rem; font-size: .82rem; }
 .kv th { width: 30%; text-align: left; }
+.role-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: .2rem .8rem; }

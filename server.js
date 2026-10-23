@@ -1721,6 +1721,7 @@ ${body}
 // copying text, editing, annotating and form changes are not permitted. The owner password is random and not kept.
 const PDF_PAD = Buffer.from('28BF4E5E4E758A4164004E56FFFA01082E2E00B6D0683E802F0CA9FE6453697A', 'hex');
 const PDF_PRINT_ONLY = -1852; // bits 3 (print) and 12 (high-quality print) plus the reserved bits
+const PDF_VIEW_ONLY = PDF_PRINT_ONLY & ~(4 | 2048); // no printing either (on-screen reading)
 function rc4(key, data) {
   const s = Array.from({ length: 256 }, (_, i) => i); let j = 0;
   for (let i = 0; i < 256; i++) { j = (j + s[i] + key[i % key.length]) & 255; [s[i], s[j]] = [s[j], s[i]]; }
@@ -1728,11 +1729,11 @@ function rc4(key, data) {
   for (let k = 0; k < data.length; k++) { i = (i + 1) & 255; j = (j + s[i]) & 255; [s[i], s[j]] = [s[j], s[i]]; out[k] = data[k] ^ s[(s[i] + s[j]) & 255]; }
   return out;
 }
-async function lockPdf(bytes) {
+async function lockPdf(bytes, perms = PDF_PRINT_ONLY) {
   const { PDFDocument, PDFHexString, PDFString, PDFDict, PDFArray, PDFRawStream } = PDFLib;
   const doc = await PDFDocument.load(bytes, { updateMetadata: false }), ctx = doc.context;
   const md5 = (b) => crypto.createHash('md5').update(b).digest(), xor = (k, n) => Buffer.from(k.map(b => b ^ n));
-  const id0 = crypto.randomBytes(16), pb = Buffer.alloc(4); pb.writeInt32LE(PDF_PRINT_ONLY);
+  const id0 = crypto.randomBytes(16), pb = Buffer.alloc(4); pb.writeInt32LE(perms);
   let ok = md5(crypto.randomBytes(32)); for (let i = 0; i < 50; i++) ok = md5(ok);                       // algorithm 3: owner key
   let O = rc4(ok, PDF_PAD); for (let i = 1; i <= 19; i++) O = rc4(xor(ok, i), O);
   let key = md5(Buffer.concat([PDF_PAD, O, pb, id0])); for (let i = 0; i < 50; i++) key = md5(key);       // algorithm 2: file key (empty user password)
@@ -1749,12 +1750,12 @@ async function lockPdf(bytes) {
     const k = objKey(ref.objectNumber, ref.generationNumber);
     if (obj instanceof PDFRawStream) { enc(obj.dict, k); obj.contents = rc4(k, Buffer.from(obj.contents)); } else enc(obj, k);
   }
-  ctx.trailerInfo.Encrypt = ctx.register(ctx.obj({ Filter: 'Standard', V: 2, R: 3, Length: 128, P: PDF_PRINT_ONLY, O: PDFHexString.of(O.toString('hex')), U: PDFHexString.of(U.toString('hex')) }));
+  ctx.trailerInfo.Encrypt = ctx.register(ctx.obj({ Filter: 'Standard', V: 2, R: 3, Length: 128, P: perms, O: PDFHexString.of(O.toString('hex')), U: PDFHexString.of(U.toString('hex')) }));
   ctx.trailerInfo.ID = ctx.obj([PDFHexString.of(id0.toString('hex')), PDFHexString.of(id0.toString('hex'))]);
   return Buffer.from(await doc.save({ useObjectStreams: false, updateFieldAppearances: false }));
 }
 // Register of issued controlled forms (QA, administrators, management)
-route('GET', '/api/form-issues', (ctx) => { needAudit(ctx.user); return db.prepare('SELECT no,form_code,form_title,record_id,record_number,record_title,issued_to,issued_name,dept,ts FROM form_issues ORDER BY ts DESC').all(); });
+route('GET', '/api/form-issues', (ctx) => { needAudit(ctx.user); return db.prepare('SELECT no,form_code,form_title,record_id,record_number,record_title,issued_to,issued_name,dept,ts,purpose,form_version,copy_type,expiry FROM form_issues ORDER BY ts DESC').all(); });
 // Master lists (qualified customers, approved supplier list JRS/FRM/QAS/005): PDF with the company header, or CSV for Excel
 route('GET', '/api/master-list/:type', async (ctx) => {
   const mod = MODULES[ctx.params.type], cfg = mod && mod.masterList; if (!cfg) fail(404, 'No master list for this module.');
@@ -1823,10 +1824,10 @@ route('GET', '/api/records/:id/agenda.pdf', async (ctx) => {
   return { __raw: Buffer.from(await doc.save()), headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${safeName(rec.number)} audit agenda.pdf"` } };
 });
 const FORMS_DIR = path.join(__dirname, 'forms');
-function nextIssueNo() {
-  const y = new Date().getFullYear(), key = 'formIssue:' + y, cur = +((db.prepare('SELECT value FROM settings WHERE key=?').get(key) || {}).value || 0) + 1;
+function nextIssueNo(prefix = 'FI') {
+  const y = new Date().getFullYear(), key = (prefix === 'FI' ? 'formIssue:' : `issue${prefix}:`) + y, cur = +((db.prepare('SELECT value FROM settings WHERE key=?').get(key) || {}).value || 0) + 1;
   db.prepare('INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, String(cur));
-  return `FI-${y}-${String(cur).padStart(3, '0')}`;
+  return `${prefix}-${y}-${String(cur).padStart(3, '0')}`;
 }
 route('GET', '/api/forms/:type', async (ctx) => {
   const mod = MODULES[ctx.params.type], cfg = mod && mod.issueForm; if (!cfg) fail(404, 'No controlled form for this module.');
@@ -1841,19 +1842,12 @@ route('GET', '/api/forms/:type', async (ctx) => {
     return { __raw: Buffer.from(issued.pdf), headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${cfg.code.replace(/\//g, '-')} ${issued.no}.pdf"` } };
   }
   if (rec && cfg.when && !cfg.when(rec.data, rec.status)) fail(409, `${cfg.code} is not needed for ${rec.number} at stage "${rec.status}".`);
-  const { PDFDocument, StandardFonts, rgb } = PDFLib;
+  const { PDFDocument } = PDFLib;
   const doc = await PDFDocument.load(fs.readFileSync(path.join(FORMS_DIR, cfg.file)));
-  const F = await doc.embedFont(StandardFonts.HelveticaBold), F2 = await doc.embedFont(StandardFonts.Helvetica);
   if (rec) { const form = doc.getForm(); for (const [field, k] of Object.entries(cfg.prefill || {})) { try { form.getTextField(field).setText(pdfText(k === '#number' ? rec.number : rec.data[k] || '')); } catch { /* field not in this form version */ } } }
   const no = nextIssueNo(), who = `${ctx.user.fullname}${ctx.user.department ? ' (' + ctx.user.department + ')' : ''}`;
   const lines = [`ISSUED COPY – ${no}`, `Issued to ${who} on ${tsText(now())}`, rec ? `For ${rec.number} – ${rec.data.title || ''}` : 'Blank form – not valid without the issue number'];
-  const red = rgb(0.75, 0.1, 0.1);
-  for (const p of doc.getPages()) {
-    // top margin, above the form header: clear of the form, the form number and the page number in the footer
-    const { width, height } = p.getSize(), w = 250, h = 27, x = width - w - 18, y = height - h - 4;
-    p.drawRectangle({ x, y, width: w, height: h, borderColor: red, borderWidth: 1.1, color: rgb(1, 1, 1), opacity: 0.92, borderOpacity: 1 });
-    lines.forEach((l, i) => p.drawText(pdfText(l).slice(0, 64), { x: x + 6, y: y + h - 9.5 - i * 7.6, size: i ? 6 : 7.5, font: i ? F2 : F, color: red }));
-  }
+  await stampPages(doc, lines, 'blue'); // left side of the footer, blue: issued copy
   doc.setTitle(`${cfg.code} – issued copy ${no}`);
   const buf = cfg.lockCopy ? await lockPdf(await doc.save({ useObjectStreams: false })) : Buffer.from(await doc.save());
   if (rec) { (rec.data.formIssues ||= []).push({ no, by: ctx.user.username, ts: now() }); saveRecord(rec); }
@@ -1864,39 +1858,64 @@ route('GET', '/api/forms/:type', async (ctx) => {
   return { __raw: buf, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${name}"` } };
 });
 
-// ---------- controlled forms register (List of Controlled Documents JRS/FRM/QAS/048, JRS/SOP/QAS/021) ----------
-// QA adds and changes forms; everyone can view the list. Each version keeps its signed master and the in-use (blank) form.
-// A new version supersedes the previous one; QA can make a form obsolete. Copies are issued by QA from the current version only.
+// ---------- controlled documents: forms and SOPs (List of Controlled Documents JRS/FRM/QAS/048, JRS/SOP/QAS/021) ----------
+// QA adds and changes entries and signs every change; each version keeps its signed master and the in-use file. A new version
+// supersedes the previous one (on its effective date); QA can make an entry obsolete. Copies are issued and signed by QA from
+// the current version only. Forms: everyone views the list. SOPs: QA decides by role who can see each SOP.
 db.exec(`CREATE TABLE IF NOT EXISTS cforms (id TEXT PRIMARY KEY, number TEXT UNIQUE NOT NULL, title TEXT NOT NULL, section TEXT, sop TEXT,
   status TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS cform_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, form_id TEXT NOT NULL, version TEXT NOT NULL, effective_date TEXT,
   status TEXT NOT NULL, change_note TEXT, master_name TEXT, master BLOB, master_sha TEXT, inuse_name TEXT, inuse BLOB, inuse_sha TEXT,
   created_by TEXT NOT NULL, created_at TEXT NOT NULL, ended_at TEXT, ended_by TEXT, end_reason TEXT);`);
-for (const col of ['purpose', 'form_version', 'issued_by', 'copy_label']) { try { db.exec(`ALTER TABLE form_issues ADD COLUMN ${col} TEXT`); } catch { /* already present */ } }
-const CF_SECTIONS = ['Annexure of Operations SOP', 'Annexure Packaging SOP', 'Annexure Human Resource Management SOP', 'Annexure of Quality Assurance SOP'];
-const CF_NUMBER = /^JRS\/FRM\/[A-Z]{2,4}\/\d{3}$/;
-const CF_VERSION = /^\d{1,2}\.\d$/;
-(function seedControlledForms() {
-  if (db.prepare('SELECT COUNT(*) n FROM cforms').get().n) return;
-  const src = path.join(__dirname, 'forms', 'frm-qas-048.txt'); if (!fs.existsSync(src)) return;
-  // in-use files already kept in forms/ for the forms the eQMS issues from records
-  const files = { 'JRS/FRM/QAS/004': 'JRS-FRM-QAS-004 v3.0 Vendor qualification checklist.pdf', 'JRS/FRM/QAS/010': 'JRS-FRM-QAS-010 v2.0 New customer creation form.pdf' };
-  let section = '', n = 0; const ts = now();
-  const addForm = db.prepare('INSERT INTO cforms (id,number,title,section,sop,status,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)');
-  const addVer = db.prepare('INSERT INTO cform_versions (form_id,version,effective_date,status,change_note,inuse_name,inuse,inuse_sha,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)');
-  for (const line of fs.readFileSync(src, 'utf8').split(/\r?\n/)) {
-    if (line.startsWith('## ')) { section = line.slice(3).trim(); continue; }
-    if (!line.trim() || line.startsWith('#')) continue;
-    const [number, title, version, eff] = line.split('|').map(s => s.trim()), id = uid();
-    const f = files[number] && path.join(__dirname, 'forms', files[number]), buf = f && fs.existsSync(f) ? fs.readFileSync(f) : null;
-    addForm.run(id, number, title, section, 'JRS/SOP/QAS/021', 'Effective', 'system', ts);
-    addVer.run(id, version, eff, 'Effective', 'From the List of Controlled Documents JRS/FRM/QAS/048 v1.0 (05-Oct-2026)', buf ? files[number] : null, buf, buf ? sha256(buf) : null, 'system', ts);
-    n++;
+try { db.exec("ALTER TABLE cforms ADD COLUMN kind TEXT DEFAULT 'form'"); } catch { /* already present */ } // form | sop
+try { db.exec('ALTER TABLE cforms ADD COLUMN roles TEXT'); } catch { /* already present */ } // SOP: JSON list of roles that can see it, ["all"] = everyone
+for (const col of ['purpose', 'form_version', 'issued_by', 'copy_label', 'copy_type', 'expiry']) { try { db.exec(`ALTER TABLE form_issues ADD COLUMN ${col} TEXT`); } catch { /* already present */ } }
+const CD_VERSION = /^\d{1,2}\.\d$/;
+const CD = {
+  form: { kind: 'form', base: '/api/cforms', noun: 'form', Noun: 'Form', label: 'Controlled form', list: 'frm-qas-048.txt', listTitle: 'List of Controlled Documents – Forms',
+    number: /^JRS\/FRM\/[A-Z]{2,4}\/\d{3}$/, example: 'JRS/FRM/QAS/056', inuse: 'in-use form',
+    sections: ['Annexure of Operations SOP', 'Annexure Packaging SOP', 'Annexure Human Resource Management SOP', 'Annexure of Quality Assurance SOP'],
+    // in-use files already kept in forms/ for the forms the eQMS issues from records
+    files: { 'JRS/FRM/QAS/004': 'JRS-FRM-QAS-004 v3.0 Vendor qualification checklist.pdf', 'JRS/FRM/QAS/010': 'JRS-FRM-QAS-010 v2.0 New customer creation form.pdf' } },
+  sop: { kind: 'sop', base: '/api/csops', noun: 'SOP', Noun: 'SOP', label: 'Controlled SOP', list: 'frm-qas-048-sop.txt', listTitle: 'List of Controlled Documents – SOP',
+    number: /^JRS\/(SOP|POL)\/[A-Z]{2,4}\/\d{3}$/, example: 'JRS/SOP/QAS/023', inuse: 'SOP (PDF)',
+    sections: ['Administrations SOP', 'Operations SOP', 'Packaging SOP', 'Human Resource Management SOP', 'Quality Assurance SOP', 'Policies'], files: {} }
+};
+const STAMP_COLOURS = { blue: [0.08, 0.27, 0.68], green: [0.05, 0.45, 0.20], red: [0.75, 0.10, 0.10] };
+// stamp on every page, left side of the footer: blue = issued copy, green = controlled / uncontrolled copy, red = superseded / obsolete
+async function stampPages(doc, lines, colour) {
+  const { StandardFonts, rgb } = PDFLib, c = rgb(...STAMP_COLOURS[colour]);
+  const F = await doc.embedFont(StandardFonts.HelveticaBold), F2 = await doc.embedFont(StandardFonts.Helvetica);
+  for (const p of doc.getPages()) {
+    const w = 250, h = 8 + lines.length * 7.6, x = 18, y = 4;
+    p.drawRectangle({ x, y, width: w, height: h, borderColor: c, borderWidth: 1.1, color: rgb(1, 1, 1), opacity: 0.92, borderOpacity: 1 });
+    lines.forEach((l, i) => p.drawText(pdfText(l).slice(0, 64), { x: x + 6, y: y + h - 9.5 - i * 7.6, size: i ? 6 : 7.5, font: i ? F2 : F, color: c }));
   }
-  audit(null, 'Controlled forms loaded', null, 'cforms', null, `${n} forms from JRS/FRM/QAS/048 v1.0`, 'Initial list of controlled forms');
+}
+(function seedControlledDocuments() {
+  for (const K of Object.values(CD)) {
+    if (db.prepare('SELECT COUNT(*) n FROM cforms WHERE kind=?').get(K.kind).n) continue;
+    const src = path.join(__dirname, 'forms', K.list); if (!fs.existsSync(src)) continue;
+    let section = '', n = 0; const ts = now();
+    const addDoc = db.prepare('INSERT INTO cforms (id,number,title,section,sop,status,created_by,created_at,kind,roles) VALUES (?,?,?,?,?,?,?,?,?,?)');
+    const addVer = db.prepare('INSERT INTO cform_versions (form_id,version,effective_date,status,change_note,inuse_name,inuse,inuse_sha,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)');
+    for (const line of fs.readFileSync(src, 'utf8').split(/\r?\n/)) {
+      if (line.startsWith('## ')) { section = line.slice(3).trim(); continue; }
+      if (!line.trim() || line.startsWith('#')) continue;
+      const [number, title, version, eff] = line.split('|').map(s => s.trim()), id = uid();
+      const f = K.files[number] && path.join(__dirname, 'forms', K.files[number]), buf = f && fs.existsSync(f) ? fs.readFileSync(f) : null;
+      addDoc.run(id, number, title, section, K.kind === 'form' ? 'JRS/SOP/QAS/021' : '', 'Effective', 'system', ts, K.kind, K.kind === 'sop' ? '["all"]' : null);
+      addVer.run(id, version, eff, 'Effective', 'From the List of Controlled Documents JRS/FRM/QAS/048 v1.0 (05-Oct-2026)', buf ? K.files[number] : null, buf, buf ? sha256(buf) : null, 'system', ts);
+      n++;
+    }
+    audit(null, `${K.label}s loaded`, null, 'cforms', null, `${n} ${K.noun}s from JRS/FRM/QAS/048 v1.0`, `Initial list of controlled ${K.noun}s`);
+  }
 })();
 const isQa = (u) => hasRole(u, ['qa']);
 const needQa = (u, what) => { if (!isQa(u)) fail(403, `Only QA ${what}.`); };
+const cdRoles = (f) => { try { return JSON.parse(f.roles || '["all"]'); } catch { return ['all']; } };
+// who can see an entry: QA all of them; others the effective forms, and the effective SOPs their role was given access to
+const cdCanSee = (u, f) => isQa(u) || (f.status === 'Effective' && (f.kind !== 'sop' || allAccess(u) || cdRoles(f).includes('all') || u.roles.some(r => cdRoles(f).includes(r))));
 // a new version with a later effective date waits as Approved; on its effective date it supersedes the version in use
 const cfPending = (id) => db.prepare("SELECT * FROM cform_versions WHERE form_id=? AND status='Approved' ORDER BY id DESC LIMIT 1").get(id);
 function cfCurrent(id) {
@@ -1905,173 +1924,269 @@ function cfCurrent(id) {
     const old = db.prepare("SELECT * FROM cform_versions WHERE form_id=? AND status='Effective' ORDER BY id DESC LIMIT 1").get(id), num = (db.prepare('SELECT number FROM cforms WHERE id=?').get(id) || {}).number;
     if (old) db.prepare("UPDATE cform_versions SET status='Superseded', ended_at=?, ended_by=?, end_reason=? WHERE id=?").run(now(), p.created_by, `Superseded by v${p.version}`, old.id);
     db.prepare("UPDATE cform_versions SET status='Effective' WHERE id=?").run(p.id);
-    audit(null, 'Controlled form version effective', null, 'version', old ? `v${old.version} (now Superseded)` : null, `${num} v${p.version} effective ${p.effective_date}`, 'Effective date reached');
+    audit(null, 'Controlled document version effective', null, 'version', old ? `v${old.version} (now Superseded)` : null, `${num} v${p.version} effective ${p.effective_date}`, 'Effective date reached');
   }
   return db.prepare("SELECT * FROM cform_versions WHERE form_id=? AND status<>'Approved' ORDER BY id DESC LIMIT 1").get(id);
 }
 const cfVersionRow = (v, qa) => v && { id: v.id, version: v.version, effectiveDate: v.effective_date, status: v.status, changeNote: v.change_note,
   master: v.master_name ? { name: v.master_name, sha256: qa ? v.master_sha : undefined } : null, inuse: v.inuse_name ? { name: v.inuse_name, sha256: qa ? v.inuse_sha : undefined } : null,
   createdBy: userLabel(v.created_by), createdAt: v.created_at, endedAt: v.ended_at, endedBy: v.ended_by ? userLabel(v.ended_by) : null, endReason: v.end_reason };
-function cfGet(id) { const f = db.prepare('SELECT * FROM cforms WHERE id=?').get(id); if (!f) fail(404, 'Form not found'); return f; }
-// a file sent from the browser as { name, base64 }; the in-use form must be a PDF so issued copies can be stamped
-function cfFile(file, kind) {
+// a file sent from the browser as { name, base64 }; the in-use file must be a PDF so issued copies can be stamped
+function cfFile(file, kind, K) {
   if (!file || !file.base64) return null;
   const buf = Buffer.from(String(file.base64), 'base64'); if (!buf.length) fail(400, 'Empty file');
   if (buf.length > 25 * 1024 * 1024) fail(413, 'Maximum file size is 25 MB.');
-  if (kind === 'inuse' && kindOf(buf) !== 'pdf') fail(400, 'The in-use form must be a PDF: issued copies are stamped on every page.');
+  if (kind === 'inuse' && kindOf(buf) !== 'pdf') fail(400, `The ${K.inuse} must be a PDF: issued copies are stamped on every page.`);
   return { name: String(file.name || kind + '.pdf').slice(0, 200), buf, sha: sha256(buf) };
 }
 const cfNeedReason = (r) => { const s = String(r || '').trim(); if (!s) fail(400, 'Enter a reason.'); return s; };
+// every change and issue is e-signed (password); the signature is kept against the entry and its current files
+function cdSign(ctx, f, meaning, toState) { verifySignature(ctx.user, ctx.body); cdRecordSig(ctx, f, meaning, toState); }
+function cdRecordSig(ctx, f, meaning, toState) {
+  const v = db.prepare('SELECT * FROM cform_versions WHERE form_id=? ORDER BY id DESC LIMIT 1').get(f.id) || {};
+  db.prepare('INSERT INTO signatures (record_id,username,fullname,meaning,from_state,to_state,ts,content_hash) VALUES (?,?,?,?,?,?,?,?)')
+    .run('cd:' + f.id, ctx.user.username, ctx.user.fullname, meaning, f.status, toState || f.status, now(), sha256([f.number, f.title, v.version, v.effective_date, v.master_sha, v.inuse_sha].join('|')));
+}
+function cdNotify(username, subject, body) {
+  const nid = db.prepare('INSERT INTO notifications (username,record_id,record_number,subject,body,action,ts) VALUES (?,?,?,?,?,?,?)').run(username, null, null, subject, body + '\n\nJRS eQMS – automatic notification. Do not reply.', null, now()).lastInsertRowid;
+  queueMail((userRow(username) || {}).email, subject, body, nid);
+}
+const ROLE_KEYS = Object.keys(ROLES).filter(r => r !== 'numgen');
 
-route('GET', '/api/cforms', (ctx) => {
-  const qa = isQa(ctx.user);
-  const sec = (s) => { const i = CF_SECTIONS.indexOf(s); return i < 0 ? 99 : i; }; // annexures in the order of JRS/FRM/QAS/048
-  const rows = db.prepare('SELECT * FROM cforms ORDER BY number').all().filter(f => qa || f.status === 'Effective').sort((a, b) => sec(a.section) - sec(b.section) || a.number.localeCompare(b.number));
-  const issued = qa ? Object.fromEntries(db.prepare('SELECT form_code, COUNT(*) n FROM form_issues GROUP BY form_code').all().map(r => [r.form_code, r.n])) : {};
-  return rows.map(f => { const v = cfCurrent(f.id); return { id: f.id, number: f.number, title: f.title, section: f.section, sop: f.sop, status: f.status,
-    version: v.version, effectiveDate: v.effective_date, hasMaster: !!v.master_name, hasInuse: !!v.inuse_name, issued: issued[f.number] || 0 }; });
-});
-route('GET', '/api/cforms/:id', (ctx) => {
-  const f = cfGet(ctx.params.id), qa = isQa(ctx.user);
-  if (!qa && f.status !== 'Effective') fail(404, 'Form not found');
-  const cur = cfCurrent(f.id), versions = db.prepare('SELECT * FROM cform_versions WHERE form_id=? ORDER BY id DESC').all(f.id);
-  return { id: f.id, number: f.number, title: f.title, section: f.section, sop: f.sop, status: f.status, createdAt: f.created_at, updatedAt: f.updated_at, canEdit: qa,
-    current: cfVersionRow(cur, qa), pending: qa ? cfVersionRow(cfPending(f.id), true) || null : undefined,
-    // version history and issue record: QA only
-    versions: qa ? versions.map(v => cfVersionRow(v, true)) : undefined,
-    issues: qa ? db.prepare('SELECT no,form_version,issued_to,issued_name,dept,issued_by,purpose,copy_label,ts FROM form_issues WHERE form_code=? ORDER BY ts DESC, no DESC').all(f.number)
-      .map(r => ({ ...r, issued_by: r.issued_by ? userLabel(r.issued_by) : '' })) : undefined };
-});
-route('POST', '/api/cforms', (ctx) => {
-  needQa(ctx.user, 'adds forms to the list of controlled forms');
-  const b = ctx.body, number = String(b.number || '').trim().toUpperCase(), title = String(b.title || '').trim(), version = String(b.version || '').trim();
-  if (!CF_NUMBER.test(number)) fail(400, 'Form number: use the format JRS/FRM/QAS/056.');
-  if (!title) fail(400, 'Enter the form title.');
-  if (!CF_VERSION.test(version)) fail(400, 'Version: use the format 1.0.');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(b.effectiveDate || '')) fail(400, 'Enter the effective date.');
-  if (db.prepare('SELECT 1 FROM cforms WHERE number=?').get(number)) fail(409, `${number} is already in the list. Numbers of obsolete forms are not reused.`);
-  const master = cfFile(b.master, 'master'), inuse = cfFile(b.inuse, 'inuse'), id = uid(), ts = now();
-  db.prepare('INSERT INTO cforms (id,number,title,section,sop,status,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)')
-    .run(id, number, title, String(b.section || '').slice(0, 120), String(b.sop || '').trim().slice(0, 60), 'Effective', ctx.user.username, ts, ts);
-  db.prepare('INSERT INTO cform_versions (form_id,version,effective_date,status,change_note,master_name,master,master_sha,inuse_name,inuse,inuse_sha,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
-    .run(id, version, b.effectiveDate, 'Effective', String(b.changeNote || 'New form').slice(0, 500), master?.name ?? null, master?.buf ?? null, master?.sha ?? null, inuse?.name ?? null, inuse?.buf ?? null, inuse?.sha ?? null, ctx.user.username, ts);
-  audit(ctx.user, 'Controlled form added', null, 'cform', null, `${number} v${version} ${title} (effective ${b.effectiveDate})`, b.changeNote || 'New form', ctx.ip);
-  return { id, number };
-});
-route('PUT', '/api/cforms/:id', (ctx) => {
-  needQa(ctx.user, 'changes the list of controlled forms');
-  const f = cfGet(ctx.params.id), v = cfCurrent(f.id), b = ctx.body, reason = cfNeedReason(b.reason);
-  if (f.status !== 'Effective') fail(409, `${f.number} is ${f.status}.`);
-  const next = { title: b.title !== undefined ? String(b.title).trim() : f.title, section: b.section !== undefined ? String(b.section) : f.section, sop: b.sop !== undefined ? String(b.sop).trim() : f.sop };
-  if (!next.title) fail(400, 'Enter the form title.');
-  const eff = b.effectiveDate !== undefined ? String(b.effectiveDate) : v.effective_date;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(eff)) fail(400, 'Enter the effective date.');
-  let changes = 0;
-  for (const k of ['title', 'section', 'sop']) if ((next[k] || '') !== (f[k] || '')) { audit(ctx.user, 'Controlled form changed', null, k, f[k], next[k], `${f.number}: ${reason}`, ctx.ip); changes++; }
-  if (eff !== v.effective_date) { audit(ctx.user, 'Controlled form changed', null, 'effectiveDate', v.effective_date, eff, `${f.number} v${v.version}: ${reason}`, ctx.ip); changes++; }
-  if (changes) {
-    db.prepare('UPDATE cforms SET title=?,section=?,sop=?,updated_at=? WHERE id=?').run(next.title, next.section, next.sop, now(), f.id);
-    db.prepare('UPDATE cform_versions SET effective_date=? WHERE id=?').run(eff, v.id);
-  }
-  return { changes };
-});
-// signed master / in-use form of the current version (replacing one needs a reason; the old file stays in the audit trail by checksum)
-route('POST', '/api/cforms/:id/files', (ctx) => {
-  needQa(ctx.user, 'attaches the signed master and the in-use form');
-  const f = cfGet(ctx.params.id), v = cfCurrent(f.id), kind = ctx.body.kind;
-  if (!['master', 'inuse'].includes(kind)) fail(400, 'Choose the signed master or the in-use form.');
-  if (f.status !== 'Effective') fail(409, `${f.number} is ${f.status}.`);
-  const file = cfFile(ctx.body, kind); if (!file) fail(400, 'Choose a file.');
-  const old = v[kind + '_name'], reason = old ? cfNeedReason(ctx.body.reason) : ctx.body.reason || null;
-  db.prepare(`UPDATE cform_versions SET ${kind}_name=?, ${kind}=?, ${kind}_sha=? WHERE id=?`).run(file.name, file.buf, file.sha, v.id);
-  const label = kind === 'master' ? 'Signed master' : 'In-use form';
-  audit(ctx.user, `${label} ${old ? 'replaced' : 'attached'}`, null, 'cform', old ? `${old} (SHA-256 ${v[kind + '_sha'].slice(0, 16)}…)` : null, `${f.number} v${v.version}: ${file.name} (SHA-256 ${file.sha.slice(0, 16)}…)`, reason, ctx.ip);
-  return { sha256: file.sha };
-});
-// files of any version: QA only (others use issued copies)
-route('GET', '/api/cforms/:id/versions/:vid/:kind', (ctx) => {
-  needQa(ctx.user, 'opens the signed master and the in-use form; other users work on issued copies');
-  const f = cfGet(ctx.params.id), kind = ctx.params.kind;
-  const v = db.prepare('SELECT * FROM cform_versions WHERE id=? AND form_id=?').get(+ctx.params.vid, f.id);
-  if (!v || !['master', 'inuse'].includes(kind) || !v[kind]) fail(404, 'File not found');
-  const buf = Buffer.from(v[kind]); if (sha256(buf) !== v[kind + '_sha']) fail(500, 'Integrity check failed: file checksum does not match.');
-  audit(ctx.user, `${kind === 'master' ? 'Signed master' : 'In-use form'} downloaded`, null, 'cform', null, `${f.number} v${v.version} (${v.status}): ${v[kind + '_name']}`, null, ctx.ip);
-  return { __raw: buf, headers: { 'Content-Type': kindOf(buf) === 'pdf' ? 'application/pdf' : 'application/octet-stream', 'Content-Disposition': `attachment; filename="${encodeURIComponent(v[kind + '_name'])}"` } };
-});
-// new version: the previous version becomes Superseded
-route('POST', '/api/cforms/:id/versions', (ctx) => {
-  needQa(ctx.user, 'issues new versions of controlled forms');
-  const f = cfGet(ctx.params.id), v = cfCurrent(f.id), b = ctx.body, version = String(b.version || '').trim();
-  if (f.status !== 'Effective') fail(409, `${f.number} is ${f.status}. Obsolete forms cannot get a new version.`);
-  if (!CF_VERSION.test(version)) fail(400, 'Version: use the format 2.0.');
-  const pend = cfPending(f.id);
-  if (pend) fail(409, `v${pend.version} of ${f.number} is already approved and becomes effective on ${dmyText(pend.effective_date)}.`);
-  if (+version <= +v.version) fail(400, `The new version must be higher than the current version ${v.version}.`);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(b.effectiveDate || '')) fail(400, 'Enter the effective date of the new version.');
-  const note = cfNeedReason(b.changeNote), master = cfFile(b.master, 'master'), inuse = cfFile(b.inuse, 'inuse');
-  if (!master || !inuse) fail(400, 'Attach the signed master and the in-use form (PDF) of the new version.');
-  const ts = now(), later = b.effectiveDate > today();
-  if (!later) db.prepare("UPDATE cform_versions SET status='Superseded', ended_at=?, ended_by=?, end_reason=? WHERE id=?").run(ts, ctx.user.username, `Superseded by v${version}`, v.id);
-  db.prepare('INSERT INTO cform_versions (form_id,version,effective_date,status,change_note,master_name,master,master_sha,inuse_name,inuse,inuse_sha,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
-    .run(f.id, version, b.effectiveDate, later ? 'Approved' : 'Effective', note, master.name, master.buf, master.sha, inuse.name, inuse.buf, inuse.sha, ctx.user.username, ts);
-  if (b.title && String(b.title).trim() !== f.title) audit(ctx.user, 'Controlled form changed', null, 'title', f.title, String(b.title).trim(), `${f.number} v${version}`, ctx.ip);
-  db.prepare('UPDATE cforms SET title=?, updated_at=? WHERE id=?').run(String(b.title || '').trim() || f.title, ts, f.id);
-  audit(ctx.user, 'Controlled form new version', null, 'version', later ? `v${v.version} (in use until ${b.effectiveDate})` : `v${v.version} (now Superseded)`, `${f.number} v${version} ${later ? 'approved, effective' : 'effective'} ${b.effectiveDate}`, note, ctx.ip);
-  return { version, status: later ? 'Approved' : 'Effective' };
-});
-route('POST', '/api/cforms/:id/obsolete', (ctx) => {
-  needQa(ctx.user, 'makes controlled forms obsolete');
-  const f = cfGet(ctx.params.id), v = cfCurrent(f.id), reason = cfNeedReason(ctx.body.reason);
-  if (f.status !== 'Effective') fail(409, `${f.number} is already ${f.status}.`);
-  const ts = now();
-  db.prepare("UPDATE cform_versions SET status='Obsolete', ended_at=?, ended_by=?, end_reason=? WHERE form_id=? AND status IN ('Effective','Approved')").run(ts, ctx.user.username, reason, f.id);
-  db.prepare("UPDATE cforms SET status='Obsolete', updated_at=? WHERE id=?").run(ts, f.id);
-  audit(ctx.user, 'Controlled form made obsolete', null, 'status', 'Effective', `${f.number} v${v.version} Obsolete`, reason, ctx.ip);
-  return { status: 'Obsolete' };
-});
-// QA issues copies of the current version: who for, purpose and number of copies; each copy gets its own issue number
-route('POST', '/api/cforms/:id/issue', async (ctx) => {
-  needQa(ctx.user, 'issues controlled forms');
-  const f = cfGet(ctx.params.id), v = cfCurrent(f.id), b = ctx.body;
-  if (f.status !== 'Effective' || v.status !== 'Effective') fail(409, `${f.number} is ${f.status}: only the current effective version is issued.`);
-  if (b.version && String(b.version) !== v.version) fail(409, `Only the current version v${v.version} of ${f.number} can be issued.`);
-  if (v.effective_date > today()) fail(409, `${f.number} v${v.version} is effective from ${dmyText(v.effective_date)}.`); // a new form added ahead of its date
-  if (!v.inuse) fail(409, `Attach the in-use form of ${f.number} v${v.version} before issuing it.`);
-  const copies = Number(b.copies), purpose = String(b.purpose || '').trim();
-  if (!Number.isInteger(copies) || copies < 1 || copies > 50) fail(400, 'Number of copies: 1 to 50.');
-  if (!purpose) fail(400, 'Enter the purpose of the issue.');
-  const to = b.issuedTo ? db.prepare('SELECT username,fullname,department,active FROM users WHERE username=?').get(String(b.issuedTo)) : null;
-  if (!to || !to.active) fail(400, 'Choose the person the forms are issued to.');
-  const { PDFDocument, StandardFonts, rgb } = PDFLib, red = rgb(0.75, 0.1, 0.1), ts = now();
-  const out = await PDFDocument.create(), nos = []; let single = null;
-  const ins = db.prepare('INSERT INTO form_issues (no,form_code,form_title,record_id,record_number,record_title,issued_to,issued_name,dept,ts,pdf,purpose,form_version,issued_by,copy_label) VALUES (?,?,?,NULL,NULL,NULL,?,?,?,?,NULL,?,?,?,?)');
-  for (let i = 1; i <= copies; i++) {
-    const doc = await PDFDocument.load(Buffer.from(v.inuse)), F = await doc.embedFont(StandardFonts.HelveticaBold), F2 = await doc.embedFont(StandardFonts.Helvetica);
-    const no = nextIssueNo(); nos.push(no);
-    const lines = [`ISSUED COPY – ${no}`, `${f.number} v${v.version} · copy ${i} of ${copies} · ${dmyText(ts)}`, `Issued to ${to.fullname} by ${ctx.user.fullname}`];
-    for (const p of doc.getPages()) {
-      const { width, height } = p.getSize(), w = 250, h = 27, x = width - w - 18, y = height - h - 4;
-      p.drawRectangle({ x, y, width: w, height: h, borderColor: red, borderWidth: 1.1, color: rgb(1, 1, 1), opacity: 0.92, borderOpacity: 1 });
-      lines.forEach((l, k) => p.drawText(pdfText(l).slice(0, 64), { x: x + 6, y: y + h - 9.5 - k * 7.6, size: k ? 6 : 7.5, font: k ? F2 : F, color: red }));
+for (const K of Object.values(CD)) {
+  const get = (id) => { const f = db.prepare('SELECT * FROM cforms WHERE id=? AND kind=?').get(id, K.kind); if (!f) fail(404, `${K.Noun} not found`); return f; };
+  const sec = (s) => { const i = K.sections.indexOf(s); return i < 0 ? 99 : i; }; // sections in the order of JRS/FRM/QAS/048
+  const effectiveList = () => db.prepare('SELECT * FROM cforms WHERE kind=?').all(K.kind).sort((a, b) => sec(a.section) - sec(b.section) || a.number.localeCompare(b.number));
+
+  route('GET', K.base, (ctx) => {
+    const qa = isQa(ctx.user), rows = effectiveList().filter(f => cdCanSee(ctx.user, f));
+    const issued = qa ? Object.fromEntries(db.prepare('SELECT form_code, COUNT(*) n FROM form_issues GROUP BY form_code').all().map(r => [r.form_code, r.n])) : {};
+    return rows.map(f => { const v = cfCurrent(f.id); return { id: f.id, number: f.number, title: f.title, section: f.section, sop: f.sop, status: f.status,
+      version: v.version, effectiveDate: v.effective_date, hasMaster: !!v.master_name, hasInuse: !!v.inuse_name, issued: issued[f.number] || 0, roles: qa && K.kind === 'sop' ? cdRoles(f) : undefined }; });
+  });
+  // master list (List of Controlled Documents): effective entries by section, PDF or CSV – QA
+  route('GET', K.base + '/master-list', async (ctx) => {
+    needQa(ctx.user, `downloads the list of controlled ${K.noun}s`);
+    const rows = effectiveList().filter(f => f.status === 'Effective').map(f => ({ ...f, v: cfCurrent(f.id) })), stamp = now(), name = `${K.listTitle.replace(' – ', ' - ')} ${stamp.slice(0, 10)}`; // header-safe file name
+    audit(ctx.user, 'Master list downloaded', null, 'cforms', null, `${K.listTitle} (${ctx.query.get('format') === 'csv' ? 'CSV' : 'PDF'}, ${rows.length} entries)`, null, ctx.ip);
+    if (ctx.query.get('format') === 'csv') {
+      const csv = '﻿' + [['Sr. no.', 'Section', 'Document number', 'Document title', 'Version number', 'Effective date'], ...rows.map((r, i) => [i + 1, r.section, r.number, r.title, 'Version ' + r.v.version, dmyText(r.v.effective_date)])].map(l => l.map(csvCell).join(',')).join('\r\n');
+      return { __raw: Buffer.from(csv, 'utf8'), headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}.csv"` } };
     }
-    // several copies go in one PDF for printing: the form fields are flattened so the copies do not share field names
-    if (copies > 1) { try { doc.getForm().flatten(); } catch { /* no form fields */ } }
-    const pages = copies > 1 ? await out.copyPages(doc, doc.getPageIndices()) : null;
-    if (pages) pages.forEach(p => out.addPage(p));
-    ins.run(no, f.number, `${f.title}`, to.username, to.fullname, to.department || '', ts, purpose, v.version, ctx.user.username, `${i} of ${copies}`);
-    if (copies === 1) single = Buffer.from(await doc.save());
-  }
-  audit(ctx.user, `Controlled form issued (${nos[0]}${nos.length > 1 ? ' – ' + nos[nos.length - 1] : ''})`, null, 'cform', null,
-    `${f.number} v${v.version}: ${copies} cop${copies > 1 ? 'ies' : 'y'} issued to ${to.fullname}${to.department ? ' (' + to.department + ')' : ''}`, purpose, ctx.ip);
-  if (to.username !== ctx.user.username) {
-    const subject = `${copies} issued cop${copies > 1 ? 'ies' : 'y'} of ${f.number}`, body = `${ctx.user.fullname} issued ${f.number} v${v.version} ${f.title} to you: ${nos.join(', ')}.\nPurpose: ${purpose}\n\nJRS eQMS – automatic notification. Do not reply.`;
-    const nid = db.prepare('INSERT INTO notifications (username,record_id,record_number,subject,body,action,ts) VALUES (?,?,?,?,?,?,?)').run(to.username, null, null, subject, body, null, now()).lastInsertRowid;
-    queueMail((userRow(to.username) || {}).email, subject, body, nid);
-  }
-  out.setTitle(`${f.number} v${v.version} – issued copies ${nos.join(', ')}`);
-  const buf = single || Buffer.from(await out.save());
-  const name = `${f.number.replace(/\//g, '-')} v${v.version} ${nos[0]}${nos.length > 1 ? ' to ' + nos[nos.length - 1] : ''}.pdf`;
-  return { __raw: buf, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${name}"`, 'X-Issue-Numbers': nos.join(',') } };
+    const { PDFDocument, StandardFonts, rgb } = PDFLib;
+    const doc = await PDFDocument.create(), F = await doc.embedFont(StandardFonts.Helvetica), FB = await doc.embedFont(StandardFonts.HelveticaBold);
+    let logo = null; try { logo = await doc.embedPng(fs.readFileSync(path.join(PUBLIC, 'logo.png'))); } catch { /* no logo */ }
+    const W = 612, H = 792, M = 40, cols = [['Sr. no.', 40], ['Document number', 120], ['Document title', 242], ['Version', 60], ['Effective date', 70]];
+    const grid = rgb(0.6, 0.63, 0.67), shade = rgb(0.92, 0.94, 0.97), grey = rgb(0.38, 0.40, 0.43);
+    let page, y;
+    const wrap = (s, w) => { const out = []; let cur = ''; for (const word of pdfText(s).split(/ +/)) { const t = cur ? cur + ' ' + word : word; if (cur && F.widthOfTextAtSize(t, 8.5) > w) { out.push(cur); cur = word; } else cur = t; } out.push(cur); return out; };
+    const row = (cells, o = {}) => {
+      const lines = cells.map((c, j) => o.span ? [pdfText(c)] : wrap(c, cols[j][1] - 8)), h = Math.max(...lines.map(l => l.length)) * 11 + 5;
+      if (y - h < M + 24) newPage();
+      if (o.span) { page.drawRectangle({ x: M, y: y - h, width: W - 2 * M, height: h, color: shade, borderColor: grid, borderWidth: 0.5 }); const t = pdfText(cells[0]).toUpperCase(); page.drawText(t, { x: (W - FB.widthOfTextAtSize(t, 8.5)) / 2, y: y - 11, size: 8.5, font: FB }); y -= h; return; }
+      let x = M; cols.forEach(([, w], j) => { page.drawRectangle({ x, y: y - h, width: w, height: h, color: o.head ? shade : undefined, borderColor: grid, borderWidth: 0.5 }); lines[j].forEach((l, k) => page.drawText(l, { x: x + 4, y: y - 11 - k * 11, size: 8.5, font: o.head ? FB : F })); x += w; });
+      y -= h;
+    };
+    const newPage = () => {
+      page = doc.addPage([W, H]); y = H - M;
+      if (logo) page.drawImage(logo, { x: M, y: y - 34, width: logo.width * 34 / logo.height, height: 34 });
+      [['FORM NUMBER', 'JRS/FRM/QAS/048'], ['FORM TITLE', 'List of Controlled documents'], ['RELATED SOP', 'JRS/SOP/QAS/021']].forEach(([k, v], i) => { page.drawText(k, { x: 330, y: y - 8 - i * 11, size: 7.5, font: FB }); page.drawText(v, { x: 420, y: y - 8 - i * 11, size: 7.5, font: F }); });
+      y -= 48; const t = pdfText(K.listTitle).toUpperCase(); page.drawText(t, { x: (W - FB.widthOfTextAtSize(t, 11)) / 2, y: y - 4, size: 11, font: FB }); y -= 14;
+      page.drawText(pdfText(`Applicable site: ${CFG.orgName} · generated ${tsText(stamp)} by ${ctx.user.fullname} · ${rows.length} effective ${K.noun}s`), { x: M, y: y - 4, size: 7.5, font: F, color: grey }); y -= 12;
+      row(['Sr. no.', 'Document number', 'Document title', 'Version number', 'Effective date'], { head: true });
+    };
+    newPage(); let section = null;
+    rows.forEach((r, i) => { if (r.section !== section) { section = r.section; row([section || 'Other'], { span: true }); } row([`${i + 1}.`, r.number, r.title, 'Version ' + r.v.version, dmyText(r.v.effective_date)]); });
+    const pages = doc.getPages(); pages.forEach((p, i) => { const s = `CONFIDENTIAL · Page ${i + 1} of ${pages.length}`; p.drawText(s, { x: (W - F.widthOfTextAtSize(s, 7.5)) / 2, y: 20, size: 7.5, font: F, color: grey }); });
+    doc.setTitle(`${K.listTitle} – ${stamp.slice(0, 10)}`);
+    return { __raw: Buffer.from(await doc.save()), headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${name}.pdf"` } };
+  });
+  route('GET', K.base + '/:id', (ctx) => {
+    const f = get(ctx.params.id), qa = isQa(ctx.user);
+    if (!cdCanSee(ctx.user, f)) fail(404, `${K.Noun} not found`);
+    const cur = cfCurrent(f.id), versions = db.prepare('SELECT * FROM cform_versions WHERE form_id=? ORDER BY id DESC').all(f.id);
+    return { id: f.id, kind: f.kind, number: f.number, title: f.title, section: f.section, sop: f.sop, status: f.status, createdAt: f.created_at, updatedAt: f.updated_at, canEdit: qa,
+      roles: K.kind === 'sop' ? cdRoles(f) : undefined, canView: K.kind === 'sop' && !!cur.inuse_name && f.status === 'Effective',
+      current: cfVersionRow(cur, qa), pending: qa ? cfVersionRow(cfPending(f.id), true) || null : undefined,
+      // version history, signatures and issue record: QA only
+      versions: qa ? versions.map(v => cfVersionRow(v, true)) : undefined,
+      signatures: qa ? db.prepare('SELECT username,fullname,meaning,ts FROM signatures WHERE record_id=? ORDER BY id DESC').all('cd:' + f.id) : undefined,
+      issues: qa ? db.prepare('SELECT no,form_version,issued_to,issued_name,dept,issued_by,purpose,copy_label,copy_type,expiry,ts FROM form_issues WHERE form_code=? ORDER BY ts DESC, no DESC').all(f.number)
+        .map(r => ({ ...r, issued_by: r.issued_by ? userLabel(r.issued_by) : '' })) : undefined };
+  });
+  route('POST', K.base, (ctx) => {
+    needQa(ctx.user, `adds ${K.noun}s to the list of controlled ${K.noun}s`);
+    const b = ctx.body, number = String(b.number || '').trim().toUpperCase(), title = String(b.title || '').trim(), version = String(b.version || '').trim();
+    if (!K.number.test(number)) fail(400, `${K.Noun} number: use the format ${K.example}.`);
+    if (!title) fail(400, `Enter the ${K.noun} title.`);
+    if (!CD_VERSION.test(version)) fail(400, 'Version: use the format 1.0.');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(b.effectiveDate || '')) fail(400, 'Enter the effective date.');
+    if (db.prepare('SELECT 1 FROM cforms WHERE number=?').get(number)) fail(409, `${number} is already in the list. Numbers of obsolete documents are not reused.`);
+    const roles = K.kind === 'sop' ? cdRoleList(b.roles) : null;
+    const master = cfFile(b.master, 'master', K), inuse = cfFile(b.inuse, 'inuse', K), id = uid(), ts = now();
+    verifySignature(ctx.user, b);
+    db.prepare('INSERT INTO cforms (id,number,title,section,sop,status,created_by,created_at,updated_at,kind,roles) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .run(id, number, title, String(b.section || '').slice(0, 120), String(b.sop || '').trim().slice(0, 60), 'Effective', ctx.user.username, ts, ts, K.kind, roles ? JSON.stringify(roles) : null);
+    db.prepare('INSERT INTO cform_versions (form_id,version,effective_date,status,change_note,master_name,master,master_sha,inuse_name,inuse,inuse_sha,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(id, version, b.effectiveDate, 'Effective', String(b.changeNote || `New ${K.noun}`).slice(0, 500), master?.name ?? null, master?.buf ?? null, master?.sha ?? null, inuse?.name ?? null, inuse?.buf ?? null, inuse?.sha ?? null, ctx.user.username, ts);
+    cdRecordSig(ctx, get(id), `${K.label} added – QA`);
+    audit(ctx.user, `${K.label} added`, null, 'cform', null, `${number} v${version} ${title} (effective ${b.effectiveDate})${roles ? '; access: ' + roleText(roles) : ''}`, b.changeNote || `New ${K.noun}`, ctx.ip);
+    return { id, number };
+  });
+  route('PUT', K.base + '/:id', (ctx) => {
+    needQa(ctx.user, `changes the list of controlled ${K.noun}s`);
+    const f = get(ctx.params.id), v = cfCurrent(f.id), b = ctx.body, reason = cfNeedReason(b.reason);
+    if (f.status !== 'Effective') fail(409, `${f.number} is ${f.status}.`);
+    const next = { title: b.title !== undefined ? String(b.title).trim() : f.title, section: b.section !== undefined ? String(b.section) : f.section, sop: b.sop !== undefined ? String(b.sop).trim() : f.sop };
+    if (!next.title) fail(400, `Enter the ${K.noun} title.`);
+    const eff = b.effectiveDate !== undefined ? String(b.effectiveDate) : v.effective_date;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(eff)) fail(400, 'Enter the effective date.');
+    const roles = K.kind === 'sop' && b.roles !== undefined ? cdRoleList(b.roles) : null, oldRoles = cdRoles(f);
+    const changed = ['title', 'section', 'sop'].filter(k => (next[k] || '') !== (f[k] || ''));
+    const effChanged = eff !== v.effective_date, rolesChanged = roles && roles.slice().sort().join() !== oldRoles.slice().sort().join();
+    if (!changed.length && !effChanged && !rolesChanged) return { changes: 0 };
+    cdSign(ctx, f, `${K.label} changed – QA`);
+    for (const k of changed) audit(ctx.user, `${K.label} changed`, null, k, f[k], next[k], `${f.number}: ${reason}`, ctx.ip);
+    if (effChanged) audit(ctx.user, `${K.label} changed`, null, 'effectiveDate', v.effective_date, eff, `${f.number} v${v.version}: ${reason}`, ctx.ip);
+    if (rolesChanged) audit(ctx.user, 'SOP access changed', null, 'roles', roleText(oldRoles), roleText(roles), `${f.number}: ${reason}`, ctx.ip);
+    db.prepare('UPDATE cforms SET title=?,section=?,sop=?,roles=?,updated_at=? WHERE id=?').run(next.title, next.section, next.sop, roles ? JSON.stringify(roles) : f.roles, now(), f.id);
+    db.prepare('UPDATE cform_versions SET effective_date=? WHERE id=?').run(eff, v.id);
+    return { changes: changed.length + (effChanged ? 1 : 0) + (rolesChanged ? 1 : 0) };
+  });
+  // signed master / in-use file of the current version (replacing one needs a reason; the old file stays in the audit trail by checksum)
+  route('POST', K.base + '/:id/files', (ctx) => {
+    needQa(ctx.user, 'attaches the signed master and the in-use file');
+    const f = get(ctx.params.id), v = cfCurrent(f.id), kind = ctx.body.kind;
+    if (!['master', 'inuse'].includes(kind)) fail(400, `Choose the signed master or the ${K.inuse}.`);
+    if (f.status !== 'Effective') fail(409, `${f.number} is ${f.status}.`);
+    const file = cfFile(ctx.body, kind, K); if (!file) fail(400, 'Choose a file.');
+    const old = v[kind + '_name'], reason = old ? cfNeedReason(ctx.body.reason) : ctx.body.reason || null;
+    const label = kind === 'master' ? 'Signed master' : K.inuse.charAt(0).toUpperCase() + K.inuse.slice(1);
+    verifySignature(ctx.user, ctx.body);
+    db.prepare(`UPDATE cform_versions SET ${kind}_name=?, ${kind}=?, ${kind}_sha=? WHERE id=?`).run(file.name, file.buf, file.sha, v.id);
+    cdRecordSig(ctx, f, `${label} ${old ? 'replaced' : 'attached'} – QA`);
+    audit(ctx.user, `${label} ${old ? 'replaced' : 'attached'}`, null, 'cform', old ? `${old} (SHA-256 ${v[kind + '_sha'].slice(0, 16)}…)` : null, `${f.number} v${v.version}: ${file.name} (SHA-256 ${file.sha.slice(0, 16)}…)`, reason, ctx.ip);
+    return { sha256: file.sha };
+  });
+  // files of any version: QA only. PDFs of superseded and obsolete versions carry a red stamp.
+  route('GET', K.base + '/:id/versions/:vid/:kind', async (ctx) => {
+    needQa(ctx.user, 'opens the signed master and the in-use file; other users work on issued copies');
+    const f = get(ctx.params.id), kind = ctx.params.kind;
+    const v = db.prepare('SELECT * FROM cform_versions WHERE id=? AND form_id=?').get(+ctx.params.vid, f.id);
+    if (!v || !['master', 'inuse'].includes(kind) || !v[kind]) fail(404, 'File not found');
+    let buf = Buffer.from(v[kind]); if (sha256(buf) !== v[kind + '_sha']) fail(500, 'Integrity check failed: file checksum does not match.');
+    if (['Superseded', 'Obsolete'].includes(v.status) && kindOf(buf) === 'pdf') {
+      try {
+        const doc = await PDFLib.PDFDocument.load(buf);
+        await stampPages(doc, [`${v.status.toUpperCase()} – DO NOT USE`, `${f.number} v${v.version} · ${v.status.toLowerCase()} ${v.ended_at ? dmyText(v.ended_at) : ''}${v.end_reason ? ' · ' + v.end_reason : ''}`, `Downloaded by ${ctx.user.fullname} on ${tsText(now())}`], 'red');
+        buf = Buffer.from(await doc.save());
+      } catch { /* encrypted or damaged PDF: returned as stored */ }
+    }
+    audit(ctx.user, `${kind === 'master' ? 'Signed master' : 'In-use file'} downloaded`, null, 'cform', null, `${f.number} v${v.version} (${v.status}): ${v[kind + '_name']}`, null, ctx.ip);
+    return { __raw: buf, headers: { 'Content-Type': kindOf(buf) === 'pdf' ? 'application/pdf' : 'application/octet-stream', 'Content-Disposition': `attachment; filename="${encodeURIComponent(v[kind + '_name'])}"` } };
+  });
+  // new version: the previous version becomes Superseded (on the new effective date if later)
+  route('POST', K.base + '/:id/versions', (ctx) => {
+    needQa(ctx.user, `issues new versions of controlled ${K.noun}s`);
+    const f = get(ctx.params.id), v = cfCurrent(f.id), b = ctx.body, version = String(b.version || '').trim();
+    if (f.status !== 'Effective') fail(409, `${f.number} is ${f.status}. Obsolete documents cannot get a new version.`);
+    const pend = cfPending(f.id);
+    if (pend) fail(409, `v${pend.version} of ${f.number} is already approved and becomes effective on ${dmyText(pend.effective_date)}.`);
+    if (!CD_VERSION.test(version)) fail(400, 'Version: use the format 2.0.');
+    if (+version <= +v.version) fail(400, `The new version must be higher than the current version ${v.version}.`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(b.effectiveDate || '')) fail(400, 'Enter the effective date of the new version.');
+    const note = cfNeedReason(b.changeNote), master = cfFile(b.master, 'master', K), inuse = cfFile(b.inuse, 'inuse', K);
+    if (!master || !inuse) fail(400, `Attach the signed master and the ${K.inuse} of the new version.`);
+    verifySignature(ctx.user, b);
+    const ts = now(), later = b.effectiveDate > today();
+    if (!later) db.prepare("UPDATE cform_versions SET status='Superseded', ended_at=?, ended_by=?, end_reason=? WHERE id=?").run(ts, ctx.user.username, `Superseded by v${version}`, v.id);
+    db.prepare('INSERT INTO cform_versions (form_id,version,effective_date,status,change_note,master_name,master,master_sha,inuse_name,inuse,inuse_sha,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(f.id, version, b.effectiveDate, later ? 'Approved' : 'Effective', note, master.name, master.buf, master.sha, inuse.name, inuse.buf, inuse.sha, ctx.user.username, ts);
+    if (b.title && String(b.title).trim() !== f.title) audit(ctx.user, `${K.label} changed`, null, 'title', f.title, String(b.title).trim(), `${f.number} v${version}`, ctx.ip);
+    db.prepare('UPDATE cforms SET title=?, updated_at=? WHERE id=?').run(String(b.title || '').trim() || f.title, ts, f.id);
+    cdRecordSig(ctx, get(f.id), `${K.label} v${version} approved – QA`);
+    audit(ctx.user, `${K.label} new version`, null, 'version', later ? `v${v.version} (in use until ${b.effectiveDate})` : `v${v.version} (now Superseded)`, `${f.number} v${version} ${later ? 'approved, effective' : 'effective'} ${b.effectiveDate}`, note, ctx.ip);
+    return { version, status: later ? 'Approved' : 'Effective' };
+  });
+  route('POST', K.base + '/:id/obsolete', (ctx) => {
+    needQa(ctx.user, `makes controlled ${K.noun}s obsolete`);
+    const f = get(ctx.params.id), v = cfCurrent(f.id), reason = cfNeedReason(ctx.body.reason);
+    if (f.status !== 'Effective') fail(409, `${f.number} is already ${f.status}.`);
+    cdSign(ctx, f, `${K.label} made obsolete – QA`, 'Obsolete');
+    const ts = now();
+    db.prepare("UPDATE cform_versions SET status='Obsolete', ended_at=?, ended_by=?, end_reason=? WHERE form_id=? AND status IN ('Effective','Approved')").run(ts, ctx.user.username, reason, f.id);
+    db.prepare("UPDATE cforms SET status='Obsolete', updated_at=? WHERE id=?").run(ts, f.id);
+    audit(ctx.user, `${K.label} made obsolete`, null, 'status', 'Effective', `${f.number} v${v.version} Obsolete`, reason, ctx.ip);
+    return { status: 'Obsolete' };
+  });
+  // QA issues copies of the current version and signs the issue. Forms: who for, purpose and number of copies (blue stamp).
+  // SOPs: controlled or uncontrolled copy, who for and until when (green stamp). Each copy gets its own issue number.
+  route('POST', K.base + '/:id/issue', async (ctx) => {
+    needQa(ctx.user, `issues controlled ${K.noun}s`);
+    const f = get(ctx.params.id), v = cfCurrent(f.id), b = ctx.body;
+    if (f.status !== 'Effective' || v.status !== 'Effective') fail(409, `${f.number} is ${f.status}: only the current effective version is issued.`);
+    if (b.version && String(b.version) !== v.version) fail(409, `Only the current version v${v.version} of ${f.number} can be issued.`);
+    if (v.effective_date > today()) fail(409, `${f.number} v${v.version} is effective from ${dmyText(v.effective_date)}.`); // a new entry added ahead of its date
+    if (!v.inuse) fail(409, `Attach the ${K.inuse} of ${f.number} v${v.version} before issuing it.`);
+    const copies = Number(b.copies), purpose = String(b.purpose || '').trim();
+    if (!Number.isInteger(copies) || copies < 1 || copies > 50) fail(400, 'Number of copies: 1 to 50.');
+    if (!purpose) fail(400, 'Enter the purpose of the issue.');
+    const to = b.issuedTo ? db.prepare('SELECT username,fullname,department,active,roles FROM users WHERE username=?').get(String(b.issuedTo)) : null;
+    if (!to || !to.active) fail(400, `Choose the person the ${K.noun}${copies > 1 ? 's are' : ' is'} issued to.`);
+    let copyType = null, expiry = null;
+    if (K.kind === 'sop') {
+      copyType = { controlled: 'Controlled', uncontrolled: 'Uncontrolled' }[String(b.copyType || '').toLowerCase()];
+      if (!copyType) fail(400, 'Choose a controlled or an uncontrolled copy.');
+      expiry = String(b.expiry || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(expiry)) fail(400, `Enter the expiry date of the ${copyType.toLowerCase()} copy.`);
+      if (expiry < today()) fail(400, 'The expiry date cannot be in the past.');
+    }
+    cdSign(ctx, f, K.kind === 'sop' ? `${copyType} copy issued – QA` : 'Form copies issued – QA');
+    const { PDFDocument } = PDFLib, ts = now(), out = await PDFDocument.create(), nos = []; let single = null;
+    const prefix = copyType === 'Controlled' ? 'CC' : copyType === 'Uncontrolled' ? 'UC' : 'FI';
+    const ins = db.prepare('INSERT INTO form_issues (no,form_code,form_title,record_id,record_number,record_title,issued_to,issued_name,dept,ts,pdf,purpose,form_version,issued_by,copy_label,copy_type,expiry) VALUES (?,?,?,NULL,NULL,NULL,?,?,?,?,NULL,?,?,?,?,?,?)');
+    for (let i = 1; i <= copies; i++) {
+      const doc = await PDFDocument.load(Buffer.from(v.inuse)), no = nextIssueNo(prefix); nos.push(no);
+      const lines = K.kind === 'sop'
+        ? [`${copyType.toUpperCase()} COPY – ${no}`, `${f.number} v${v.version} · copy ${i} of ${copies} · issued ${dmyText(ts)}`, `Issued by ${ctx.user.fullname} to ${to.fullname}`, `Valid till ${dmyText(expiry)}${copyType === 'Uncontrolled' ? ' · not updated when revised' : ''}`]
+        : [`ISSUED COPY – ${no}`, `${f.number} v${v.version} · copy ${i} of ${copies} · ${dmyText(ts)}`, `Issued to ${to.fullname} by ${ctx.user.fullname}`];
+      await stampPages(doc, lines, K.kind === 'sop' ? 'green' : 'blue');
+      // several copies go in one PDF for printing: the form fields are flattened so the copies do not share field names
+      if (copies > 1) { try { doc.getForm().flatten(); } catch { /* no form fields */ } (await out.copyPages(doc, doc.getPageIndices())).forEach(p => out.addPage(p)); }
+      else single = doc;
+      ins.run(no, f.number, f.title, to.username, to.fullname, to.department || '', ts, purpose, v.version, ctx.user.username, `${i} of ${copies}`, copyType, expiry);
+    }
+    const what = K.kind === 'sop' ? `${copyType.toLowerCase()} cop${copies > 1 ? 'ies' : 'y'}` : `cop${copies > 1 ? 'ies' : 'y'}`;
+    audit(ctx.user, `${K.label} issued (${nos[0]}${nos.length > 1 ? ' – ' + nos[nos.length - 1] : ''})`, null, 'cform', null,
+      `${f.number} v${v.version}: ${copies} ${what} issued to ${to.fullname}${to.department ? ' (' + to.department + ')' : ''}${expiry ? ', valid till ' + dmyText(expiry) : ''}`, purpose, ctx.ip);
+    if (to.username !== ctx.user.username) cdNotify(to.username, `${copies} issued ${what} of ${f.number}`,
+      `${ctx.user.fullname} issued ${f.number} v${v.version} ${f.title} to you: ${nos.join(', ')}.${expiry ? `\nValid till ${dmyText(expiry)}.` : ''}\nPurpose: ${purpose}`);
+    const target = single || out; target.setTitle(`${f.number} v${v.version} – issued ${nos.join(', ')}`);
+    // SOP copies cannot be copied as text or edited (printing allowed)
+    const buf = K.kind === 'sop' ? await lockPdf(await target.save({ useObjectStreams: false })) : Buffer.from(await target.save());
+    const name = `${f.number.replace(/\//g, '-')} v${v.version} ${nos[0]}${nos.length > 1 ? ' to ' + nos[nos.length - 1] : ''}.pdf`;
+    return { __raw: buf, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${name}"`, 'X-Issue-Numbers': nos.join(',') } };
+  });
+}
+// SOP access by role: everyone, or the roles QA chose
+function cdRoleList(v) {
+  const list = Array.isArray(v) ? v.map(String) : [];
+  if (list.includes('all')) return ['all'];
+  const roles = [...new Set(list.filter(r => ROLE_KEYS.includes(r)))];
+  if (!roles.length) fail(400, 'Choose who can see the SOP: everyone or at least one role.');
+  return roles;
+}
+const roleText = (roles) => roles.includes('all') ? 'Everyone' : roles.map(r => ROLES[r].split(' (')[0]).join(', ');
+// reading an SOP on screen (users with access): view-only copy, green stamp, no printing or copying
+route('GET', '/api/csops/:id/view', async (ctx) => {
+  const f = db.prepare("SELECT * FROM cforms WHERE id=? AND kind='sop'").get(ctx.params.id);
+  if (!f || !cdCanSee(ctx.user, f) || f.status !== 'Effective') fail(404, 'SOP not found');
+  const v = cfCurrent(f.id); if (!v.inuse) fail(404, 'The SOP file has not been attached yet.');
+  const doc = await PDFLib.PDFDocument.load(Buffer.from(v.inuse));
+  await stampPages(doc, [`READ-ONLY – NOT A CONTROLLED COPY`, `${f.number} v${v.version} · effective ${dmyText(v.effective_date)}`, `Viewed by ${ctx.user.fullname} on ${tsText(now())}`], 'green');
+  audit(ctx.user, 'Controlled SOP viewed', null, 'cform', null, `${f.number} v${v.version}`, null, ctx.ip);
+  const buf = await lockPdf(await doc.save({ useObjectStreams: false }), PDF_VIEW_ONLY);
+  return { __raw: buf, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${f.number.replace(/\//g, '-')} v${v.version} read-only.pdf"`, 'Cache-Control': 'no-store' } };
 });
 
 // ---------- merged PDF report ----------
@@ -2300,7 +2415,8 @@ const server = http.createServer(async (req, res) => {
     send(res, 200, out ?? { ok: true }, headers);
   } catch (e) {
     if (!(e instanceof HttpError)) console.error(e);
-    send(res, e.code || 500, { error: e instanceof HttpError ? e.message : 'Unexpected server error', ...(e instanceof HttpError && e.extra ? e.extra : {}) });
+    if (res.headersSent) return res.end();
+    send(res, e instanceof HttpError ? e.code : 500, { error: e instanceof HttpError ? e.message : 'Unexpected server error', ...(e instanceof HttpError && e.extra ? e.extra : {}) });
   }
 });
 const STATE_MAP = { vendors: { Prospective: 'Risk Assessment', 'Under Qualification': 'Under Quality Review', 'Conditionally Approved': 'Approved', 'Under QA Review': 'Risk Assessment', Evaluation: 'Under Quality Review', Suspended: 'On Hold', Disqualified: 'Rejected' }, customers: { Pending: 'Under QA Review', Requested: 'Under QA Review', Blocked: 'On Hold' }, investigations: { Initiated: 'Initiation', 'Number Assignment': 'Requested', 'QA Assessment': 'QA Review', 'Pre-Approval': 'QA Review', Evaluation: 'QA Evaluation' }, changes: { 'Number Assignment': 'Draft', Requested: 'Draft', Initiation: 'Draft', 'QA Assessment': 'QA Review', 'Pre-Approval': 'RP Review', 'Pending Closure': 'QA Closure Review' } };

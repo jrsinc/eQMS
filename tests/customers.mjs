@@ -12,6 +12,8 @@ const PL = createRequire(import.meta.url)('../vendor/pdf-lib.min.js'), { PDFDocu
 // rectangles drawn by pdf-lib on a page (x, y, w, h), from its content streams
 const rects=(doc,p)=>{const look=(x)=>x instanceof PL.PDFRef?doc.context.lookup(x):x;const c=look(p.node.get(PL.PDFName.of('Contents')));const parts=c instanceof PL.PDFArray?c.asArray().map(look):[c];
   return parts.flatMap(s=>{let b=Buffer.from(s.contents);if(String(s.dict.get(PL.PDFName.of('Filter'))||'').includes('Flate'))b=inflateSync(b);return [...b.toString('latin1').matchAll(/1 0 0 1 ([-\d.]+) ([-\d.]+) cm\s+(?:1 0 0 1 0 0 cm\s+)*0 0 m\s+0 ([-\d.]+) l\s+([-\d.]+) [-\d.]+ l/g)].map(m=>[+m[1],+m[2],+m[4],+m[3]]);});};
+// page content streams as text
+const contents=(doc,p)=>{const look=(x)=>x instanceof PL.PDFRef?doc.context.lookup(x):x;const c=look(p.node.get(PL.PDFName.of('Contents')));const parts=c instanceof PL.PDFArray?c.asArray().map(look):[c];return parts.map(s=>{let b=Buffer.from(s.contents);if(String(s.dict.get(PL.PDFName.of('Filter'))||'').includes('Flate'))b=inflateSync(b);return b.toString('latin1');}).join(' ');};
 const PORT = 26000 + Math.floor(Math.random() * 1000);
 const srv = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], { cwd: root, env: { ...process.env, DATA_DIR: mkdtempSync(join(tmpdir(), 'qms-cu-')), PORT: String(PORT), HOST: '127.0.0.1', SEED_DEMO: 'true', SMTP_HOST: '' }, stdio: 'ignore' });
 const B = 'http://127.0.0.1:' + PORT;
@@ -72,7 +74,8 @@ ok(f2.s===200&&f2.type==='application/pdf'&&/FI-\d{4}-001/.test(f2.disp),'custom
 ok(f3.disp===f2.disp&&Buffer.compare(f2.buf,f3.buf)===0,'issued once per customer: every later download gives the same file');
 let pdf=await PDFDocument.load(f2.buf);
 const stamps=pdf.getPages().map(p=>rects(pdf,p).find(r=>r[2]===250));
-ok(stamps.every(r=>r&&r[1]>=756&&r[1]+r[3]<=792),'issue stamp in the top margin of every page, above the form header and clear of the page number ('+stamps.map(r=>r&&r[1]).join(', ')+')');
+ok(stamps.every(r=>r&&r[0]===18&&r[1]===4),'issue stamp at the left side of the footer of every page ('+stamps.map(r=>r&&r[0]+','+r[1]).join(' / ')+')');
+ok(pdf.getPages().every(p=>contents(pdf,p).includes('0.08 0.27 0.68 RG')),'issue stamp is blue');
 ok(pdf.getForm().getFields().length>=60,'the issued customer form stays fillable ('+pdf.getForm().getFields().length+' fields)');
 const tf=(n)=>pdf.getForm().getTextField(n).getText();
 ok(tf('NAME OF CUSTOMER COMPANYORGANIZATION')==='Pharma Wholesale Ltd'&&tf('SHIP TO ADDRESS')==='1 Dock Rd, London'&&tf('LICENSE')==='WDA(H) 1234'&&tf('CUSTOMER ACCOUNT NUMBER')===c.number,'pre-filled with name, ship-to address, licence and customer number');
