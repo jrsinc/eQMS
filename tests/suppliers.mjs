@@ -46,7 +46,7 @@ const T=new Date().toISOString().slice(0,10), Y=T.slice(0,4);
 const addD=(d,n)=>{const x=new Date(d+'T00:00:00Z');x.setUTCDate(x.getUTCDate()+n);return x.toISOString().slice(0,10)};
 const addM=(d,n)=>{const x=new Date(d+'T00:00:00Z');x.setUTCMonth(x.getUTCMonth()+n);return x.toISOString().slice(0,10)};
 const file=(name,text)=>({name,mime:'text/plain',base64:Buffer.from(text).toString('base64')});
-const req=(who,title,extra={})=>who.call('POST','/api/records',{type:'vendors',data:{title,reason:'New requirement – comparator sourcing for study ABC-301',sites:['JRS INC'],services:'Comparator procurement services',address:'135 Duryea Rd, Melville NY',contactPerson:'J Doe',contactPhone:'+1 6310000000',contactEmail:'jdoe@supplier.test',...extra},attachments:[file('company-profile.pdf','profile')]});
+const req=(who,title,extra={})=>who.call('POST','/api/records',{type:'vendors',data:{title,reason:'New requirement – comparator sourcing for study ABC-301',sites:['JRS INC'],services:'Comparator procurement services',address:'135 Duryea Rd, Melville NY',country:'USA',contactPerson:'J Doe',contactPhone:'+1 6310000000',contactEmail:'jdoe@supplier.test',...extra},attachments:[file('company-profile.pdf','profile')]});
 
 const op=await login('operator1'), pk=await login('packer1'), qa=await login('qa.lead'), qr=await login('qa.reviewer'), hod=await login('hod.ops'), cs=await login('cs.manager');
 // QA submits the risk assessment; the Head of the requesting department approves it
@@ -198,6 +198,11 @@ const M=createRequire(import.meta.url)('../public/modules.js').MODULES;
 const list=(await qa.call('GET','/api/records?type=vendors'))._arr.sort(M.vendors.listSort).map(r=>+r.data.rpn||0);
 ok(list.join()===[...list].sort((x,y)=>y-x).join(),'supplier list ordered by RPN, highest first: '+list.join(', '));
 ok((await qa.raw(`/api/records/${s1.id}/report.pdf`)).s===200,'supplier report downloads as one PDF');
+// approved supplier list (JRS/FRM/QAS/005): supplier ID, name, country, services provided, effective date, requalification date
+let sl=await op.raw('/api/master-list/vendors?format=csv'), scsv=sl.buf.toString('utf8').replace(/^\ufeff/,'').split('\r\n');
+ok(sl.s===200&&scsv[0]==='Sr. no.,Supplier ID,Supplier name,Country,Services provided,Effective date,Requalification (review) date','approved supplier list columns include the services provided');
+ok(scsv.length===3&&scsv.some(l=>l.includes(s1.number)&&l.includes('USA')&&l.includes('Comparator procurement services'))&&scsv.some(l=>l.includes(s4.number))&&!scsv.join().includes(s3.number),'only approved suppliers are listed ('+(scsv.length-1)+')');
+let sp=await op.raw('/api/master-list/vendors');ok(sp.s===200&&sp.type==='application/pdf','approved supplier list downloads as PDF');
 g=await qa.get(s1.id);ok(g.signatures.filter(s=>s.meaning==='Supplier approved – QA').length===2&&g.signatures.some(s=>s.meaning==='Risk assessment prepared – QA'),'each qualification cycle e-signed');
 
 let v=await qa.call('GET','/api/audit/verify');ok(v.ok,'audit chain intact, entries '+v.checked);

@@ -783,6 +783,7 @@ const AFTER = {
   'investigations:HOD Approval': (u, r, ip) => assignHod(u, r, ip),
   // approved supplier list: approval date of this qualification cycle (effective and requalification dates are set by QA)
   'vendors:Approved': (u, r) => { r.data.approvedOn = today(); },
+  'customers:Qualified': (u, r) => { if (!r.data.effectiveDate) r.data.effectiveDate = today(); },
   'vendors:HOD Review': (u, r, ip) => { const old = r.data.hodApprover; r.data.hodApprover = hodFor(r.data.requesterDept, u.username); if (old !== r.data.hodApprover) audit(u, 'Approver assigned from the organogram', r, 'hodApprover', old, r.data.hodApprover, null, ip); },
   // requalification: the same process again – the finished cycle goes to the history, its review results are cleared
   'vendors:Risk Assessment': (u, r, ip) => {
@@ -1754,6 +1755,47 @@ async function lockPdf(bytes) {
 }
 // Register of issued controlled forms (QA, administrators, management)
 route('GET', '/api/form-issues', (ctx) => { needAudit(ctx.user); return db.prepare('SELECT no,form_code,form_title,record_id,record_number,record_title,issued_to,issued_name,dept,ts FROM form_issues ORDER BY ts DESC').all(); });
+// Master lists (qualified customers, approved supplier list JRS/FRM/QAS/005): PDF with the company header, or CSV for Excel
+route('GET', '/api/master-list/:type', async (ctx) => {
+  const mod = MODULES[ctx.params.type], cfg = mod && mod.masterList; if (!cfg) fail(404, 'No master list for this module.');
+  if (hiddenFor(ctx.user, ctx.params.type)) fail(404, 'Not found');
+  const rows = db.prepare('SELECT * FROM records WHERE type=? AND status=? AND deleted=0').all(ctx.params.type, cfg.status).map(rowToRecord)
+    .filter(r => canSee(ctx.user, r)).sort((a, b) => String(a.data.title || '').localeCompare(String(b.data.title || '')));
+  const val = (r, k) => k === 'number' ? r.number : /Date$/.test(k) && r.data[k] ? dmyText(r.data[k]) : String(r.data[k] ?? '');
+  const stamp = now(), name = `${cfg.title.split(' –')[0]} ${stamp.slice(0, 10)}`;
+  audit(ctx.user, 'Master list downloaded', null, ctx.params.type, null, `${cfg.title} (${ctx.query.get('format') === 'csv' ? 'CSV' : 'PDF'}, ${rows.length} entries)`, null, ctx.ip);
+  if (ctx.query.get('format') === 'csv') {
+    const csv = '\ufeff' + [['Sr. no.', ...cfg.cols.map(c => c[1])], ...rows.map((r, i) => [i + 1, ...cfg.cols.map(c => val(r, c[0]))])].map(l => l.map(csvCell).join(',')).join('\r\n');
+    return { __raw: Buffer.from(csv, 'utf8'), headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}.csv"` } };
+  }
+  const { PDFDocument, StandardFonts, rgb } = PDFLib;
+  const doc = await PDFDocument.create(), F = await doc.embedFont(StandardFonts.Helvetica), FB = await doc.embedFont(StandardFonts.HelveticaBold);
+  let logo = null; try { logo = await doc.embedPng(fs.readFileSync(path.join(PUBLIC, 'logo.png'))); } catch { /* no logo */ }
+  const W = 841.89, H = 595.28, M = 36, cols = [['#', 'Sr. no.', 36], ...cfg.cols], tw = cols.reduce((a, c) => a + c[2], 0), sc = (W - 2 * M) / tw;
+  const line = rgb(0.75, 0.78, 0.82), blue = rgb(0.10, 0.40, 0.69), grey = rgb(0.38, 0.40, 0.43);
+  let page, y;
+  const wrap = (s, w, size) => { const out = []; let cur = ''; for (const word of pdfText(s).split(/ +/)) { const t = cur ? cur + ' ' + word : word; if (cur && F.widthOfTextAtSize(t, size) > w) { out.push(cur); cur = word; } else cur = t; } out.push(cur); return out.slice(0, 6); };
+  const header = () => { let x = M; page.drawRectangle({ x: M, y: y - 18, width: W - 2 * M, height: 18, color: rgb(0.92, 0.95, 0.99) }); cols.forEach(c => { page.drawText(c[1], { x: x + 4, y: y - 12, size: 8, font: FB }); x += c[2] * sc; }); y -= 18; };
+  const newPage = () => {
+    page = doc.addPage([W, H]); y = H - M;
+    if (logo) page.drawImage(logo, { x: M, y: y - 30, width: logo.width * 30 / logo.height, height: 30 });
+    const t = pdfText(cfg.title); page.drawText(t, { x: W - M - FB.widthOfTextAtSize(t, 13), y: y - 14, size: 13, font: FB, color: blue });
+    const sub = pdfText(`${cfg.code ? cfg.code + ' · ' : ''}${rows.length} ${ctx.params.type === 'vendors' ? 'approved suppliers' : 'qualified customers'} · generated ${tsText(stamp)} by ${ctx.user.fullname}`);
+    page.drawText(sub, { x: W - M - F.widthOfTextAtSize(sub, 8), y: y - 28, size: 8, font: F, color: grey });
+    y -= 44; header();
+  };
+  newPage();
+  if (!rows.length) { page.drawText('No entries.', { x: M + 4, y: y - 14, size: 9, font: F, color: grey }); }
+  rows.forEach((r, i) => {
+    const cells = [String(i + 1), ...cfg.cols.map(c => val(r, c[0]))], lines = cells.map((v, j) => wrap(v, cols[j][2] * sc - 8, 8.5)), h = Math.max(...lines.map(l => l.length)) * 11 + 6;
+    if (y - h < M + 20) newPage();
+    let x = M; cells.forEach((v, j) => { lines[j].forEach((l, k) => page.drawText(l, { x: x + 4, y: y - 11 - k * 11, size: 8.5, font: F })); x += cols[j][2] * sc; });
+    page.drawLine({ start: { x: M, y: y - h }, end: { x: W - M, y: y - h }, thickness: 0.4, color: line }); y -= h;
+  });
+  const pages = doc.getPages(); pages.forEach((p, i) => { const s = `${CFG.orgName} · ${cfg.title} · Page ${i + 1} of ${pages.length}`; p.drawText(pdfText(s), { x: M, y: 18, size: 7, font: F, color: grey }); });
+  doc.setTitle(`${cfg.title} – ${stamp.slice(0, 10)}`);
+  return { __raw: Buffer.from(await doc.save()), headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${name}.pdf"` } };
+});
 // Audit agenda JRS/FRM/QAS/021 from the supplier record (shared with the supplier before the audit)
 route('GET', '/api/records/:id/agenda.pdf', async (ctx) => {
   const rec = visibleRecord(ctx.user, getRecord(ctx.params.id)), d = rec.data;

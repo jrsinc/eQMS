@@ -58,7 +58,7 @@ await cs.call('PUT',`/api/records/${pk.id}`,{data:{returned:1},reason:'found 1 l
 ok((await cs.sig(pk.id,'Reconciled')).ok,'balanced reconciliation');
 ok((await qa.sig(pk.id,'QP Certified')).ok,'QP certified');
 // customer sanctions
-let cu=await op.call('POST','/api/records',{type:'customers',data:{title:'Pharma Wholesale Ltd',address:'1 Dock Rd, London',licenceNo:'WDA(H) 1234',licenceExpiry:'2099-01-01'}});
+let cu=await op.call('POST','/api/records',{type:'customers',data:{title:'Pharma Wholesale Ltd',country:'United Kingdom',address:'1 Dock Rd, London',licenceNo:'WDA(H) 1234',licenceExpiry:'2099-01-01'}});
 const rp=await login('rp1');
 ok((await rp.sig(cu.id,'Qualified')).s===403,'only QA qualifies customers');
 ok((await qa.sig(cu.id,'Qualified')).s===400,'qualification blocked without a review date');

@@ -340,7 +340,7 @@ function listView(type) {
   const rows = ALL.filter(r => r.type === type); if (m.listSort) rows.sort(m.listSort);
   const canCreate = !m.noCreate && (type !== 'randomization' || hasRole(['unblinded'])) && !ME.roles.every(r => r === 'extaud');
   shell(type, `<div class="spread"><div><h1>${esc(m.name)}</h1><p class="muted">${esc(m.intro)}</p></div>
-    <div class="row">${canCreate ? `<a class="btn primary" href="#/new/${type}">${esc(m.createTitle || 'New ' + singular(m))}</a>` : ''}${m.issueForm && !m.issueForm.fromRecordOnly && (!m.issueForm.roles || hasRole(m.issueForm.roles)) ? `<a class="btn" href="/api/forms/${type}" download title="PDF with an issue stamp; every issue is numbered and logged">Download ${esc(m.issueForm.label)}</a>` : ''}<button class="btn" id="exp">Export CSV</button></div></div>
+    <div class="row">${canCreate ? `<a class="btn primary" href="#/new/${type}">${esc(m.createTitle || 'New ' + singular(m))}</a>` : ''}${m.issueForm && !m.issueForm.fromRecordOnly && (!m.issueForm.roles || hasRole(m.issueForm.roles)) ? `<a class="btn" href="/api/forms/${type}" download title="PDF with an issue stamp; every issue is numbered and logged">Download ${esc(m.issueForm.label)}</a>` : ''}${m.masterList ? `<a class="btn" href="/api/master-list/${type}" download title="${esc(m.masterList.title)}">${esc(m.masterList.title.split(' –')[0])} (PDF)</a><a class="btn" href="/api/master-list/${type}?format=csv" download>${esc(m.masterList.title.split(' –')[0])} (CSV)</a>` : ''}<button class="btn" id="exp">Export CSV</button></div></div>
     ${type === 'extensions' ? extensionKpis(rows) : ''}<div class="row no-print" style="margin-bottom:.8rem"><input type="search" id="flt" placeholder="Filter" style="max-width:280px">
     <select id="st" style="max-width:220px"><option value="">All statuses</option>${m.states.map(s => `<option>${esc(s)}</option>`).join('')}</select>
     <label class="small"><input type="checkbox" id="od"> Overdue only</label></div><div id="lt"></div>`);
@@ -631,8 +631,8 @@ async function detailView(id) {
   $$('[data-issue]').forEach(box => {
     const cfg = m.issueForm, done = (d.formIssues || []).filter(x => x.ts >= (d.cycleStartedAt || '')).pop(), allowed = cfg && (!cfg.roles || hasRole(cfg.roles));
     box.innerHTML = done ? `<div class="doc-req"><span class="doc-label">${esc(cfg.label)}</span><span class="pill done">Issued ${esc(done.no)} – ${dmy(done.ts)} to ${esc(userName(done.by))}</span>${allowed ? ` <a class="btn small-btn" href="/api/forms/${rec.type}?record=${rec.id}" download>Download issued copy</a>` : ''}</div>`
-      : allowed && cfg.when(d, rec.status) ? `<div class="doc-req"><span class="doc-label">${esc(cfg.label)}</span><span class="pill warn">Not issued</span> <a class="btn primary small-btn" href="/api/forms/${rec.type}?record=${rec.id}" download id="issueBtn">Issue questionnaire</a></div>`
-      : `<div class="doc-req"><span class="doc-label">${esc(cfg.label)}</span><span class="pill warn">Not issued</span> <span class="small muted">QA issues it during the quality review.</span></div>`;
+      : allowed && cfg.when(d, rec.status) ? `<div class="doc-req"><span class="doc-label">${esc(cfg.label)}</span><span class="pill warn">Not issued</span> <a class="btn primary small-btn" href="/api/forms/${rec.type}?record=${rec.id}" download id="issueBtn">${esc(cfg.issueText || 'Issue form')}</a></div>`
+      : `<div class="doc-req"><span class="doc-label">${esc(cfg.label)}</span><span class="pill warn">Not issued</span> <span class="small muted">${esc(cfg.notIssuedText || '')}</span></div>`;
   });
   $('#issueBtn')?.addEventListener('click', () => setTimeout(route, 1500));
   if (rec.type === 'labels') labelPanel(rec);

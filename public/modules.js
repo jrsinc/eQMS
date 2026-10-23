@@ -779,7 +779,9 @@
       intro: 'Supplier qualification per JRS/SOP/QAS/005. Any department requests a supplier qualification; QA completes the supplier risk assessment (JRS/FRM/QAS/042). The risk priority number decides the evaluation: certificate verification, supplier questionnaire (JRS/FRM/QAS/004), site audit (agenda JRS/FRM/QAS/021, report JRS/FRM/QAS/020) or questionnaire and site audit. Approved suppliers form the approved supplier list (JRS/FRM/QAS/005).',
       numbering: (d, y) => ({ pre: `SUP-${y}-`, pad: 3 }),
       numberLabel: 'Supplier no.',
-      list: ['number', 'title', 'services', 'rpn', 'riskLevel', 'auditType', 'licenceExpiry', 'requalDate', 'status'],
+      list: ['number', 'title', 'country', 'services', 'rpn', 'riskLevel', 'auditType', 'licenceExpiry', 'requalDate', 'status'],
+      // approved supplier list (JRS/FRM/QAS/005), downloadable as PDF or CSV
+      masterList: { title: 'Approved supplier list', code: 'JRS/FRM/QAS/005', status: 'Approved', cols: [['number', 'Supplier ID', 70], ['title', 'Supplier name', 170], ['country', 'Country', 80], ['services', 'Services provided', 220], ['effectiveDate', 'Effective date', 80], ['requalDate', 'Requalification (review) date', 100]] },
       // highest risk first (risk priority number)
       listSort: (a, b) => (+b.data.rpn || 0) - (+a.data.rpn || 0) || a.number.localeCompare(b.number),
       attachOnRequestOnly: true,
@@ -787,7 +789,7 @@
       attachHint: 'attach any documents you already have (company profile, licences, certificates); after the request only QA can add documents',
       createHelp: 'Any department can request a supplier qualification (JRS/SOP/QAS/005 §5.1). Give the supplier, why it is needed, the sites and services, and the contact details; attach any documents you already have. QA then completes the risk assessment and evaluation.',
       // one issued copy per supplier and qualification cycle; later downloads return the same file
-      issueForm: { file: 'JRS-FRM-QAS-004 v3.0 Vendor qualification checklist.pdf', code: 'JRS/FRM/QAS/004', label: 'Supplier questionnaire (JRS/FRM/QAS/004)', roles: ['qa'], fromRecordOnly: true, oncePerCycle: true, inSection: true, lockCopy: true, when: (d, status) => ['Under Quality Review', 'On Hold'].includes(status) && /uestionnaire/.test(d.auditType || '') },
+      issueForm: { file: 'JRS-FRM-QAS-004 v3.0 Vendor qualification checklist.pdf', code: 'JRS/FRM/QAS/004', label: 'Supplier questionnaire (JRS/FRM/QAS/004)', roles: ['qa'], fromRecordOnly: true, oncePerCycle: true, inSection: true, lockCopy: true, issueText: 'Issue questionnaire', notIssuedText: 'QA issues it during the quality review.', when: (d, status) => ['Under Quality Review', 'On Hold'].includes(status) && /uestionnaire/.test(d.auditType || '') },
       fields: [
         sec('Supplier qualification request (any department)', { create: true, edit: { 'Risk Assessment': ['qa'], 'Under Quality Review': ['qa'], Approved: ['qa'], 'On Hold': ['qa'] } }),
         { k: 'title', label: 'Supplier name', type: 'text', req: true, full: true },
@@ -795,6 +797,7 @@
         { k: 'sites', label: 'Applicable site(s)', type: 'multicheck', req: true, options: SITES },
         { k: 'services', label: 'Services / materials provided', type: 'text', req: true, full: true },
         { k: 'address', label: 'Supplier address', type: 'textarea', req: true, full: true },
+        { k: 'country', label: 'Country', type: 'text', req: true },
         { k: 'contactPerson', label: 'Contact person', type: 'text', req: true },
         { k: 'contactPhone', label: 'Contact number (country code + 10-digit number, e.g. +1 6315551234)', type: 'phone' },
         { k: 'contactEmail', label: 'Contact e-mail', type: 'email', req: true },
@@ -874,24 +877,31 @@
       name: 'Customers', single: 'customer', group: 'Supply chain', prefix: 'CUS',
       intro: 'Customer qualification per JRS/SOP/OPS/010 and form JRS/FRM/QAS/010 (new customer creation form). Any department can request a customer qualification and attach the completed form and licences with the request. QA reviews them and qualifies, rejects or puts the customer on hold; after the request only QA can change the record or add documents.',
       numbering: (d, y) => ({ pre: `CUS-${y}-`, pad: 3 }),
-      list: ['number', 'title', 'licenceNo', 'licenceExpiry', 'reviewDate', 'requesterDept', 'status'],
+      list: ['number', 'title', 'country', 'licenceNo', 'licenceExpiry', 'effectiveDate', 'reviewDate', 'status'],
+      // customer master list – qualified customers, downloadable as PDF or CSV
+      masterList: { title: 'Customer master list – qualified customers', status: 'Qualified', cols: [['number', 'Customer ID', 90], ['title', 'Customer name', 260], ['country', 'Country', 120], ['effectiveDate', 'Effective date', 110], ['reviewDate', 'Review date', 110]] },
       // the requester attaches documents with the request only; afterwards only QA adds documents
       attachOnRequestOnly: true,
       createTitle: 'Request customer qualification', createLabel: 'Submit request to QA',
       attachHint: 'attach the completed customer form and licence copies now; after the request only QA can add documents',
       createHelp: 'Any department can request a customer qualification. Attach the completed customer form (JRS/FRM/QAS/010, download it from the Customers list) and the licence copy. QA reviews the request and qualifies, rejects or puts the customer on hold.',
-      issueForm: { file: 'JRS-FRM-QAS-010 v2.0 New customer creation form.pdf', code: 'JRS/FRM/QAS/010', label: 'New customer creation form (JRS/FRM/QAS/010)', prefill: { 'NAME OF CUSTOMER COMPANYORGANIZATION': 'title', 'SHIP TO ADDRESS': 'address', 'LICENSE': 'licenceNo', 'CUSTOMER ACCOUNT NUMBER': '#number' } },
+      issueForm: { file: 'JRS-FRM-QAS-010 v2.0 New customer creation form.pdf', code: 'JRS/FRM/QAS/010', label: 'New customer creation form (JRS/FRM/QAS/010)', prefill: { 'NAME OF CUSTOMER COMPANYORGANIZATION': 'title', 'SHIP TO ADDRESS': 'address', 'LICENSE': 'licenceNo', 'CUSTOMER ACCOUNT NUMBER': '#number' },
+        // issued from the customer record, once per customer; later downloads return the same file (stays fillable)
+        fromRecordOnly: true, oncePerCycle: true, inSection: true, issueText: 'Issue customer form', notIssuedText: 'Issued from the customer record.', when: (d, status) => status !== 'Rejected' },
       // customer number CUS-YYYY-NNN, generated when the request is submitted
       numberLabel: 'Customer no.',
       fields: [
         sec('Customer qualification', { part: 'Q', create: true, edit: { 'Under QA Review': ['qa'], 'On Hold': ['qa'], Qualified: ['qa'] } }),
         { k: 'title', label: 'Customer name', type: 'text', req: true, full: true },
+        { k: 'country', label: 'Country', type: 'text', req: true },
         { k: 'address', label: 'Ship-to address', type: 'textarea', req: true, full: true },
         { k: 'licenceNo', label: 'Licence no.', type: 'text', req: true },
         { k: 'licenceExpiry', label: 'Licence expiry date', type: 'date', req: true },
         { k: 'licenceLink', label: 'Licence verification link (register entry, if available)', type: 'url', full: true },
+        { k: 'effectiveDate', label: 'Effective date (qualification date; set automatically when qualified if empty)', type: 'date' },
         { k: 'reviewDate', label: 'Review date (next customer review)', type: 'date' },
-        { k: 'requesterDept', label: 'Requesting department', type: 'readonly', optionLabels: DEPTS }
+        { k: 'requesterDept', label: 'Requesting department', type: 'readonly', optionLabels: DEPTS },
+        { type: 'issue', label: 'Customer form' }
       ],
       states: ['Under QA Review', 'Qualified', 'On Hold', 'Rejected'],
       transitions: [
