@@ -468,6 +468,7 @@ const needAudit = (user) => { if (!canSeeAudit(user)) fail(403, 'The audit trail
 // Project managers see events that go to the customer.
 function canSee(user, rec) {
   if (!MODULES[rec.type] || hiddenFor(user, rec.type)) return false;
+  if (MODULES[rec.type].ownOnly) return rec.created_by === user.username || user.roles.includes('admin') || allAccess(user); // help desk: own tickets
   if (!MODULES[rec.type].deptScoped || allAccess(user) || user.roles.includes('qa') || user.roles.includes('extaud')) return true;
   const d = rec.data, me = user.username;
   if (rec.created_by === me || d.respPerson === me || d.hodApprover === me) return true;
@@ -788,6 +789,9 @@ const AFTER = {
   // approved supplier list: approval date of this qualification cycle (effective and requalification dates are set by QA)
   'vendors:Approved': (u, r) => { r.data.approvedOn = today(); },
   'customers:Qualified': (u, r) => { if (!r.data.effectiveDate) r.data.effectiveDate = today(); },
+  // help desk: the administrator who takes or resolves the ticket is assigned to it
+  'helpdesk:In Progress': (u, r) => { r.data.assignedTo = u.username; },
+  'helpdesk:Resolved': (u, r) => { if (!r.data.assignedTo) r.data.assignedTo = u.username; },
   'vendors:HOD Review': (u, r, ip) => { const old = r.data.hodApprover; r.data.hodApprover = hodFor(r.data.requesterDept, u.username); if (old !== r.data.hodApprover) audit(u, 'Approver assigned from the organogram', r, 'hodApprover', old, r.data.hodApprover, null, ip); },
   // requalification: the same process again – the finished cycle goes to the history, its review results are cleared
   'vendors:Risk Assessment': (u, r, ip) => {
@@ -1014,14 +1018,49 @@ function setOrg(ctx, u, body, reason) {
   }
 }
 
+// Password change confirmed by e-mail: the first call checks the passwords and e-mails a 6-digit code (valid 10 minutes, 5 tries);
+// the second call with the code changes the password. Without e-mail on the server the change is made directly (and logged so).
+const pwPending = new Map(); // username -> { codeHash, pwHash, exp, tries }
+const maskMail = (e) => String(e).replace(/^(.{1,2})[^@]*(@.*)$/, (m, a, b) => a + '•••' + b);
 route('POST', '/api/password', (ctx) => {
-  const { current, next } = ctx.body;
+  const { current, next } = ctx.body, code = String(ctx.body.code || '').trim();
   const u = db.prepare('SELECT * FROM users WHERE username=?').get(ctx.user.username);
   if (!checkPw(String(current || ''), u.pw_hash)) fail(401, 'Current password incorrect.');
   const p = pwPolicy(next); if (p) fail(400, p);
   if (checkPw(next, u.pw_hash)) fail(400, 'New password must differ from the current one.');
+  const byMail = mailOn();
+  if (byMail && !u.email) fail(400, 'Your account has no e-mail address for the confirmation code. Ask an administrator to add it.');
+  if (byMail && !code) {
+    const c = String(crypto.randomInt(0, 1e6)).padStart(6, '0');
+    pwPending.set(u.username, { codeHash: sha256(u.username + ':' + c), pwHash: hashPw(next), exp: Date.now() + 10 * 60000, tries: 0 });
+    queueMail(u.email, 'JRS eQMS – confirm your password change', `Hello ${u.fullname},
+
+Your confirmation code for changing your eQMS password is: ${c}
+
+It is valid for 10 minutes. If you did not ask to change your password, do not use the code and tell your administrator.
+
+JRS eQMS – automatic message. Do not reply.`);
+    audit(ctx.user, 'Password change requested', null, null, null, `Confirmation code e-mailed to ${maskMail(u.email)}`, null, ctx.ip);
+    return { codeSent: true, to: maskMail(u.email) };
+  }
+  if (byMail) {
+    const pend = pwPending.get(u.username);
+    if (!pend || Date.now() > pend.exp) { pwPending.delete(u.username); fail(400, 'The confirmation code has expired. Start the password change again.'); }
+    if (!checkPw(next, pend.pwHash)) fail(400, 'The new password is not the one the code was sent for. Start the password change again.');
+    if (sha256(u.username + ':' + code) !== pend.codeHash) {
+      if (++pend.tries >= 5) pwPending.delete(u.username);
+      audit(ctx.user, 'Password change: wrong confirmation code', null, null, null, null, null, ctx.ip);
+      fail(400, pend.tries >= 5 ? 'Too many wrong codes. Start the password change again.' : 'The confirmation code is not correct.');
+    }
+    pwPending.delete(u.username);
+  }
   db.prepare('UPDATE users SET pw_hash=?, must_change=0 WHERE username=?').run(hashPw(next), u.username);
-  audit(ctx.user, 'Password changed', null, null, null, null, null, ctx.ip);
+  audit(ctx.user, 'Password changed', null, null, null, byMail ? 'Confirmed with the code e-mailed to the user' : 'E-mail not set up on the server: changed without e-mail confirmation', null, ctx.ip);
+  if (byMail) queueMail(u.email, 'JRS eQMS – your password was changed', `Hello ${u.fullname},
+
+Your eQMS password was changed on ${tsText(now())}. If this was not you, tell your administrator at once.
+
+JRS eQMS – automatic message. Do not reply.`);
   return { ok: true };
 });
 // Signature register: only the signed-in employee registers their own signature (initials, specimen, password confirmation)
@@ -1053,7 +1092,9 @@ route('GET', '/api/users', () => db.prepare("SELECT username,fullname,email,role
 route('POST', '/api/users', (ctx) => {
   if (!allAccess(ctx.user)) fail(403, 'Administrator or management role required.');
   const { username, fullname, email, roles, password } = ctx.body;
-  if (email && !EMAIL_RE.test(String(email).trim())) fail(400, 'Enter a valid e-mail address, e.g. name@company.com.');
+  // every user has an e-mail address: notifications and password-change confirmations are e-mailed
+  if (!String(email || '').trim()) fail(400, 'Enter the e-mail address of the user (notifications and password confirmations are sent to it).');
+  if (!EMAIL_RE.test(String(email).trim())) fail(400, 'Enter a valid e-mail address, e.g. name@company.com.');
   const un = String(username || '').toLowerCase().trim();
   if (!/^[a-z0-9._-]{3,40}$/.test(un)) fail(400, 'User ID: 3–40 characters, letters, numbers, dot, dash, underscore.');
   if (db.prepare('SELECT 1 FROM users WHERE username=?').get(un)) fail(409, 'User ID already exists. User IDs are never reused.');
@@ -1082,7 +1123,7 @@ route('PUT', '/api/users/:u', (ctx) => {
   }
   setOrg(ctx, u, ctx.body, reason);
   if (ctx.body.email !== undefined && String(ctx.body.email).trim().toLowerCase() !== String(u.email || '').toLowerCase()) {
-    const em = String(ctx.body.email).trim().toLowerCase(); if (em && !EMAIL_RE.test(em)) fail(400, 'Enter a valid e-mail address, e.g. name@company.com.');
+    const em = String(ctx.body.email).trim().toLowerCase(); if (!em) fail(400, 'Every user needs an e-mail address; it cannot be removed.'); if (!EMAIL_RE.test(em)) fail(400, 'Enter a valid e-mail address, e.g. name@company.com.');
     db.prepare('UPDATE users SET email=? WHERE username=?').run(em, u.username); audit(tag, 'User email changed', null, u.username, u.email, em, reason, ctx.ip);
   }
   for (const k of ['designation']) if (ctx.body[k] !== undefined && String(ctx.body[k]) !== String(u[k] || '')) {
@@ -1968,15 +2009,17 @@ for (const K of Object.values(CD)) {
     return rows.map(f => { const v = cfCurrent(f.id); return { id: f.id, number: f.number, title: f.title, section: f.section, sop: f.sop, status: f.status,
       version: v.version, effectiveDate: v.effective_date, hasMaster: !!v.master_name, hasInuse: !!v.inuse_name, issued: issued[f.number] || 0, roles: qa && K.kind === 'sop' ? cdRoles(f) : undefined }; });
   });
-  // master list (List of Controlled Documents): effective entries by section, PDF or CSV – QA
-  route('GET', K.base + '/master-list', async (ctx) => {
-    needQa(ctx.user, `downloads the list of controlled ${K.noun}s`);
-    const rows = effectiveList().filter(f => f.status === 'Effective').map(f => ({ ...f, v: cfCurrent(f.id) })), stamp = now(), name = `${K.listTitle.replace(' – ', ' - ')} ${stamp.slice(0, 10)}`; // header-safe file name
-    audit(ctx.user, 'Master list downloaded', null, 'cforms', null, `${K.listTitle} (${ctx.query.get('format') === 'csv' ? 'CSV' : 'PDF'}, ${rows.length} entries)`, null, ctx.ip);
-    if (ctx.query.get('format') === 'csv') {
-      const csv = '﻿' + [['Sr. no.', 'Section', 'Document number', 'Document title', 'Version number', 'Effective date'], ...rows.map((r, i) => [i + 1, r.section, r.number, r.title, 'Version ' + r.v.version, dmyText(r.v.effective_date)])].map(l => l.map(csvCell).join(',')).join('\r\n');
-      return { __raw: Buffer.from(csv, 'utf8'), headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}.csv"` } };
-    }
+  // master list (List of Controlled Documents): issued by QA with the e-signature and a purpose; numbered, blue issue stamp,
+  // recorded in the issued forms register and the audit trail
+  route('GET', K.base + '/master-list/issues', (ctx) => {
+    needQa(ctx.user, `sees the issues of the list of controlled ${K.noun}s`);
+    return db.prepare('SELECT no, issued_name, issued_by, purpose, ts FROM form_issues WHERE form_code=? AND form_title=? ORDER BY ts DESC, no DESC').all('JRS/FRM/QAS/048', K.listTitle).map(r => ({ ...r, issued_by: userLabel(r.issued_by) }));
+  });
+  route('POST', K.base + '/master-list', async (ctx) => {
+    needQa(ctx.user, `issues the list of controlled ${K.noun}s`);
+    const purpose = String(ctx.body.purpose || '').trim(); if (!purpose) fail(400, 'Enter the purpose of the issue.');
+    verifySignature(ctx.user, ctx.body);
+    const rows = effectiveList().filter(f => f.status === 'Effective').map(f => ({ ...f, v: cfCurrent(f.id) })), stamp = now(), no = nextIssueNo(), name = `${K.listTitle.replace(' – ', ' - ')} ${no}`; // header-safe file name
     const { PDFDocument, StandardFonts, rgb } = PDFLib;
     const doc = await PDFDocument.create(), F = await doc.embedFont(StandardFonts.Helvetica), FB = await doc.embedFont(StandardFonts.HelveticaBold);
     let logo = null; try { logo = await doc.embedPng(fs.readFileSync(path.join(PUBLIC, 'logo.png'))); } catch { /* no logo */ }
@@ -1996,14 +2039,20 @@ for (const K of Object.values(CD)) {
       if (logo) page.drawImage(logo, { x: M, y: y - 34, width: logo.width * 34 / logo.height, height: 34 });
       [['FORM NUMBER', 'JRS/FRM/QAS/048'], ['FORM TITLE', 'List of Controlled documents'], ['RELATED SOP', 'JRS/SOP/QAS/021']].forEach(([k, v], i) => { page.drawText(k, { x: 330, y: y - 8 - i * 11, size: 7.5, font: FB }); page.drawText(v, { x: 420, y: y - 8 - i * 11, size: 7.5, font: F }); });
       y -= 48; const t = pdfText(K.listTitle).toUpperCase(); page.drawText(t, { x: (W - FB.widthOfTextAtSize(t, 11)) / 2, y: y - 4, size: 11, font: FB }); y -= 14;
-      page.drawText(pdfText(`Applicable site: ${CFG.orgName} · generated ${tsText(stamp)} by ${ctx.user.fullname} · ${rows.length} effective ${K.noun}s`), { x: M, y: y - 4, size: 7.5, font: F, color: grey }); y -= 12;
+      page.drawText(pdfText(`Applicable site: ${CFG.orgName} · issued copy ${no} · ${tsText(stamp)} by ${ctx.user.fullname} · ${rows.length} effective ${K.noun}s`), { x: M, y: y - 4, size: 7.5, font: F, color: grey }); y -= 12;
       row(['Sr. no.', 'Document number', 'Document title', 'Version number', 'Effective date'], { head: true });
     };
     newPage(); let section = null;
     rows.forEach((r, i) => { if (r.section !== section) { section = r.section; row([section || 'Other'], { span: true }); } row([`${i + 1}.`, r.number, r.title, 'Version ' + r.v.version, dmyText(r.v.effective_date)]); });
     const pages = doc.getPages(); pages.forEach((p, i) => { const s = `CONFIDENTIAL · Page ${i + 1} of ${pages.length}`; p.drawText(s, { x: (W - F.widthOfTextAtSize(s, 7.5)) / 2, y: 20, size: 7.5, font: F, color: grey }); });
-    doc.setTitle(`${K.listTitle} – ${stamp.slice(0, 10)}`);
-    return { __raw: Buffer.from(await doc.save()), headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${name}.pdf"` } };
+    await stampPages(doc, [`ISSUED COPY – ${no}`, `JRS/FRM/QAS/048 · ${rows.length} effective ${K.noun}s · ${dmyText(stamp)}`, `Issued by ${ctx.user.fullname} · ${purpose}`], 'blue');
+    doc.setTitle(`${K.listTitle} – issued copy ${no}`);
+    db.prepare('INSERT INTO form_issues (no,form_code,form_title,record_id,record_number,record_title,issued_to,issued_name,dept,ts,pdf,purpose,form_version,issued_by,copy_label) VALUES (?,?,?,NULL,NULL,NULL,?,?,?,?,NULL,?,?,?,?)')
+      .run(no, 'JRS/FRM/QAS/048', K.listTitle, ctx.user.username, ctx.user.fullname, ctx.user.department || '', stamp, purpose, '1.0', ctx.user.username, `${rows.length} entries`);
+    db.prepare('INSERT INTO signatures (record_id,username,fullname,meaning,from_state,to_state,ts,content_hash) VALUES (?,?,?,?,?,?,?,?)')
+      .run('cd:masterlist:' + K.kind, ctx.user.username, ctx.user.fullname, `${K.listTitle} issued – QA`, null, no, stamp, sha256(rows.map(r => `${r.number}|${r.v.version}|${r.v.effective_date}`).join('|')));
+    audit(ctx.user, `Master list issued (${no})`, null, 'cforms', null, `${K.listTitle}: ${rows.length} effective ${K.noun}s, e-signed`, purpose, ctx.ip);
+    return { __raw: Buffer.from(await doc.save()), headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${name}.pdf"`, 'X-Issue-Numbers': no } };
   });
   route('GET', K.base + '/:id', (ctx) => {
     const f = get(ctx.params.id), qa = isQa(ctx.user);

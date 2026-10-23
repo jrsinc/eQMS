@@ -122,11 +122,15 @@ const meanings=d.signatures.map(x=>x.meaning);
 ok(['Controlled form added – QA','Controlled form changed – QA','Form copies issued – QA','Controlled form v2.0 approved – QA'].every(m=>meanings.includes(m))&&d.signatures.every(x=>x.username==='qa.lead'),'every change and issue is e-signed: '+[...new Set(meanings)].join('; '));
 ok((await qa.call('POST',`/api/cforms/${nf.id}/issue`,{issuedTo:'packer1',purpose:'x',copies:1})).s===403,'issuing needs the e-signature');
 ok((await qa.call('POST',`/api/cforms/${nf.id}/files`,{kind:'master',...scan,reason:'Clearer scan'})).s===403,'replacing a file needs the e-signature');
-let ml=await qa.raw("/api/cforms/master-list?format=csv"), mcsv=ml.buf.toString("utf8").replace(/^﻿/,"").split("\r\n");
-ok(ml.s===200&&mcsv[0]==='Sr. no.,Section,Document number,Document title,Version number,Effective date'&&mcsv.length===134&&mcsv.some(l=>l.includes('JRS/FRM/QAS/056')&&l.includes('Version 2.0')),'master list CSV: effective forms with current version ('+(mcsv.length-1)+')');
-let mp=await qa.raw('/api/cforms/master-list'), mpd=await PDFDocument.load(mp.buf);
-ok(mp.s===200&&mp.type==='application/pdf'&&mpd.getPageCount()>=3,'master list PDF – List of Controlled Documents ('+mpd.getPageCount()+' pages)');
-ok((await op.raw('/api/cforms/master-list')).s===403,'only QA downloads the master list');
+ok((await qa.call('POST','/api/cforms/master-list',{purpose:'Document control file'})).s===403,'issuing the master list needs the e-signature');
+ok((await qs('POST','/api/cforms/master-list',{})).s===400,'issuing the master list needs a purpose');
+ok((await op.call('POST','/api/cforms/master-list',{purpose:'x',sigUsername:'operator1',password:'Demo-Pass-2026'})).s===403,'only QA issues the master list');
+let mp=await qs('POST','/api/cforms/master-list',{purpose:'Document control file'}), mpd=await PDFDocument.load(mp.buf);
+ok(mp.s===200&&/^FI-[0-9]{4}-[0-9]{3}$/.test(mp.nos[0])&&mpd.getPageCount()>=3&&mpd.getPages().every(p=>contents(mpd,p).includes(BLUE)&&FOOTER_LEFT.test(contents(mpd,p))),'master list issued as '+mp.nos[0]+' ('+mpd.getPageCount()+' pages) with the blue issue stamp on every page');
+let mli=(await qa.call('GET','/api/cforms/master-list/issues'))._arr, mreg=(await qa.call('GET','/api/form-issues'))._arr.find(r=>r.no===mp.nos[0]);
+ok(mli.length===1&&mli[0].purpose==='Document control file'&&mreg&&mreg.form_code==='JRS/FRM/QAS/048','the issue is recorded with its purpose in the issued forms register');
+ok((await qa.call('GET','/api/audit'))._arr.some(a=>a.action===`Master list issued (${mp.nos[0]})`&&a.reason==='Document control file'),'master list issue in the audit trail');
+ok((await qa.raw('/api/cforms/master-list')).s!==200,'the master list is no longer a plain download');
 
 // ===== audit trail =====
 let au=(await qa.call('GET','/api/audit'))._arr.map(a=>a.action);

@@ -69,7 +69,7 @@ ok((await me(hod)).roles.includes('hod')&&(await me(hod)).hodOf.includes('OPS'),
 ok(!(await me(op)).roles.includes('hod')&&(await me(op)).department==='OPS','operator1 is a department user in Operation');
 ok((await me(qa)).roles.includes('numgen')&&(await me(qr)).roles.includes('numgen'),'all QA users assign record numbers');
 ok((await me(dir)).allAccess&&(await me(ad)).allAccess,'management and administrators have all access');
-ok((await ad.call('POST','/api/users',{username:'pkg.op2',fullname:'Second Packer',roles:['user','hod','numgen'],department:'PKG',reportsTo:'cs.manager',password:'Packer-Pass-2026'})).ok,'administrator creates a department user');
+ok((await ad.call('POST','/api/users',{username:'pkg.op2',fullname:'Second Packer',email:'pkg.op2@jrs.test',roles:['user','hod','numgen'],department:'PKG',reportsTo:'cs.manager',password:'Packer-Pass-2026'})).ok,'administrator creates a department user');
 let nu=(await ad.call('GET','/api/users'))._arr.find(u=>u.username==='pkg.op2');
 ok(nu.roles.join()==='user'&&nu.department==='PKG'&&nu.reports_to==='cs.manager','Head of Department / number roles are not assigned by hand; department and line manager saved');
 ok((await dir.call('GET','/api/audit')).s===200&&(await dir.call('GET','/api/records?type=atreviews')).s===200,'management sees the audit trail and audit trail reviews');

@@ -197,13 +197,16 @@ function renderPasswordChange(forced) {
    ${forced ? '<p class="muted">Your password was set by an administrator. Choose a new one to continue.</p>' : ''}
    <form id="pf" class="stack"><div><label class="f">Current password</label><input type="password" name="current" autocomplete="current-password"></div>
    <div><label class="f">New password (min. 10 characters, upper, lower, number)</label><input type="password" name="next" autocomplete="new-password"></div>
-   <div><label class="f">Repeat new password</label><input type="password" name="again" autocomplete="new-password"></div><div class="error"></div><button class="btn primary">Save password</button></form></div>`;
+   <div><label class="f">Repeat new password</label><input type="password" name="again" autocomplete="new-password"></div>
+   <div id="pcode" hidden><label class="f">Confirmation code (sent to your e-mail)</label><input type="text" name="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code"><p class="small muted" id="pcodeto"></p></div>
+   <div class="error"></div><button class="btn primary" id="psave">Save password</button></form></div>`;
   if (forced) $('#app').innerHTML = `<div class="content">${html}</div>`; else shell('password', html);
   $('#pf').addEventListener('submit', async (e) => {
     e.preventDefault(); const f = e.target;
     try {
       if (f.next.value !== f.again.value) throw new Error('New passwords do not match.');
-      await api('POST', '/api/password', { current: f.current.value, next: f.next.value });
+      const r = await api('POST', '/api/password', { current: f.current.value, next: f.next.value, code: f.code.value.trim() || undefined });
+      if (r.codeSent) { $('#pcode').hidden = false; $('#pcodeto').textContent = `A 6-digit code was e-mailed to ${r.to}. It is valid for 10 minutes.`; $('#psave').textContent = 'Confirm password change'; f.code.focus(); toast('Confirmation code e-mailed'); return; }
       ME.mustChange = false; toast('Password changed'); if (forced) afterLogin(); else location.hash = '#/dashboard';
     } catch (x) { $('.error', f).textContent = x.message; }
   });
@@ -453,7 +456,7 @@ function newView(type) {
   const m = MODS[type]; if (!m || !canSeeModule(m)) return dashboard();
   shell(type, `<div class="spread"><div><h1>${esc(m.createTitle || 'New ' + singular(m))}</h1><p class="muted">${m.createHelp ? esc(m.createHelp) : m.tempNumbering ? 'Your request goes to QA with a request number. When QA approves it the record number is assigned automatically; QA may also ask you to update the request, or reject it.' + (m.deptScoped ? ' The responsible department is the department of the responsible person.' : '') : 'The record number is assigned when you save.'} Fields marked * are required.</p></div></div>
    <form id="nf" class="panel"><div class="grid">${createFields(m).filter(f => f.type !== 'readonly').map(f => fieldHtml(f, undefined, false)).join('')}</div>
-   ${m.tempNumbering || m.attachOnRequestOnly ? `<div style="margin-top:1rem"><label class="f" for="natt">Attachments${m.attachOnRequestOnly ? ' – ' + esc(m.attachHint || 'attach your documents now; after the request only QA can add documents') : ' (optional)'}</label><input type="file" id="natt" multiple></div>` : ''}
+   ${m.tempNumbering || m.attachOnRequestOnly || m.attachOnCreate ? `<div style="margin-top:1rem"><label class="f" for="natt">Attachments${m.attachOnRequestOnly ? ' – ' + esc(m.attachHint || 'attach your documents now; after the request only QA can add documents') : ' (optional)'}</label><input type="file" id="natt" multiple></div>` : ''}
    <div class="error" style="margin-top:1rem"></div><div class="row"><button class="btn primary">${m.createLabel ? esc(m.createLabel) : m.tempNumbering ? 'Submit request to QA' : 'Save record'}</button><a class="btn" href="#/m/${type}">Cancel</a></div></form>`);
   const form = $('#nf');
   if (type === 'investigations') { const o = $('[name=dateIdentified]', form); if (o) o.value = today(); }
@@ -981,7 +984,8 @@ async function signatureRegister() {
 const f_pwNote = (ok, u) => ok.mailConfigured === false ? 'User updated. E-mail is not set up – if you reset the password, give it to the user yourself.' : !u.email ? 'User updated. The user has no e-mail address – give a reset password to them yourself.' : 'User updated';
 async function usersView() {
   if (!ME.allAccess) return dashboard();
-  USERS = await api('GET', '/api/users');
+  USERS = await api('GET', '/api/users'); const sys = await api('GET', '/api/config');
+  const noMail = USERS.filter(u => u.active && !u.email);
   // Heads of Department come from the organogram and every QA user assigns numbers, so those two roles are not ticked here
   const roleBox = (sel) => ([k, v]) => `<label><input type="checkbox" name="roles" value="${k}" ${sel.includes(k) ? 'checked' : ''}> ${esc(v)}</label>`;
   const roleChecks = (sel = []) => `<p class="small muted" style="margin:.2rem 0">Main role</p><div class="checks">${CFG.MAIN_ROLES.map(k => [k, CFG.ROLES[k]]).map(roleBox(sel)).join('')}</div>
@@ -994,18 +998,20 @@ async function usersView() {
     </div>`;
   const regVals = (f) => ({ designation: val(f, 'designation'), department: val(f, 'department'), reportsTo: val(f, 'reportsTo') });
   shell('users', `<div class="spread"><div><h1>Users and roles</h1><p class="muted">User IDs are unique and never reused. Deactivate instead of deleting. Administrators and management have all access; department users raise deviations and complaints and write reports for their department.</p></div><div class="row"><button class="btn primary" id="nu">New user</button><button class="btn" id="ux">Access review CSV</button></div></div>
-    <div class="table-wrap"><table class="t"><thead><tr><th>User ID</th><th>Name</th><th>Department</th><th>Reports to</th><th>Roles</th><th>Status</th><th>Last login</th><th></th></tr></thead><tbody>
-    ${USERS.map(u => `<tr><td class="mono">${esc(u.username)}</td><td>${esc(u.fullname)}</td><td>${esc(deptName(u.department))}</td><td>${esc(userName(u.reports_to))}</td><td class="small">${esc(u.roles.map(r => CFG.ROLES[r]).join(', '))}</td><td>${u.locked ? '<span class="pill bad">Locked</span>' : u.active ? '<span class="pill done">Active</span>' : '<span class="pill grey">Inactive</span>'}</td><td class="small">${dmyt(u.last_login)}</td><td><button class="btn" data-edit="${esc(u.username)}">Edit</button></td></tr>`).join('')}</tbody></table></div>`);
+    ${sys.mail ? '' : '<div class="banner" role="note">E-mail is not set up on the server (SMTP settings in .env), so notifications and password confirmations are not e-mailed yet.</div>'}
+    ${noMail.length ? `<div class="banner" role="note">${noMail.length} active user${noMail.length > 1 ? 's have' : ' has'} no e-mail address and will not receive notifications or password-change confirmations: ${esc(noMail.map(u => u.fullname).join(', '))}. Every user needs an e-mail address.</div>` : ''}
+    <div class="table-wrap"><table class="t"><thead><tr><th>User ID</th><th>Name</th><th>E-mail</th><th>Department</th><th>Reports to</th><th>Roles</th><th>Status</th><th>Last login</th><th></th></tr></thead><tbody>
+    ${USERS.map(u => `<tr><td class="mono">${esc(u.username)}</td><td>${esc(u.fullname)}</td><td class="small">${u.email ? esc(u.email) : '<span class="pill warn">Missing</span>'}</td><td>${esc(deptName(u.department))}</td><td>${esc(userName(u.reports_to))}</td><td class="small">${esc(u.roles.map(r => CFG.ROLES[r]).join(', '))}</td><td>${u.locked ? '<span class="pill bad">Locked</span>' : u.active ? '<span class="pill done">Active</span>' : '<span class="pill grey">Inactive</span>'}</td><td class="small">${dmyt(u.last_login)}</td><td><button class="btn" data-edit="${esc(u.username)}">Edit</button></td></tr>`).join('')}</tbody></table></div>`);
   $('#nu').addEventListener('click', async () => {
     const ok = await modal({ title: 'New user', ok: 'Create user', html: `<div class="grid"><div><label class="f">User ID</label><input type="text" name="username"></div><div><label class="f">Full name</label><input type="text" name="fullname"></div>
-      <div><label class="f">Email</label><input type="text" name="email"></div><div><label class="f">Initial password</label><input type="password" name="password" autocomplete="new-password"></div></div>
+      <div><label class="f">E-mail <span class="req">*</span></label><input type="email" name="email" placeholder="name@company.com"></div><div><label class="f">Initial password</label><input type="password" name="password" autocomplete="new-password"></div></div>
       ${regFields()}<div><label class="f">Roles</label>${roleChecks()}</div><div><label class="f">Reason / access request reference</label><input type="text" name="reason"></div>`,
       onOk: (f) => api('POST', '/api/users', { username: val(f, 'username'), fullname: val(f, 'fullname'), email: val(f, 'email'), password: f.password.value, reason: val(f, 'reason'), roles: $$('input[name=roles]:checked', f).map(x => x.value), ...regVals(f) }) });
     if (ok) { toast(ok.emailed ? 'User created – the temporary password was e-mailed to them' : 'User created – e-mail is not set up, so give them the temporary password yourself; they must change it at first sign-in'); usersView(); }
   });
   $$('[data-edit]').forEach(b => b.addEventListener('click', async () => {
     const u = USERS.find(x => x.username === b.dataset.edit);
-    const ok = await modal({ title: 'Edit ' + u.username, ok: 'Save', html: `<div><label class="f">E-mail</label><input type="text" name="email" value="${esc(u.email || '')}"></div>${regFields(u)}<div><label class="f">Roles</label>${roleChecks(u.roles)}</div>
+    const ok = await modal({ title: 'Edit ' + u.username, ok: 'Save', html: `<div><label class="f">E-mail <span class="req">*</span></label><input type="email" name="email" value="${esc(u.email || '')}" placeholder="name@company.com"></div>${regFields(u)}<div><label class="f">Roles</label>${roleChecks(u.roles)}</div>
       <div class="row"><label><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> Active</label>${u.locked ? '<label><input type="checkbox" name="unlock"> Unlock account</label>' : ''}</div>
       <div><label class="f">Reset password (optional)</label><input type="password" name="password" autocomplete="new-password"></div><div><label class="f">Reason <span class="req">*</span></label><input type="text" name="reason"></div>`,
       onOk: (f) => api('PUT', '/api/users/' + u.username, { roles: $$('input[name=roles]:checked', f).map(x => x.value), active: f.active.checked, unlock: f.unlock ? f.unlock.checked : false, password: f.password.value || undefined, reason: val(f, 'reason'), email: val(f, 'email'), ...regVals(f) }) });
@@ -1069,7 +1075,7 @@ async function cdListView(kind) {
   const K = CDK[kind], rows = await api('GET', K.api), qa = isQaUser();
   const sections = [...new Set([...K.sections, ...rows.map(r => r.section).filter(Boolean)])];
   shell(K.list, `<div class="spread"><div><h1>${K.title}</h1><p class="muted">${K.intro} ${qa ? `QA adds ${K.noun}s, keeps the signed master and the in-use file of each version, issues new versions and copies, and signs each step.${kind === 'sop' ? ' QA chooses by role who can see each SOP.' : ''}` : kind === 'sop' ? 'The SOPs you have access to. Ask QA for a controlled or uncontrolled copy.' : 'Maintained by QA. Ask QA for an issued copy of a form.'}</p></div>
-    <div class="row" style="flex-wrap:wrap">${qa ? `<button class="btn primary" id="cfn">New ${K.noun}</button><a class="btn" href="${K.api}/master-list" download>Master list (PDF)</a><a class="btn" href="${K.api}/master-list?format=csv" download>Master list (CSV)</a>` : ''}<button class="btn" id="cfx">Export CSV</button></div></div>
+    <div class="row" style="flex-wrap:wrap">${qa ? `<button class="btn primary" id="cfn">New ${K.noun}</button><button class="btn" id="cfml">Issue master list</button>` : ''}<button class="btn" id="cfx">Export CSV</button></div></div>
     <div class="row no-print" style="margin-bottom:.8rem;gap:.5rem;flex-wrap:wrap"><input type="search" id="cfq" placeholder="Filter by number or title" style="max-width:280px">
     <select id="cfs" style="max-width:300px"><option value="">All sections</option>${sections.map(s => `<option>${esc(s)}</option>`).join('')}</select>
     ${qa ? '<select id="cft" style="max-width:180px"><option value="Effective">Effective</option><option value="Obsolete">Obsolete</option><option value="">All</option></select>' : ''}</div><div id="cfl"></div>`);
@@ -1086,6 +1092,14 @@ async function cdListView(kind) {
   };
   ['#cfq', '#cfs', '#cft'].forEach(s => $(s)?.addEventListener('input', draw)); draw();
   $('#cfx').addEventListener('click', () => download(`controlled_${K.list}_${today()}.csv`, toCsv([['Sr. no.', `${K.Noun} number`, `${K.Noun} title`, 'Version', 'Effective date', 'Section', 'Status'], ...filtered().map((r, i) => [i + 1, r.number, r.title, r.version, r.effectiveDate, r.section, r.status])])));
+  $('#cfml')?.addEventListener('click', async () => {
+    if (!(await ensureEsigAccepted())) return;
+    const issues = await api('GET', `${K.api}/master-list/issues`);
+    await modal({ title: 'Issue the master list', ok: 'Sign and issue', okClass: 'primary sign', html: `<p class="muted small">List of Controlled Documents (JRS/FRM/QAS/048) with every effective ${K.noun} and its current version. The PDF gets an issue number (FI-YYYY-NNN) and a blue issue stamp; the issue is recorded in the issued forms register and the audit trail.</p>
+      <div><label class="f">Purpose of the issue <span class="req">*</span></label><textarea name="purpose" rows="2" placeholder="e.g. Monthly update for the document control file"></textarea></div>${cdSigHtml(`List of Controlled Documents issued – QA`)}
+      ${issues.length ? `<p class="small muted">Last issued: ${issues.slice(0, 3).map(i => `${esc(i.no)} on ${dmy(i.ts)} by ${esc(i.issued_by)}`).join('; ')}</p>` : ''}`,
+      onOk: async (fm) => { const nos = await cdPostPdf(`${K.api}/master-list`, { purpose: val(fm, 'purpose'), ...cdSig(fm) }); toast(`Master list issued: ${nos.join(', ')}`); } });
+  });
   $('#cfn')?.addEventListener('click', async () => {
     if (!(await ensureEsigAccepted())) return;
     const r = await modal({ title: `New controlled ${K.noun}`, ok: 'Sign and add', okClass: 'primary sign', wide: true, html: `<div class="grid"><div><label class="f">${K.Noun} number <span class="req">*</span></label><input type="text" name="number" placeholder="${K.example}"></div>

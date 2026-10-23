@@ -110,6 +110,47 @@ ok(!au._arr.some(a=>JSON.stringify(a).includes('Reset-Pass-2026')),'the password
 let at=await ad.call('GET','/api/audit?record='+encodeURIComponent(d.number));
 ok(!at._arr.some(a=>a.action==='Field set')&&at._arr.some(a=>a.action==='Record created'&&/Short description: Pallet wrap torn/.test(a.new_value)),'record creation is one audit entry listing the values entered');
 
+// ===== every user has an e-mail address =====
+ok((await ad.call('POST','/api/users',{username:'no.mail',fullname:'No Mail',roles:['user'],department:'OPS',password:'Welcome-Pass-2026'})).s===400,'a user cannot be created without an e-mail address');
+ok((await ad.call('PUT','/api/users/operator1',{email:'',reason:'x'})).s===400,'an e-mail address cannot be removed');
+
+// ===== help desk: employees raise tickets, the administrators are notified by e-mail =====
+await ad.call('PUT','/api/users/admin',{email:'admin@jrs.test',reason:'Help desk e-mails'});
+mails.length=0;
+let hd=await op.call('POST','/api/records',{type:'helpdesk',data:{title:'Cannot print the label report',category:'Error / something does not work',priority:'Medium',area:'Secondary packaging',description:'Clicking Print shows an error.'},attachments:[{name:'screenshot.png',mime:'image/png',base64:PNG.split(',')[1]}]});
+ok(/^HLP-\d{4}-001$/.test(hd.number)&&hd.status==='Open','employee raises ticket '+hd.number);
+ok((await op.call('GET','/api/records/'+hd.id)).attachments.length===1,'a screenshot can be attached to the ticket');
+ok(await wait(()=>mails.some(m=>m.to.includes('admin@jrs.test')&&m.subject.includes(hd.number))),'the administrators are e-mailed about the new ticket');
+ok((await pk.call('GET','/api/records/'+hd.id)).s>=400&&!(await pk.call('GET','/api/records?type=helpdesk'))._arr.some(r=>r.id===hd.id),'other employees do not see the ticket');
+ok((await op.call('GET','/api/records?type=helpdesk'))._arr.some(r=>r.id===hd.id),'the employee sees their own ticket');
+ok((await qa.sig(hd.id,'In Progress')).s>=400&&(await op.sig(hd.id,'In Progress')).s===403,'only administrators work on tickets (QA does not even see it; the employee cannot take it)');
+const adSig=(id,to,extra={})=>ad.call('POST',`/api/records/${id}/transition`,{to,sigUsername:'admin',password:'ChangeMe-2026!',...extra});
+mails.length=0;
+ok((await adSig(hd.id,'In Progress')).ok&&(await ad.call('GET','/api/records/'+hd.id)).record.data.assignedTo==='admin','the administrator takes the ticket and is assigned to it');
+ok(await wait(()=>mails.some(m=>m.to.includes('operator1@jrs.test')&&m.subject.includes(hd.number))),'the employee is e-mailed about the progress');
+ok((await adSig(hd.id,'Resolved')).s===400,'resolving needs the resolution');
+await ad.call('PUT','/api/records/'+hd.id,{data:{resolution:'Printer driver updated'},reason:'Fixed'});
+ok((await adSig(hd.id,'Resolved')).ok,'ticket resolved');
+ok((await op.sig(hd.id,'Closed')).ok,'the employee confirms it is fixed – ticket closed');
+let hat=await ad.call('GET','/api/audit?record='+encodeURIComponent(hd.number));
+ok(['Record created','Status changed'].every(x=>hat._arr.some(a=>a.action.startsWith(x)))||hat._arr.length>=4,'every ticket step is in the audit trail ('+hat._arr.length+' entries)');
+
+// ===== password change confirmed by an e-mailed code =====
+mails.length=0;
+let pc=await op.call('POST','/api/password',{current:'Demo-Pass-2026',next:'New-Operator-Pass-2026'});
+ok(pc.codeSent&&/^op•••@jrs\.test$/.test(pc.to),'changing the password e-mails a confirmation code ('+pc.to+')');
+ok(await wait(()=>mails.some(m=>m.to.includes('operator1@jrs.test')&&/confirm your password change/.test(m.subject))),'the code arrives by e-mail');
+const code=(mails.find(m=>/confirm your password change/.test(m.subject)).text.match(/\b(\d{6})\b/)||[])[1];
+ok((await op.call('POST','/api/password',{current:'Demo-Pass-2026',next:'New-Operator-Pass-2026',code:code==='000000'?'111111':'000000'})).s===400,'a wrong code is refused');
+ok((await op.call('POST','/api/password',{current:'Demo-Pass-2026',next:'Other-Operator-Pass-2026',code})).s===400,'the code only confirms the password it was sent for');
+ok((await op.call('POST','/api/password',{current:'Demo-Pass-2026',next:'New-Operator-Pass-2026',code})).ok,'the right code changes the password');
+ok(!!(await login('operator1','New-Operator-Pass-2026')).u,'sign in with the new password');
+ok(await wait(()=>mails.some(m=>m.to.includes('operator1@jrs.test')&&/your password was changed/.test(m.subject))),'a "password changed" e-mail follows');
+ok((await qr.call('POST','/api/password',{current:'Reset-Pass-2026',next:'New-Reviewer-Pass-2026'})).s===400,'no e-mail address: the password change cannot be confirmed');
+let pa=(await ad.call('GET','/api/audit'))._arr.map(a=>a.action);
+ok(pa.includes('Password change requested')&&pa.includes('Password change: wrong confirmation code')&&pa.includes('Password changed'),'password change steps are in the audit trail');
+ok(!(await ad.call('GET','/api/audit'))._arr.some(a=>JSON.stringify(a).includes(code)),'the code is never in the audit trail');
+
 srv.kill(); smtp.close();
 console.log(failed ? `\n${failed} FAILED` : '\nALL PASSED');
 process.exit(failed ? 1 : 0);

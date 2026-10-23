@@ -115,11 +115,11 @@ ok(d.versions[0].status==='Obsolete'&&pc(obp,obp.getPage(0)).includes(RED),'the 
 ok((await iss({copyType:'controlled',expiry:addD(T,30)})).s===409&&(await op.call('GET','/api/csops/'+ns.id)).s===404,'obsolete: not issued, not shown to users');
 
 // ===== master list =====
-let ml=await qa.raw('/api/csops/master-list?format=csv'), csv=ml.buf.toString('utf8').replace(/^﻿/,'').split('\r\n');
-ok(ml.s===200&&csv.length===73&&csv[1].includes('Administrations SOP')&&csv[1].includes('JRS/SOP/ADM/001'),'SOP master list CSV: 72 effective SOPs by section');
-let mp=await qa.raw('/api/csops/master-list');
-ok(mp.s===200&&mp.type==='application/pdf'&&/List of Controlled Documents - SOP/.test(mp.disp),'SOP master list PDF');
-ok((await au.raw('/api/csops/master-list')).s===403,'only QA downloads the master list');
+ok((await qa.call('POST','/api/csops/master-list',{purpose:'Audit'})).s===403,'issuing the SOP master list needs the e-signature');
+let mp=await qs('POST','/api/csops/master-list',{purpose:'Customer audit'});
+ok(mp.s===200&&/List of Controlled Documents - SOP FI-/.test(mp.disp)&&mp.nos[0],'SOP master list issued as '+mp.nos[0]);
+ok((await qa.call('GET','/api/csops/master-list/issues'))._arr[0].purpose==='Customer audit','SOP master list issues are recorded');
+ok((await au.call('POST','/api/csops/master-list',{purpose:'x',sigUsername:'author1',password:'Demo-Pass-2026'})).s===403,'only QA issues the master list');
 
 let v=await qa.call('GET','/api/audit/verify');ok(v.ok,'audit chain intact, entries '+v.checked);
 srv.kill();
