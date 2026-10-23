@@ -228,7 +228,7 @@ function shell(active, html) {
   $('#app').innerHTML = `<div class="shell"><nav class="nav" id="nav" aria-label="Main">
     <div class="brand"><div>JRS eQMS<small>Quality Management System</small></div></div>
     ${link('dashboard', 'Dashboard', 'dashboard')}${link('tasks', 'My tasks', 'tasks')}${link('readiness', 'Inspection readiness', 'readiness')}
-    ${Object.entries(groups).map(([g, list]) => `<h4>${esc(g)}</h4>${list.map(([k, m]) => link('m/' + k, m.name, k, openCount(k))).join('')}${g === 'Documents & training' ? link('matrix', 'Training matrix', 'matrix') : ''}`).join('')}
+    ${Object.entries(groups).map(([g, list]) => `<h4>${esc(g)}</h4>${list.map(([k, m]) => link('m/' + k, m.name, k, openCount(k))).join('')}${g === 'Documents & training' ? link('matrix', 'Training matrix', 'matrix') + link('forms', 'Controlled forms', 'forms') : ''}`).join('')}
     <h4>System</h4>${auditAccess() ? link('audit', 'Audit trail', 'audit') + link('issued', 'Issued forms', 'issued') : ''}${link('signatures', 'Signature register', 'signatures')}${link('sharepoint', 'SharePoint', 'sharepoint')}${link('departments', 'Departments', 'departments')}${ME.canEditOrg ? link('organogram', 'Organogram', 'organogram') : ''}${isAdmin ? link('users', 'Users and roles', 'users') : ''}${link('password', 'Change password', 'password')}
     </nav><div class="main">${envBanner()}<header class="topbar"><button class="btn menu-btn" id="menu" aria-label="Menu">Menu</button><a class="topbar-logo" href="#/dashboard" title="Dashboard"><img src="/logo.png" alt="Jupiter Research Services"></a>
     <form id="gs" role="search" style="flex:1;max-width:420px"><input type="search" name="q" placeholder="Search records by number or title"></form>
@@ -250,7 +250,7 @@ async function route() {
   QS = new URLSearchParams(query || ''); // e.g. #/audit?from=2026-07-01&to=2026-09-30
   try {
     ALL = await api('GET', '/api/records');
-    const views = { dashboard, tasks, readiness, matrix, audit: auditView, history: historyView, signatures: signatureRegister, users: usersView, notifications: notificationsView, issued: issuedFormsView, departments: departmentsView, organogram: organogramView, sharepoint: spView, password: () => renderPasswordChange(false), m: listView, new: newView, r: detailView, search: searchView, verify: verifyView };
+    const views = { dashboard, tasks, readiness, matrix, audit: auditView, history: historyView, signatures: signatureRegister, users: usersView, notifications: notificationsView, issued: issuedFormsView, forms: formsView, form: formView, departments: departmentsView, organogram: organogramView, sharepoint: spView, password: () => renderPasswordChange(false), m: listView, new: newView, r: detailView, search: searchView, verify: verifyView };
     await (views[view] || dashboard)(a);
     window.scrollTo(0, 0);
   } catch (x) { if (ME) { shell('', `<div class="panel"><h2>Something went wrong</h2><p>${esc(x.message)}</p></div>`); } }
@@ -1022,6 +1022,104 @@ async function issuedFormsView() {
   };
   $('#ff').addEventListener('input', draw); draw();
   $('#fx').addEventListener('click', () => download(`issued_forms_${today()}.csv`, toCsv([['Issue no.', 'Form', 'Title', 'Record', 'Record title', 'Issued to', 'Department', 'Issued on (UTC)'], ...rows.map(r => [r.no, r.form_code, r.form_title, r.record_number, r.record_title, r.issued_name || r.issued_to, r.dept, r.ts])])));
+}
+
+// ---------- controlled forms (List of Controlled Documents JRS/FRM/QAS/048): QA maintains, everyone views ----------
+const CF_SECTIONS = ['Annexure of Operations SOP', 'Annexure Packaging SOP', 'Annexure Human Resource Management SOP', 'Annexure of Quality Assurance SOP'];
+const isQaUser = () => hasRole(['qa']);
+async function formsView() {
+  const rows = await api('GET', '/api/cforms'), qa = isQaUser();
+  const sections = [...new Set([...CF_SECTIONS, ...rows.map(r => r.section).filter(Boolean)])];
+  shell('forms', `<div class="spread"><div><h1>Controlled forms</h1><p class="muted">List of controlled documents – forms (JRS/FRM/QAS/048, JRS/SOP/QAS/021). ${qa ? 'QA adds forms, keeps the signed master and the in-use form of each version, issues new versions and copies.' : 'Maintained by QA. Ask QA for an issued copy of a form.'}</p></div>
+    <div class="row">${qa ? '<button class="btn primary" id="cfn">New form</button>' : ''}<button class="btn" id="cfx">Export CSV</button></div></div>
+    <div class="row no-print" style="margin-bottom:.8rem;gap:.5rem;flex-wrap:wrap"><input type="search" id="cfq" placeholder="Filter by number or title" style="max-width:280px">
+    <select id="cfs" style="max-width:300px"><option value="">All sections</option>${sections.map(s => `<option>${esc(s)}</option>`).join('')}</select>
+    ${qa ? '<select id="cft" style="max-width:180px"><option value="Effective">Effective</option><option value="Obsolete">Obsolete</option><option value="">All</option></select>' : ''}</div><div id="cfl"></div>`);
+  const filtered = () => { const q = $('#cfq').value.toLowerCase(), s = $('#cfs').value, t = qa ? $('#cft').value : 'Effective'; return rows.filter(r => (!q || (r.number + ' ' + r.title).toLowerCase().includes(q)) && (!s || r.section === s) && (!t || r.status === t)); };
+  const draw = () => {
+    const list = filtered(); let sec = null;
+    $('#cfl').innerHTML = list.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Sr. no.</th><th>Form number</th><th>Form title</th><th>Version</th><th>Effective date</th><th>Status</th>${qa ? '<th>Signed master</th><th>In-use form</th><th>Issued</th>' : ''}</tr></thead><tbody>
+      ${list.map((r, i) => { const head = r.section !== sec ? `<tr class="group-row"><td colspan="${qa ? 9 : 6}"><b>${esc(r.section || 'Other')}</b></td></tr>` : ''; sec = r.section;
+        return `${head}<tr class="click" data-go="#/form/${r.id}"><td>${i + 1}</td><td class="mono">${esc(r.number)}</td><td>${esc(r.title)}</td><td>${esc(r.version)}</td><td>${dmy(r.effectiveDate)}</td><td>${pill(r.status)}</td>
+        ${qa ? `<td>${r.hasMaster ? '<span class="pill done">Attached</span>' : '<span class="pill warn">Missing</span>'}</td><td>${r.hasInuse ? '<span class="pill done">Attached</span>' : '<span class="pill warn">Missing</span>'}</td><td>${r.issued || ''}</td>` : ''}</tr>`; }).join('')}</tbody></table></div>`
+      : '<div class="table-wrap"><div class="empty">No forms match.</div></div>';
+    bindRows($('#cfl'));
+  };
+  ['#cfq', '#cfs', '#cft'].forEach(s => $(s)?.addEventListener('input', draw)); draw();
+  $('#cfx').addEventListener('click', () => download(`controlled_forms_${today()}.csv`, toCsv([['Sr. no.', 'Form number', 'Form title', 'Version', 'Effective date', 'Section', 'Status'], ...filtered().map((r, i) => [i + 1, r.number, r.title, r.version, r.effectiveDate, r.section, r.status])])));
+  $('#cfn')?.addEventListener('click', async () => {
+    const r = await modal({ title: 'New controlled form', ok: 'Add form', wide: true, html: `<div class="grid"><div><label class="f">Form number <span class="req">*</span></label><input type="text" name="number" placeholder="JRS/FRM/QAS/056"></div>
+      <div><label class="f">Version <span class="req">*</span></label><input type="text" name="version" value="1.0"></div>
+      <div style="grid-column:1/-1"><label class="f">Form title <span class="req">*</span></label><input type="text" name="title"></div>
+      <div><label class="f">Section</label><select name="section">${sections.map(s => `<option>${esc(s)}</option>`).join('')}</select></div>
+      <div><label class="f">Related SOP</label><input type="text" name="sop" placeholder="JRS/SOP/QAS/021"></div>
+      <div><label class="f">Effective date <span class="req">*</span></label><input type="date" name="effectiveDate" value="${today()}"></div><div></div>
+      <div><label class="f">Signed master (scan, PDF)</label><input type="file" name="master" accept=".pdf,application/pdf"></div>
+      <div><label class="f">In-use form (blank, PDF – used for issued copies)</label><input type="file" name="inuse" accept=".pdf,application/pdf"></div></div>`,
+      onOk: async (f) => api('POST', '/api/cforms', { number: val(f, 'number'), version: val(f, 'version'), title: val(f, 'title'), section: f.section.value, sop: val(f, 'sop'), effectiveDate: f.effectiveDate.value, master: await cfPick(f.master), inuse: await cfPick(f.inuse) }) });
+    if (r) { toast(`${r.number} added`); location.hash = '#/form/' + r.id; }
+  });
+}
+const cfPick = async (inp) => { const file = inp.files[0]; return file ? { name: file.name, base64: await fileB64(file) } : null; };
+async function formView(id) {
+  const f = await api('GET', '/api/cforms/' + id), qa = f.canEdit, v = f.current, live = f.status === 'Effective';
+  const fileLink = (ver, kind) => ver[kind] ? `<a href="/api/cforms/${f.id}/versions/${ver.id}/${kind}" download>${esc(ver[kind].name)}</a>` : '<span class="muted">Not attached</span>';
+  shell('forms', `<div class="spread"><div><p class="small"><a href="#/forms">Controlled forms</a></p><h1><span class="mono">${esc(f.number)}</span> ${esc(f.title)}</h1>
+    <p>${pill(f.status)} Version ${esc(v.version)} · effective ${dmy(v.effectiveDate)} · ${esc(f.section || '')}${f.sop ? ' · related SOP ' + esc(f.sop) : ''}</p></div>
+    ${qa && live ? `<div class="row" style="flex-wrap:wrap"><button class="btn primary" id="cfi">Issue copies</button><button class="btn" id="cfe">Edit</button>${f.pending ? '' : '<button class="btn" id="cfv">New version</button>'}<button class="btn danger" id="cfo">Make obsolete</button></div>` : ''}</div>
+    <div class="panel"><h2>Current version ${esc(v.version)}</h2><table class="kv"><tbody>
+      <tr><th>Status</th><td>${pill(v.status)}</td></tr><tr><th>Effective date</th><td>${dmy(v.effectiveDate)}</td></tr><tr><th>Change / reason</th><td>${esc(v.changeNote || '')}</td></tr>
+      ${qa ? `<tr><th>Signed master</th><td>${fileLink(v, 'master')}${live ? ` <label class="btn small-btn">${v.master ? 'Replace' : 'Attach'}<input type="file" hidden data-cff="master" accept=".pdf,image/*,application/pdf"></label>` : ''}</td></tr>
+      <tr><th>In-use form (PDF)</th><td>${fileLink(v, 'inuse')}${live ? ` <label class="btn small-btn">${v.inuse ? 'Replace' : 'Attach'}<input type="file" hidden data-cff="inuse" accept=".pdf,application/pdf"></label>` : ''}</td></tr>` : `<tr><th>Copies</th><td>Issued by QA from the current version only. Ask QA for an issued copy.</td></tr>`}
+    </tbody></table>${f.pending ? `<p class="pill warn" style="margin-top:.6rem">Version ${esc(f.pending.version)} is approved and becomes effective on ${dmy(f.pending.effectiveDate)}; until then version ${esc(v.version)} is issued.</p>` : ''}</div>
+    ${qa ? `<div class="panel"><h2>Version history</h2><div class="table-wrap"><table class="t"><thead><tr><th>Version</th><th>Status</th><th>Effective date</th><th>Change / reason</th><th>Signed master</th><th>In-use form</th><th>Added</th><th>Ended</th></tr></thead><tbody>
+      ${f.versions.map(x => `<tr><td>${esc(x.version)}</td><td>${pill(x.status)}</td><td>${dmy(x.effectiveDate)}</td><td>${esc(x.changeNote || '')}</td><td>${fileLink(x, 'master')}</td><td>${fileLink(x, 'inuse')}</td><td class="small">${esc(x.createdBy)}<br>${dmyt(x.createdAt)}</td><td class="small">${x.endedAt ? `${esc(x.endedBy)}<br>${dmyt(x.endedAt)}<br>${esc(x.endReason || '')}` : ''}</td></tr>`).join('')}</tbody></table></div></div>
+    <div class="panel"><h2>Issued copies (${f.issues.length})</h2>${f.issues.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Issue no.</th><th>Version</th><th>Copy</th><th>Issued to</th><th>Department</th><th>Purpose</th><th>Issued by</th><th>Issued on</th></tr></thead><tbody>
+      ${f.issues.map(r => `<tr><td class="mono">${esc(r.no)}</td><td>${esc(r.form_version || '')}</td><td>${esc(r.copy_label || '')}</td><td>${esc(r.issued_name || r.issued_to)}</td><td>${esc(deptName(r.dept))}</td><td>${esc(r.purpose || '')}</td><td>${esc(r.issued_by || '')}</td><td class="small">${dmyt(r.ts)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No copies issued yet.</p>'}</div>` : ''}`);
+  if (!qa) return;
+  $$('[data-cff]').forEach(inp => inp.addEventListener('change', async () => {
+    const kind = inp.dataset.cff, file = inp.files[0]; if (!file) return;
+    const had = v[kind], body = { kind, name: file.name, base64: await fileB64(file) };
+    if (had) { const ok = await modal({ title: `Replace the ${kind === 'master' ? 'signed master' : 'in-use form'}`, ok: 'Replace', html: `<p>${esc(had.name)} will be replaced by ${esc(file.name)} for version ${esc(v.version)}.</p><div><label class="f">Reason <span class="req">*</span></label><textarea name="reason" rows="2"></textarea></div>`, onOk: (fm) => api('POST', `/api/cforms/${f.id}/files`, { ...body, reason: val(fm, 'reason') }) }); if (!ok) return; }
+    else { try { await api('POST', `/api/cforms/${f.id}/files`, body); } catch (x) { return toast(x.message); } }
+    toast('File attached'); route();
+  }));
+  $('#cfi')?.addEventListener('click', async () => {
+    const people = USERS.filter(u => u.active).sort((a, b) => a.fullname.localeCompare(b.fullname));
+    await modal({ title: `Issue ${f.number} v${v.version}`, ok: 'Issue copies', html: `<p class="muted small">Copies are made from the in-use form of the current version ${esc(v.version)} (effective ${dmy(v.effectiveDate)}). Each copy gets its own issue number (FI-YYYY-NNN) on every page.</p>
+      <div><label class="f">Issued to <span class="req">*</span></label><select name="issuedTo"><option value="">Choose…</option>${people.map(u => `<option value="${esc(u.username)}">${esc(u.fullname)}${u.department ? ' – ' + esc(deptName(u.department)) : ''}</option>`).join('')}</select></div>
+      <div><label class="f">Purpose of the issue <span class="req">*</span></label><textarea name="purpose" rows="2" placeholder="e.g. Batch PO-2026-114 line clearance"></textarea></div>
+      <div><label class="f">Number of copies <span class="req">*</span></label><input type="number" name="copies" min="1" max="50" value="1"></div>`,
+      onOk: async (fm) => {
+        const r = await fetch(`/api/cforms/${f.id}/issue`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': ME.csrf }, body: JSON.stringify({ issuedTo: fm.issuedTo.value, purpose: val(fm, 'purpose'), copies: +fm.copies.value, version: v.version }) });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Issue failed');
+        const name = decodeURIComponent((/filename="([^"]+)"/.exec(r.headers.get('content-disposition') || '') || [])[1] || 'issued.pdf');
+        download(name, await r.blob(), 'application/pdf'); toast(`Issued: ${r.headers.get('x-issue-numbers').split(',').join(', ')}`);
+      } }) && route();
+  });
+  $('#cfe')?.addEventListener('click', async () => {
+    const ok = await modal({ title: `Edit ${f.number}`, ok: 'Save', html: `<div><label class="f">Form title</label><input type="text" name="title" value="${esc(f.title)}"></div>
+      <div class="grid"><div><label class="f">Section</label><select name="section">${[...new Set([...CF_SECTIONS, f.section].filter(Boolean))].map(s => `<option ${s === f.section ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select></div>
+      <div><label class="f">Related SOP</label><input type="text" name="sop" value="${esc(f.sop || '')}"></div><div><label class="f">Effective date (v${esc(v.version)})</label><input type="date" name="effectiveDate" value="${esc(v.effectiveDate || '')}"></div></div>
+      <div><label class="f">Reason for the change <span class="req">*</span></label><textarea name="reason" rows="2"></textarea></div>`,
+      onOk: (fm) => api('PUT', '/api/cforms/' + f.id, { title: val(fm, 'title'), section: fm.section.value, sop: val(fm, 'sop'), effectiveDate: fm.effectiveDate.value, reason: val(fm, 'reason') }) });
+    if (ok) { toast(ok.changes ? `${ok.changes} change(s) saved` : 'No changes'); route(); }
+  });
+  $('#cfv')?.addEventListener('click', async () => {
+    const next = (Math.floor(+v.version) + 1).toFixed(1);
+    const ok = await modal({ title: `New version of ${f.number}`, ok: 'Make effective', wide: true, html: `<p class="muted small">Version ${esc(v.version)} becomes <b>Superseded</b>. From then on only the new version can be issued.</p>
+      <div class="grid"><div><label class="f">New version <span class="req">*</span></label><input type="text" name="version" value="${next}"></div><div><label class="f">Effective date <span class="req">*</span></label><input type="date" name="effectiveDate" value="${today()}"></div>
+      <div style="grid-column:1/-1"><label class="f">Form title</label><input type="text" name="title" value="${esc(f.title)}"></div>
+      <div style="grid-column:1/-1"><label class="f">Change / reason <span class="req">*</span></label><textarea name="changeNote" rows="2"></textarea></div>
+      <div><label class="f">Signed master (scan) <span class="req">*</span></label><input type="file" name="master" accept=".pdf,image/*,application/pdf"></div><div><label class="f">In-use form (blank PDF) <span class="req">*</span></label><input type="file" name="inuse" accept=".pdf,application/pdf"></div></div>`,
+      onOk: async (fm) => api('POST', `/api/cforms/${f.id}/versions`, { version: val(fm, 'version'), effectiveDate: fm.effectiveDate.value, title: val(fm, 'title'), changeNote: val(fm, 'changeNote'), master: await cfPick(fm.master), inuse: await cfPick(fm.inuse) }) });
+    if (ok) { toast(`${f.number} v${ok.version} effective`); route(); }
+  });
+  $('#cfo')?.addEventListener('click', async () => {
+    const ok = await modal({ title: `Make ${f.number} obsolete`, ok: 'Make obsolete', okClass: 'danger', html: `<p>Version ${esc(v.version)} becomes <b>Obsolete</b>. The form can no longer be issued and its number is not reused.</p><div><label class="f">Reason <span class="req">*</span></label><textarea name="reason" rows="2"></textarea></div>`,
+      onOk: (fm) => api('POST', `/api/cforms/${f.id}/obsolete`, { reason: val(fm, 'reason') }) });
+    if (ok) { toast(`${f.number} obsolete`); route(); }
+  });
 }
 
 // ---------- notifications (also sent by e-mail when the server has e-mail set up) ----------

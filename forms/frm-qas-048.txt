@@ -1,0 +1,140 @@
+# List of Controlled Documents – Form, JRS/FRM/QAS/048 v1.0 (list version 2.0, updated 05-Oct-2026, related SOP JRS/SOP/QAS/021)
+# Loaded once into the controlled forms register when it is empty. "## " lines are the annexure sections.
+# number | title | version | effective date
+## Annexure of Operations SOP
+JRS/FRM/OPS/001|Quote Format|2.0|2023-08-10
+JRS/FRM/OPS/002|Proforma Invoice|2.0|2023-08-10
+JRS/FRM/OPS/003|Purchase order|2.0|2023-08-10
+JRS/FRM/OPS/004|Logistic Invoice|2.0|2023-08-10
+JRS/FRM/OPS/005|Commercial Invoice|2.0|2023-08-10
+JRS/FRM/OPS/006|Project Management Flow Chart|3.0|2025-03-31
+JRS/FRM/OPS/007|Goods Receipt Report|2.0|2023-08-10
+JRS/FRM/OPS/008|Inventory Balance sheet|2.0|2023-08-10
+JRS/FRM/OPS/009|Certificate of Destruction|3.0|2025-03-31
+JRS/FRM/OPS/010|Recall/Mock Recall Report|3.0|2025-03-31
+JRS/FRM/OPS/011|Cleaning Record|3.0|2025-03-31
+JRS/FRM/OPS/013|Job Description|3.0|2026-03-26
+JRS/FRM/OPS/014|Curriculum Vitae|3.0|2026-03-26
+JRS/FRM/OPS/015|Certificate of Pedigree|5.0|2025-10-15
+JRS/FRM/OPS/016|Unit Maintenance Record|2.0|2023-08-10
+JRS/FRM/OPS/017|Temperature Monitoring Record|4.0|2025-04-30
+JRS/FRM/OPS/018|Cleaning and Inspection Record of Bug Zapper|3.0|2025-03-31
+JRS/FRM/OPS/019|Distribution Checklist|2.0|2025-10-15
+JRS/FRM/OPS/020|Return Reconciliation Log|1.0|2023-09-25
+JRS/FRM/OPS/022|E- Signature Format|1.0|2024-01-22
+JRS/FRM/OPS/023|Clinical Supplies Return Form|2.0|2025-09-03
+JRS/FRM/OPS/024|Validation Report|1.0|2024-01-22
+JRS/FRM/OPS/025|Software Qualification Process|1.0|2024-01-22
+JRS/FRM/OPS/026|User Requirement Specification|1.0|2024-01-22
+JRS/FRM/OPS/027|Installation Qualification|1.0|2024-01-22
+JRS/FRM/OPS/028|Operation Qualification|1.0|2024-01-22
+JRS/FRM/OPS/029|Performance Qualification|1.0|2024-01-22
+JRS/FRM/OPS/030|Validation Report – Zebra Printer|1.0|2024-01-22
+JRS/FRM/OPS/031|User Requirement Specification – Zebra Printer|1.0|2024-01-22
+JRS/FRM/OPS/032|Equipment Qualification Process|1.0|2023-09-25
+JRS/FRM/OPS/033|Installation Qualification Zebra Printer|1.0|2024-01-22
+JRS/FRM/OPS/034|Design Qualification Zebra Printer|1.0|2024-01-22
+JRS/FRM/OPS/035|Operation Qualification Zebra Printer|1.0|2024-01-22
+JRS/FRM/OPS/036|Performance Qualification Zebra Printer|1.0|2024-01-22
+JRS/FRM/OPS/037|Business Continuity Plan Process|1.0|2024-01-22
+JRS/FRM/OPS/038|Business Continuity Assessment Management|1.0|2024-01-22
+JRS/FRM/OPS/039|Business Continuity and Disaster Management Contact List|1.0|2024-05-07
+JRS/FRM/OPS/040|Spill/Incident Report form|1.0|2024-06-10
+JRS/FRM/OPS/041|Mock Drill Log|1.0|2024-06-10
+JRS/FRM/OPS/042|Final Trial Reconciliation & Accountability Log|1.0|2024-09-16
+JRS/FRM/OPS/043|Pest Control Layout|1.0|2025-03-31
+JRS/FRM/OPS/044|Check and Replacement Report for Baits and Glue Pad|1.0|2025-03-31
+JRS/FRM/OPS/045|Gel Pack Conditioning Log|1.0|2025-02-25
+JRS/FRM/OPS/046|Labeling and Packaging Area Cleaning Log|1.0|2025-03-31
+JRS/FRM/OPS/047|Customer product disposition record|2.0|2026-09-23
+JRS/FRM/OPS/048|Material Safe Handling Risk Assessment|1.0|2025-07-16
+JRS/FRM/OPS/049|Hazardous Material Handling Training Certificate|1.0|2025-07-16
+JRS/FRM/OPS/050|Reusable Shipper Tracking Register|1.0|2026-03-27
+## Annexure Packaging SOP
+JRS/FRM/PKG/001|Production Order|4.0|2025-12-23
+JRS/FRM/PKG/002|Line Clearance Checklist|3.0|2025-12-23
+JRS/FRM/PKG/003|Packaging Material Issuance Request and Slip|2.0|2025-12-23
+JRS/FRM/PKG/004|Change Order|1.0|2023-07-15
+JRS/FRM/PKG/005|In Process Quality Check|2.0|2025-01-06
+JRS/FRM/PKG/006|Final Reconciliation for Production Order|2.0|2025-01-06
+JRS/FRM/PKG/007|Material ID list|1.0|2023-07-15
+JRS/FRM/PKG/008|BOM (Bill of Material) Request and Issuance From|1.0|2023-07-15
+JRS/FRM/PKG/009|Batch Production Record|3.0|2025-12-23
+JRS/FRM/PKG/010|Label Text and Design Proof Requisition Form|1.0|2023-07-15
+JRS/FRM/PKG/011|Label Text and Design Proof Approval Form|1.0|2023-07-15
+JRS/FRM/PKG/012|Label Printing Requisition From|1.0|2023-07-15
+JRS/FRM/PKG/013|Print Run Approval Form|1.0|2023-07-15
+JRS/FRM/PKG/014|Label Transfer Request Form|1.0|2023-07-15
+JRS/FRM/PKG/015|Packaging Component Specification Form|1.0|2023-07-15
+JRS/FRM/PKG/016|Packaging Component Design Approval Form|1.0|2023-07-15
+JRS/FRM/PKG/017|Retention Record form of sample packaged kit|1.0|2023-07-15
+JRS/FRM/PKG/018|Material Order Form|1.0|2024-01-22
+JRS/FRM/PKG/019|List of Issued Material|1.0|2024-01-22
+JRS/FRM/PKG/020|Material Issuance Log|1.0|2024-01-22
+JRS/FRM/PKG/021|Additional Labeling Request Form|1.0|2024-09-16
+JRS/FRM/PKG/022|Additional Labeling Confirmation Form|1.0|2024-09-16
+JRS/FRM/PKG/023|Medication List Specification|1.0|2024-09-16
+JRS/FRM/PKG/024|Medication List Usage Record Form|1.0|2024-09-16
+JRS/FRM/PKG/025|Label Printing Log|2.0|2025-04-30
+JRS/FRM/PKG/026|Label Inspection Log|2.0|2025-04-30
+JRS/FRM/PKG/027|Label Rejection Form|1.0|2024-09-16
+JRS/FRM/PKG/028|Label Reprinting Request Form|1.0|2024-09-16
+JRS/FRM/PKG/029|Certificate of Packing|2.0|2025-04-21
+JRS/FRM/PKG/030|TOE tracking record|2.0|2025-12-23
+JRS/FRM/PKG/031|Project specification/Scope of Work|1.0|2025-04-21
+JRS/FRM/PKG/032|End of the day line clearance checklist for packaging area|1.0|2025-12-23
+JRS/FRM/PKG/033|Certificate of Conformance – Label Printing|1.0|2026-09-30
+JRS/FRM/PKG/034|Line Clearance – Label Printing|1.0|2026-09-30
+JRS/FRM/PKG/035|Line Clearance – Label Inspection|1.0|2026-09-30
+## Annexure Human Resource Management SOP
+JRS/FRM/HRM/001|Offer letter|2.0|2023-07-15
+JRS/FRM/HRM/002|Compensation Structure|2.0|2023-07-15
+JRS/FRM/HRM/003|Relieving Letter|2.0|2023-07-15
+JRS/FRM/HRM/004|Employee Hand Over/Transition Form|1.0|2023-12-01
+JRS/FRM/HRM/005|Employee Exit Form|1.0|2023-12-01
+## Annexure of Quality Assurance SOP
+JRS/FRM/QAS/002|Training Attendance Record|5.0|2026-09-11
+JRS/FRM/QAS/003|Self-Inspection Report|3.0|2025-04-15
+JRS/FRM/QAS/004|Vendor Qualification Checklist|3.0|2024-05-27
+JRS/FRM/QAS/005|Approved Supplier List|3.0|2025-02-14
+JRS/FRM/QAS/006|Corrective Action and Preventive Action Report|3.0|2025-04-15
+JRS/FRM/QAS/007|Change Control|4.0|2026-09-07
+JRS/FRM/QAS/008|Register of Signature|3.0|2026-08-21
+JRS/FRM/QAS/009|Customer Master List|2.0|2023-09-05
+JRS/FRM/QAS/010|New Customer Creation Form|2.0|2023-09-05
+JRS/FRM/QAS/012|Register of External Audit|2.0|2025-04-30
+JRS/FRM/QAS/013|Response to External Audit|2.0|2025-04-30
+JRS/FRM/QAS/016|Register of Corrective Action and Preventive Action|3.0|2026-09-08
+JRS/FRM/QAS/017|Register of Change Control|1.0|2023-09-05
+JRS/FRM/QAS/018|Register for calibration|1.0|2023-09-05
+JRS/FRM/QAS/020|Audit Report|2.0|2025-05-15
+JRS/FRM/QAS/021|Audit Agenda|1.0|2024-02-19
+JRS/FRM/QAS/027|Audit Certificate|2.0|2025-05-15
+JRS/FRM/QAS/028|Archival Log|1.0|2024-06-10
+JRS/FRM/QAS/029|Register of External Audit|1.0|2024-10-20
+JRS/FRM/QAS/030|Training Need Identification|1.0|2025-01-30
+JRS/FRM/QAS/031|Training Certificate|1.0|2025-01-30
+JRS/FRM/QAS/032|Checklist For the Assessment of Trainer|1.0|2025-01-30
+JRS/FRM/QAS/033|List of Certified Trainers|1.0|2025-01-30
+JRS/FRM/QAS/034|Training assessment sheet|2.0|2026-09-11
+JRS/FRM/QAS/035|Minutes of Meeting of Quality Management Review|1.0|2025-03-07
+JRS/FRM/QAS/036|Quality Risk Assessment record|1.0|2026-04-15
+JRS/FRM/QAS/037|Risk Assessment numbering register|1.0|2026-04-15
+JRS/FRM/QAS/038|Self-inspection schedule|1.0|2025-04-15
+JRS/FRM/QAS/039|List of qualified auditors|1.0|2025-04-15
+JRS/FRM/QAS/040|Audit Agenda|1.0|2025-04-15
+JRS/FRM/QAS/041|Audit Response and CAPA plan|1.0|2025-04-15
+JRS/FRM/QAS/042|Supplier Risk Assessment|1.0|2025-05-15
+JRS/FRM/QAS/043|List of Qualified Auditor|1.0|2025-05-15
+JRS/FRM/QAS/044|Supplier Audit Schedule|1.0|2025-05-15
+JRS/FRM/QAS/045|Extension request|1.0|2026-02-16
+JRS/FRM/QAS/046|Format of Controlled Document|1.0|2026-06-15
+JRS/FRM/QAS/047|Format of Form|1.0|2026-06-15
+JRS/FRM/QAS/048|List of Controlled documents|1.0|2026-06-15
+JRS/FRM/QAS/049|Document Distribution, Retrieval and Destruction Record|1.0|2026-06-15
+JRS/FRM/QAS/050|Form Issuance Record|1.0|2026-06-15
+JRS/FRM/QAS/051|[GLB] Periodic Review – GxP Facilities, Utilities and Equipment|1.0|2026-10-05
+JRS/FRM/QAS/052|[GLB] Periodic Review Schedule – GxP Facilities, Utilities and Equipment|1.0|2026-10-05
+JRS/FRM/QAS/053|[GLB] Validation Master Matrix|1.0|2026-10-05
+JRS/FRM/QAS/054|[GLB] Investigation Report|1.0|2026-09-30
+JRS/FRM/QAS/055|[GLB] Register of Quality Event|1.0|2026-09-30
