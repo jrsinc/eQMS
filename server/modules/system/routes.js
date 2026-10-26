@@ -7,7 +7,7 @@ const { db, now } = require('../../core/db.js');
 const { checkPw } = require('../../core/passwords.js');
 const { audit } = require('../../core/audit.js');
 const { fail, route } = require('../../core/http.js');
-const { pub, sessions, withOrg } = require('../../core/auth.js');
+const { neverLocked, pub, sessions, withOrg } = require('../../core/auth.js');
 const { deptRows } = require('../../org/departments.js');
 const { mailOn } = require('../../core/mail.js');
 
@@ -19,9 +19,11 @@ route('POST', '/api/login', async (ctx) => {
   const id = String(username || '').toLowerCase().trim();
   const u = db.prepare("SELECT * FROM users WHERE username=? OR (email<>'' AND lower(email)=?)").get(id, id);
   if (!u || !u.active) { audit(null, 'Login failed', null, 'username', null, username, 'Unknown or inactive user', ctx.ip); fail(401, 'User ID or password incorrect.'); }
-  if (u.locked) fail(423, 'Account locked. Contact your administrator.');
+  const admin = neverLocked(u);
+  if (u.locked && !admin) fail(423, 'Account locked. Contact your administrator.');
   if (!checkPw(String(password || ''), u.pw_hash)) {
-    const failed = u.failed + 1, locked = failed >= CFG.maxFailed ? 1 : 0;
+    const failed = u.failed + 1, locked = failed >= CFG.maxFailed && !admin ? 1 : 0;
+    if (admin && failed >= CFG.maxFailed) await new Promise(r => setTimeout(r, 2000)); // administrators are not locked: slow repeated guesses down instead
     db.prepare('UPDATE users SET failed=?, locked=? WHERE username=?').run(failed, locked, u.username);
     audit({ username: u.username, fullname: u.fullname }, locked ? 'Account locked' : 'Login failed', null, null, null, null, `Failed attempt ${failed}`, ctx.ip);
     fail(401, locked ? 'Account locked after 5 failed attempts.' : 'User ID or password incorrect.');

@@ -9,7 +9,7 @@ import { gunzipSync } from 'node:zlib';
 import crypto from 'node:crypto';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 30000 + Math.floor(Math.random() * 1000), DATA = mkdtempSync(join(tmpdir(), 'qms-bk-'));
-const srv = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], { cwd: root, env: { ...process.env, DATA_DIR: DATA, PORT: String(PORT), HOST: '127.0.0.1', SEED_DEMO: 'true', MODULE_GROUPS_OFF: '', SMTP_HOST: '' }, stdio: 'ignore' });
+const srv = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], { cwd: root, env: { ...process.env, DATA_DIR: DATA, PORT: String(PORT), HOST: '127.0.0.1', SEED_DEMO: 'true', MODULE_GROUPS_OFF: '', ADMIN_INITIAL_PASSWORD: 'ChangeMe-2026!', SMTP_HOST: '' }, stdio: 'ignore' });
 const B = 'http://127.0.0.1:' + PORT;
 for (let i = 0; i < 150; i++) { try { await fetch(B + '/api/health'); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
 let failed = 0;
@@ -71,6 +71,14 @@ let v=await ad.call('GET','/api/audit/verify');ok(v.ok,'audit trail chain intact
 let log=(await ad.call('GET','/api/admin/backups/log'))._arr;
 ok(log.some(a=>a.action==='Database restored from backup'),'backup and restore log');
 await ad.raw('/api/admin/backup');ok((await ad.call('GET','/api/admin/backups/log'))._arr[0].action==='Backup downloaded','new backups are logged');
+// ===== account lock: other users are locked after 5 wrong passwords, system administrators never =====
+const tryLogin=async(u,p)=>(await fetch(B+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})})).status;
+for (let i=0;i<5;i++) await tryLogin('pm1','wrong-password');
+ok(await tryLogin('pm1','Demo-Pass-2026')===423,'a user is locked after 5 wrong passwords');
+for (let i=0;i<6;i++) await tryLogin('admin','wrong-password');
+ok(await tryLogin('admin','ChangeMe-2026!')===200,'the system administrator is never locked out');
+ok((await ad.call('GET','/api/audit?action='+encodeURIComponent('Login failed')))._arr.filter(a=>a.username==='admin').length>=6,'failed administrator sign-ins are still in the audit trail');
+
 srv.kill();
 console.log(failed ? `\n${failed} FAILED` : '\nALL PASSED');
 process.exit(failed ? 1 : 0);

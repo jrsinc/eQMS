@@ -29,8 +29,8 @@ function getUser(req) {
   if (!s) return null;
   if (Date.now() - s.last > CFG.idleMinutes * 60000) { sessions.delete(m[1]); return null; }
   s.last = Date.now();
-  const u = db.prepare('SELECT * FROM users WHERE username=? AND active=1 AND locked=0').get(s.username);
-  if (!u) return null;
+  const u = db.prepare('SELECT * FROM users WHERE username=? AND active=1').get(s.username);
+  if (!u || (u.locked && !neverLocked(u))) return null;
   withOrg(u); u.sid = m[1]; u.csrf = s.csrf;
   return u;
 }
@@ -52,15 +52,19 @@ const esigCurrent = (u) => !!u.esig_accepted && new Date(u.esig_accepted) > new 
 const pub = (u) => ({ username: u.username, fullname: u.fullname, email: u.email, roles: u.roles, mustChange: !!u.must_change, esigAccepted: esigCurrent(u), csrf: u.csrf,
   department: u.department || '', hodOf: u.hodOf || [], deptsUnder: u.deptsUnder || [], allAccess: allAccess(u), canEditOrg: canEditOrg(u), modulesOff: [...OFF_TYPES] });
 
+// System administrators are never locked out (failed attempts are still recorded and slowed down), so the system always has
+// someone who can unlock and reset the other accounts
+const neverLocked = (u) => { try { return (Array.isArray(u.roles) ? u.roles : JSON.parse(u.roles || '[]')).includes('admin'); } catch { return false; } };
 function verifySignature(user, body) {
   if (!esigCurrent(user)) fail(403, user.esig_accepted ? `Signature registration is older than ${REREGISTER_YEARS} years. Accept the electronic signature statement again (JRS/SOP/QAS/009).` : 'Accept the electronic signature statement before signing.');
   if (body.sigUsername !== user.username) fail(403, 'Signature user ID must match the logged-in user.');
   const u = db.prepare('SELECT * FROM users WHERE username=?').get(user.username);
   if (!checkPw(String(body.password || ''), u.pw_hash)) {
     const failed = u.failed + 1;
-    db.prepare('UPDATE users SET failed=?, locked=? WHERE username=?').run(failed, failed >= CFG.maxFailed ? 1 : 0, u.username);
+    const lock = failed >= CFG.maxFailed && !neverLocked(u);
+    db.prepare('UPDATE users SET failed=?, locked=? WHERE username=?').run(failed, lock ? 1 : 0, u.username);
     audit(user, 'E-signature failed', null, null, null, null, 'Wrong password');
-    fail(422, failed >= CFG.maxFailed ? 'Account locked after repeated failures. Contact your administrator.' : 'Password incorrect. Signature not applied.');
+    fail(422, lock ? 'Account locked after repeated failures. Contact your administrator.' : 'Password incorrect. Signature not applied.');
   }
   db.prepare('UPDATE users SET failed=0 WHERE username=?').run(u.username);
 }
@@ -73,4 +77,4 @@ const userLabel = (u) => (db.prepare('SELECT fullname FROM users WHERE username=
 const userRow = (u) => u ? db.prepare('SELECT username, fullname, email, roles, active FROM users WHERE username=?').get(u) : null;
 const usersWithRole = (r) => db.prepare('SELECT username, roles FROM users WHERE active=1').all().filter(u => JSON.parse(u.roles).includes(r)).map(u => u.username);
 
-module.exports = { REREGISTER_YEARS, sessions, getUser, withOrg, allAccess, canEditOrg, hasRole, esigCurrent, pub, verifySignature, OFF_GROUPS, OFF_TYPES, userLabel, userRow, usersWithRole };
+module.exports = { neverLocked, REREGISTER_YEARS, sessions, getUser, withOrg, allAccess, canEditOrg, hasRole, esigCurrent, pub, verifySignature, OFF_GROUPS, OFF_TYPES, userLabel, userRow, usersWithRole };

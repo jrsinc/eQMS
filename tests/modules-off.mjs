@@ -9,6 +9,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 29000 + Math.floor(Math.random() * 1000);
 const env = { ...process.env, DATA_DIR: mkdtempSync(join(tmpdir(), 'qms-off-')), PORT: String(PORT), HOST: '127.0.0.1', SEED_DEMO: 'true', SMTP_HOST: '' };
 delete env.MODULE_GROUPS_OFF; // the default list from modules.js
+env.ADMIN_INITIAL_PASSWORD = 'ChangeMe-2026!';
 const srv = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], { cwd: root, env, stdio: 'ignore' });
 const B = 'http://127.0.0.1:' + PORT;
 for (let i = 0; i < 150; i++) { try { await fetch(B + '/api/health'); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
