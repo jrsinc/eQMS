@@ -59,6 +59,7 @@ if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Force $stage | Out-Null
 Copy-Item (Join-Path $root 'server.js'), (Join-Path $root 'package.json') $stage
 Copy-Item (Join-Path $root 'public') (Join-Path $stage 'public') -Recurse
+foreach ($d in 'server', 'vendor', 'forms') { Copy-Item (Join-Path $root $d) (Join-Path $stage $d) -Recurse }
 $zip = Join-Path $out "$AppName.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 # zip entries with forward slashes (Compress-Archive in Windows PowerShell 5.1 writes backslashes, which Linux unpacks as file names)

@@ -21,7 +21,23 @@ and the Validation Summary Report is approved.
 
 - JavaScript, Node.js 22 LTS (≥ 22.13). **No npm dependencies** – only Node's built-in `http`, `crypto` and `sqlite`.
 - Database: SQLite (`data/qms.db`) in this release; PostgreSQL 16 planned for production (release 0.3).
-- Front end: HTML, CSS and plain JavaScript single-page app (`public/`). Module, field and workflow configuration in `public/modules.js`.
+- Front end: HTML, CSS and plain JavaScript single-page app (`public/`).
+
+## Code layout
+
+| Folder | What is in it |
+| --- | --- |
+| `server.js` | Start the server (`node server.js`); loads `server/app.js` |
+| `server/core/` | Configuration (`.env`), database and migrations, audit trail, HTTP helpers, sign-in and e-signatures, e-mail, PDF lock and stamps, shared helpers |
+| `server/org/` | Departments and organogram |
+| `server/records/` | Record engine (numbering, field rules, versions, links, visibility) and the SOP business rules (checks, workflow side effects) |
+| `server/modules/<area>/` | API of each area: `records`, `users`, `org`, `controlled-documents`, `issued-forms`, `supply-chain`, `documents`, `randomization`, `notifications`, `audit-trail`, `reports`, `backup`, `system` |
+| `server/integrations/` | SharePoint publishing |
+| `server/app.js` | HTTP server; loads every area in order; start-up migrations |
+| `public/modules/` | Module definitions shared by server and browser: `_shared.js` (roles, departments, helpers), one file per module in its group folder (`quality-events/capa.js`, `supply-chain/vendors.js`, `help/helpdesk.js`, …) and `index.js`, which puts them together in menu order |
+| `public/js/<area>/` | Browser application: `core/` (utilities, API, dialogs, sign-in, menu, router), `records/`, `controlled-documents/`, `users/`, `org/`, `audit/`, `system/`, … and `boot.js` |
+
+To add a module: create its definition in `public/modules/<group>/<key>.js`, add it to `ORDER` in `public/modules/index.js` and a script tag in `public/index.html` (same order).
 
 ## Run locally (development)
 

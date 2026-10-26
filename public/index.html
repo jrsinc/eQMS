@@ -13,7 +13,61 @@
 <div id="app" aria-live="polite"></div>
 <div id="modal-root"></div>
 <div id="toast" role="status"></div>
-<script src="/modules.js"></script>
-<script src="/app.js"></script>
+<!-- module definitions: public/modules/ (same order as ORDER in public/modules/index.js) -->
+<script src="/modules/_shared.js"></script>
+<script src="/modules/documents-training/documents.js"></script>
+<script src="/modules/documents-training/training.js"></script>
+<script src="/modules/documents-training/tni.js"></script>
+<script src="/modules/documents-training/trainers.js"></script>
+<script src="/modules/documents-training/issues.js"></script>
+<script src="/modules/documents-training/archives.js"></script>
+<script src="/modules/quality-events/investigations.js"></script>
+<script src="/modules/quality-events/capa.js"></script>
+<script src="/modules/quality-events/changes.js"></script>
+<script src="/modules/quality-events/extensions.js"></script>
+<script src="/modules/compliance/selfinspections.js"></script>
+<script src="/modules/compliance/sischedule.js"></script>
+<script src="/modules/compliance/auditors.js"></script>
+<script src="/modules/compliance/extaudits.js"></script>
+<script src="/modules/supply-chain/vendors.js"></script>
+<script src="/modules/supply-chain/customers.js"></script>
+<script src="/modules/help/helpdesk.js"></script>
+<script src="/modules/clinical-supply/comparators.js"></script>
+<script src="/modules/clinical-supply/packaging.js"></script>
+<script src="/modules/clinical-supply/labels.js"></script>
+<script src="/modules/clinical-supply/randomization.js"></script>
+<script src="/modules/compliance/risks.js"></script>
+<script src="/modules/compliance/mgmtreviews.js"></script>
+<script src="/modules/compliance/atreviews.js"></script>
+<script src="/modules/index.js"></script>
+<!-- application: public/js/<area>/ -->
+<script src="/js/core/utils.js"></script>
+<script src="/js/core/api.js"></script>
+<script src="/js/core/dialogs.js"></script>
+<script src="/js/core/sign-in.js"></script>
+<script src="/js/core/shell.js"></script>
+<script src="/js/core/router.js"></script>
+<script src="/js/views/dashboard.js"></script>
+<script src="/js/records/list.js"></script>
+<script src="/js/records/form.js"></script>
+<script src="/js/records/extensions.js"></script>
+<script src="/js/records/detail.js"></script>
+<script src="/js/documents/issued-copies.js"></script>
+<script src="/js/clinical-supply/labels.js"></script>
+<script src="/js/clinical-supply/randomization.js"></script>
+<script src="/js/views/readiness.js"></script>
+<script src="/js/documents/training-matrix.js"></script>
+<script src="/js/audit/audit-trail.js"></script>
+<script src="/js/audit/record-history.js"></script>
+<script src="/js/users/signature-register.js"></script>
+<script src="/js/users/users.js"></script>
+<script src="/js/controlled-documents/issued-forms.js"></script>
+<script src="/js/controlled-documents/controlled-documents.js"></script>
+<script src="/js/system/backup.js"></script>
+<script src="/js/notifications/notifications.js"></script>
+<script src="/js/org/departments.js"></script>
+<script src="/js/org/organogram.js"></script>
+<script src="/js/integrations/sharepoint.js"></script>
+<script src="/js/boot.js"></script>
 </body>
 </html>
