@@ -41,6 +41,7 @@ function dueOf(r) {
   if (r.type === 'archives' && r.status === 'Retrieved') { const x = (d.retrievals || []).slice(-1)[0]; return x && x.date ? addWorkingDaysIso(x.date, 7) : ''; }
   if (r.type === 'customers') return r.status === 'Qualified' ? d.reviewDate : '';
   if (r.type === 'vendors') return r.status === 'Approved' ? d.requalDate : r.status === 'Under Quality Review' && d.auditReportDate && !d.complianceReceived ? addDaysIso(d.auditReportDate, 30) : '';
+  if (r.type === 'actionitems') return r.status === 'Open' ? d.dueDate : '';
   return { training: d.dueDate, comparators: d.neededBy, risks: d.reviewDate }[r.type];
 }
 const isOverdue = (r) => { const v = dueOf(r); return !!v && !DONE.has(r.status) && v < today(); };

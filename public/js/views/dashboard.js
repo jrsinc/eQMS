@@ -15,6 +15,8 @@ function bindRows(root = document) { $$('[data-go]', root).forEach(el => el.addE
 function myTasks() {
   return ALL.filter(r => {
     if (DONE.has(r.status)) return false;
+    if (r.type === 'actionitems') return r.status === 'Open' ? r.data.respPerson === ME.username : false;
+    if (r.type === 'changes' && r.status === 'Optional Approvals' && (r.data.approvers || []).some(a => a.user === ME.username) && !(r.data.deptApprovals || []).some(a => a.person === ME.username)) return true;
     if (r.type === 'training') return ['Trainer Evaluation', 'Failed'].includes(r.status) ? r.data.trainer === ME.username : r.data.trainee === ME.username;
     if (r.type === 'documents' && r.status === 'In Review' && r.data.reviewer === ME.username) return true;
     if (r.type === 'documents' && r.status === 'Draft' && r.created_by === ME.username) return true;

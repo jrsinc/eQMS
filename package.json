@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node server.js",
     "demo": "SEED_DEMO=true node server.js",
-    "test": "node tests/e2e.mjs && node tests/quality-events.mjs && node tests/compliance.mjs && node tests/documents-training.mjs && node tests/audit-trail.mjs && node tests/departments-organogram.mjs && node tests/notifications.mjs && node tests/customers.mjs && node tests/suppliers.mjs && node tests/controlled-forms.mjs && node tests/controlled-sops.mjs && node tests/modules-off.mjs && node tests/backup-restore.mjs"
+    "test": "node tests/e2e.mjs && node tests/quality-events.mjs && node tests/change-control-details.mjs && node tests/compliance.mjs && node tests/documents-training.mjs && node tests/audit-trail.mjs && node tests/departments-organogram.mjs && node tests/notifications.mjs && node tests/customers.mjs && node tests/suppliers.mjs && node tests/controlled-forms.mjs && node tests/controlled-sops.mjs && node tests/modules-off.mjs && node tests/backup-restore.mjs"
   },
   "license": "UNLICENSED"
 }

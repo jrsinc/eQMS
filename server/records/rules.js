@@ -9,6 +9,10 @@ const { allAccess, userLabel } = require('../core/auth.js');
 const { hodFor } = require('../org/departments.js');
 const { DERIVE, LOCKED, applyComputed, byNumber, contentHash, createRecord, link, linked, nextNumber, rowToRecord, saveRecord } = require('./engine.js');
 
+// recalculates the parent change control (all activities complete) when one of its action items is closed or cancelled
+function refreshParentChange(item) { if (!item.data.parentRef) return; setImmediate(() => { const p = byNumber(item.data.parentRef, ['changes']); if (p) { DERIVE.changes(p); saveRecord(p); } }); } // after the item itself is saved
+// named optional approvers of a change control
+const ccPersons = (r) => [...new Set((r.data.approvers || []).map(a => a.user).filter(Boolean))];
 // change control states from pre-approval onwards (the change may be implemented)
 const CC_APPROVED = ['Optional Approvals', 'Implementation', 'QA Closure Review', 'Closed – EC Pending', 'Closed'];
 const need = (ok, msg) => { if (!ok) fail(400, msg); };
@@ -147,9 +151,23 @@ const CHECKS = {
   ccRiskRef: (r) => { if (r.data.riskRequired === 'Required') need(r.data.riskRef, 'Enter the risk assessment reference.'); },
   ccClientPm: (r) => { if (r.data.clientPre === 'Required' || r.data.clientPost === 'Required') need(r.data.pm, 'Name the person responsible for client communication.'); },
   ccOptional: (r) => {
-    const done = (r.data.deptApprovals || []).map(a => a.dept), open = (r.data.optionalDepts || []).filter(x => !done.includes(x));
+    const given = r.data.deptApprovals || [], done = given.map(a => a.dept).filter(Boolean);
+    const open = [...(r.data.optionalDepts || []).filter(x => !done.includes(x)), ...ccPersons(r).filter(u => !given.some(a => a.person === u)).map(userLabel)];
     need(!open.length, 'Optional approvals outstanding: ' + open.join(', ') + '.');
   },
+  ccTypeOther: (r) => { if ((r.data.changeType || []).includes('Other')) need(!blank(r.data.changeTypeOther), 'Change type "Other": explain the change type.'); },
+  ccRiskAnswers: (r) => { const q = MODULES.changes.fields.find(f => f.k === 'riskQuestions').rows, open = q.filter(x => !((r.data.riskQuestions || {})[x] || {}).v); need(!open.length, `Answer all risk questions (${open.length} open: ${open.map(x => x.split(' ')[0]).join(', ')}).`); },
+  // named optional approvers: at most 5, each once, never the change owner or an additional change owner
+  ccApprovers: (r) => {
+    const list = (r.data.approvers || []).map(a => a.user).filter(Boolean), owners = [r.data.assignedTo, ...(r.data.owners || []).map(o => o.user)].filter(Boolean);
+    need(list.length <= 5, 'Name at most 5 optional approvers.');
+    need(new Set(list).size === list.length, 'Each optional approver can be named once.');
+    const clash = list.filter(u => owners.includes(u)); need(!clash.length, `The change owner and additional change owners must not be approvers: ${clash.map(userLabel).join(', ')}.`);
+  },
+  ccEcPlan: (r) => { if (r.data.ecRequired === 'Required') need(r.data.ecAssignee && !blank(r.data.ecPlan), 'Effectiveness check: assign it to a person and describe what will be evaluated.'); },
+  ccActionsClosed: (r) => { const open = db.prepare("SELECT number FROM records WHERE type='actionitems' AND deleted=0 AND status NOT IN ('Closed','Cancelled') AND json_extract(data, '$.parentRef')=?").all(r.number).map(x => x.number); need(!open.length, `Action items not closed yet: ${open.join(', ')}.`); },
+  ccClientPostNeeded: (r) => need(r.data.clientPost === 'Required', 'No client post-approval is required: close with the QA report.'),
+  ccNoClientPost: (r) => need(r.data.clientPost !== 'Required', 'Client post-approval is required: use "Send for client post-approval".'),
   // change control: responsible person, Head of Department, department report, effectiveness check after its period
   // customers (JRS/FRM/QAS/010)
   custLicenceValid: (r) => need(r.data.licenceExpiry >= today(), `The licence expired on ${r.data.licenceExpiry}. Obtain the current licence before qualification.`),
@@ -171,8 +189,8 @@ const CHECKS = {
   custDocuments: (r) => need(db.prepare('SELECT 1 FROM attachments WHERE record_id=? LIMIT 1').get(r.id), 'Attach the completed customer form and the licence copies before qualification.'),
   isRespPerson: (r, u) => { if (r.data.respPerson !== u.username && !allAccess(u)) fail(403, `Only the responsible person (${userLabel(r.data.respPerson)}) can review this step.`); },
   isCcDept: (r, u) => { if (![r.created_by, r.data.respPerson].includes(u.username) && !(u.department && u.department === r.data.respDept) && !allAccess(u)) fail(403, 'Only the initiator, the responsible person or the responsible department can do this step.'); },
-  ccHasOptional: (r) => need((r.data.optionalDepts || []).length, 'No other departments are named: use "Approve – QA (pre-approval complete)".'),
-  ccNoOptional: (r) => need(!(r.data.optionalDepts || []).length, 'Other departments are named for approval: use "Approve – QA (send to other departments)".'),
+  ccHasOptional: (r) => need((r.data.optionalDepts || []).length || ccPersons(r).length, 'No other departments or approvers are named: use "Approve – QA (pre-approval complete)".'),
+  ccNoOptional: (r) => need(!(r.data.optionalDepts || []).length && !ccPersons(r).length, 'Other departments or approvers are named: use "Approve – QA (send to other departments / approvers)".'),
   ccNeedsEC: (r) => need(r.data.ecRequired === 'Required', 'No effectiveness check is required: use "Close – QA report".'),
   ccNoEC: (r) => need(r.data.ecRequired !== 'Required', 'An effectiveness check is required: use "Close – effectiveness check pending".'),
   ccEcDue: (r) => need(!r.data.ecDueDate || today() >= r.data.ecDueDate, `The effectiveness check is due on ${r.data.ecDueDate}, after the assigned period.`),
@@ -351,6 +369,9 @@ const AFTER = {
       nonconformance: `Effectiveness check of ${r.number} found the CAPA not effective. ${d.ecQaComment || ''}` }, ip, `Raised automatically: ${r.number} not effective`);
     link(u, r, n, ip);
   },
+  'actionitems:Completed': (u, r) => { r.data.completedOn = today(); },
+  'actionitems:Closed': (u, r) => refreshParentChange(r),
+  'actionitems:Cancelled': (u, r) => refreshParentChange(r),
   'changes:Closed – EC Pending': (u, r) => { r.data.ecDueDate = addMonths(r.data.finalImplDate || today(), ecMonths(r.data.ecDue)); },
   'selfinspections:Report Issued': (u, r) => { r.data.dueDate = addDays(r.data.reportDate, 15); },
   'selfinspections:Response Submitted': (u, r) => { r.data.responseDate = today(); },

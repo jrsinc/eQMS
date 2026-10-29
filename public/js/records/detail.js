@@ -22,6 +22,7 @@ async function detailView(id) {
     if (['investigations', 'selfinspections', 'extaudits'].includes(rec.type)) extraBtns.push(`<button class="btn" data-act="spawn" data-to="capa">Raise CAPA</button>`);
     if (['investigations', 'capa', 'extaudits'].includes(rec.type)) extraBtns.push(`<button class="btn" data-act="spawn" data-to="changes">Raise change control</button>`);
     if (['changes', 'investigations', 'capa'].includes(rec.type)) extraBtns.push(`<button class="btn" data-act="spawn" data-to="risks">Start risk assessment</button>`);
+    if (['changes', 'investigations', 'capa'].includes(rec.type) && open) extraBtns.push(`<button class="btn" data-act="spawn" data-to="actionitems">Add action item</button>`);
     if (rec.type === 'capa') extraBtns.push(`<button class="btn" data-act="spawn" data-to="training">Assign retraining</button>`);
     if (rec.type === 'mgmtreviews' && ['Planned', 'Data Compiled', 'Meeting Held'].includes(rec.status) && hasRole(['qa'])) extraBtns.push(`<button class="btn primary" data-act="compile">${d.metrics ? 'Re-compile QMR data' : 'Compile QMR data'}</button>`);
   }
@@ -29,7 +30,8 @@ async function detailView(id) {
   shell(rec.type, `<div class="spread"><div><p class="muted small"><a href="#/m/${rec.type}">${esc(m.name)}</a></p>
     <h1><span class="mono">${esc(rec.number)}</span>${rec.type === 'documents' ? ' <span class="muted">v' + esc(d.version) + '</span>' : ''}</h1>
     <p style="margin:0">${esc(d.title || '')}</p><p class="muted small">Created by ${esc(userName(rec.created_by))} on ${dmyt(rec.created_at)} · Last change ${dmyt(rec.updated_at)}</p></div>
-    <div class="row no-print">${pill(rec.status)}${isOverdue(rec) ? '<span class="pill bad">Overdue</span>' : ''}</div></div>
+    <div class="row no-print">${pill(rec.status)}${isOverdue(rec) ? '<span class="pill bad">Overdue</span>' : ''}${!det.editable && !open ? '<span class="pill grey" title="The record is closed: no editing">&#128274; Locked</span>' : ''}</div></div>
+    ${workflowBar(rec)}
     <div class="record"><div>
       <div class="panel no-print"><h3>Next steps</h3><div class="row">
         ${trans.length ? trans.map((t, i) => `<button class="btn ${t.sign ? 'primary sign' : ''}" data-act="tr" data-i="${i}" ${t.allowed ? '' : 'disabled title="Your roles do not permit this step"'}>${esc(t.label)}</button>`).join('') : extraBtns.length ? '' : '<span class="muted">No workflow steps available from this status.</span>'}
@@ -56,7 +58,7 @@ async function detailView(id) {
         ${a.old_value != null || a.new_value != null ? `<div class="diff">${a.old_value != null ? `<del>${esc(String(auditValue(rec.type, a.field, a.old_value)).slice(0, 160))}</del> ` : ''}<ins>${esc(String(auditValue(rec.type, a.field, a.new_value ?? '')).slice(0, 160))}</ins></div>` : ''}${a.reason ? `<div class="muted">Reason: ${esc(a.reason)}</div>` : ''}</div>`).join('')}</div></div>` : ''}
     </aside></div>`);
 
-  const form = $('#rf'); liveCompute(form, m, d);
+  const form = $('#rf'); liveCompute(form, m, d); setupTabs(form, m, rec);
   bindRows();
   $('#lk').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -115,7 +117,7 @@ async function detailView(id) {
   $('#issueBtn')?.addEventListener('click', () => setTimeout(route, 1500));
   if (rec.type === 'labels') labelPanel(rec);
   if (rec.type === 'randomization' && det.randList) randPanel(rec, det.randList);
-  if (m.deptApproval && (d[m.deptApproval.field] || []).length) optionalApprovalsPanel(rec);
+  if (m.deptApproval && ((d[m.deptApproval.field] || []).length || (m.deptApproval.persons && (d[m.deptApproval.persons] || []).some(a => a.user)))) optionalApprovalsPanel(rec);
   if (rec.type === 'mgmtreviews') qmrPanel(rec);
   if (rec.type === 'atreviews') atrPanel(rec);
   act('compile', async () => { try { await api('POST', `/api/records/${id}/compile`); toast('QMR data compiled'); route(); } catch (x) { toast(x.message); } });
@@ -158,16 +160,25 @@ function sectionSignatures(m, s, sigs) {
 function optionalApprovalsPanel(rec) {
   const cfg = MODS[rec.type].deptApproval, d = rec.data, done = d.deptApprovals || [], canSign = rec.status === cfg.state;
   const meaningFor = (dept) => rec.type === 'changes' ? `Approved – optional approval (${dept})` : `Reviewed – cross-functional (${dept})`;
-  $('#special').innerHTML = `<div class="panel"><h3>${esc(cfg.label)}</h3><p class="muted small">Heads of the named departments sign at stage "${esc(cfg.state)}".</p>
+  $('#special').innerHTML = `<div class="panel"><h3>${esc(cfg.label)}</h3><p class="muted small">Heads of the named departments${cfg.persons ? ' and the named optional approvers' : ''} sign at stage "${esc(cfg.state)}".</p>
     <div class="table-wrap"><table class="t"><thead><tr><th>Department</th><th>Signed by</th><th>Date</th><th>Comment</th><th></th></tr></thead><tbody>
-    ${d[cfg.field].map(code => { const a = done.find(x => x.dept === code); return `<tr><td>${esc(CFG.DEPTS[code] || code)}</td><td>${a ? esc(a.name) : '<span class="pill warn">Pending</span>'}</td><td>${a ? dmyt(a.ts) : ''}</td><td>${a ? esc(a.comment) : ''}</td>
-      <td>${!a && canSign && (ME.allAccess || (ME.deptsUnder || []).includes(code)) ? `<button class="btn primary sign" data-dept="${esc(code)}">Sign</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div></div>`;
+    ${(d[cfg.field] || []).map(code => { const a = done.find(x => x.dept === code); return `<tr><td>${esc(CFG.DEPTS[code] || code)}</td><td>${a ? esc(a.name) : '<span class="pill warn">Pending</span>'}</td><td>${a ? dmyt(a.ts) : ''}</td><td>${a ? esc(a.comment) : ''}</td>
+      <td>${!a && canSign && (ME.allAccess || (ME.deptsUnder || []).includes(code)) ? `<button class="btn primary sign" data-dept="${esc(code)}">Sign</button>` : ''}</td></tr>`; }).join('')}
+    ${(cfg.persons ? d[cfg.persons] || [] : []).filter(x => x.user).map(x => { const a = done.find(y => y.person === x.user); return `<tr><td>${esc(userName(x.user))}<br><span class="small muted">${esc(x.type || 'Optional approver')}</span></td><td>${a ? esc(a.name) : '<span class="pill warn">Pending</span>'}</td><td>${a ? dmyt(a.ts) : ''}</td><td>${a ? esc(a.comment) : ''}</td>
+      <td>${!a && canSign && x.user === ME.username ? `<button class="btn primary sign" data-person="1">Sign</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div></div>`;
   $$('[data-dept]').forEach(b => b.addEventListener('click', async () => {
     const dept = b.dataset.dept;
     const ok = await stepDialog({ title: `${cfg.label} – ${CFG.DEPTS[dept] || dept}`, meaning: meaningFor(dept),
       extra: `<div><label class="f">Comment</label><textarea name="comment" rows="3"></textarea></div>`,
       perform: (v) => api('POST', `/api/records/${rec.id}/dept-approve`, { ...v, dept }) });
     if (ok) { toast(`${dept} approval recorded`); route(); }
+  }));
+  $$('[data-person]').forEach(b => b.addEventListener('click', async () => {
+    const row = (d[cfg.persons] || []).find(x => x.user === ME.username) || {};
+    const ok = await stepDialog({ title: `${cfg.label} – ${ME.fullname}`, meaning: `Approved – optional approver (${row.type || 'approver'})`,
+      extra: `<div><label class="f">Comment</label><textarea name="comment" rows="3"></textarea></div>`,
+      perform: (v) => api('POST', `/api/records/${rec.id}/dept-approve`, { ...v, person: true }) });
+    if (ok) { toast('Approval recorded'); route(); }
   }));
 }
 
@@ -179,12 +190,43 @@ async function spawn(src, to) {
     changes: { title: 'Change arising from ' + src.number, justification: 'See ' + src.number, respDept: s.respDept || '' },
     risks: { title: 'Risk assessment for ' + src.number + ': ' + (s.title || ''), referenceDoc: src.number, site: s.site || '' },
     extensions: { documentId: src.number, scope: 'Overall due date' },
-    training: { title: 'Retraining – ' + (s.title || ''), sourceRecord: src.number, trainingType: 'Read & Understand' } }[to] || {};
+    training: { title: 'Retraining – ' + (s.title || ''), sourceRecord: src.number, trainingType: 'Read & Understand' },
+    actionitems: { parentRef: src.number, respPerson: s.respPerson || '' } }[to] || {};
   shell(to, `<div class="spread"><div><h1>New ${esc(singular(m))}</h1><p class="muted">Linked to <span class="mono">${esc(src.number)}</span>.</p></div></div>
-   <form id="nf" class="panel"><div class="grid">${m.fields.filter(f => f.type !== 'readonly').map(f => fieldHtml(f, pre[f.k], false)).join('')}</div><div class="error" style="margin-top:1rem"></div>
+   <form id="nf" class="panel"><div class="grid">${(to === 'actionitems' ? createFields(m) : m.fields).filter(f => f.type !== 'readonly').map(f => fieldHtml(f, pre[f.k], false)).join('')}</div><div class="error" style="margin-top:1rem"></div>
    <div class="row"><button class="btn primary">Save record</button><a class="btn" href="#/r/${src.id}">Cancel</a></div></form>`);
   const form = $('#nf'); liveCompute(form, m);
   form.addEventListener('submit', async (e) => { e.preventDefault(); try { const r = await api('POST', '/api/records', { type: to, data: readForm(form, m), linkFrom: src.id }); toast(r.number + ' created'); location.hash = '#/r/' + r.id; } catch (x) { $('.error', form).textContent = x.message; } });
 }
 
 
+
+// Workflow bar: previous and current state and how long the record has been in it
+function workflowBar(rec) {
+  const d = rec.data, since = d.stateEnteredAt || rec.updated_at, days = since ? Math.floor((Date.now() - new Date(since)) / 864e5) : null;
+  const age = days == null ? '' : days > 365 ? 'In state for longer than one year' : days < 1 ? 'In state since today' : `In state for ${days} day${days === 1 ? '' : 's'}`;
+  return `<div class="workflow-bar"><span class="wf-label">Workflow</span>${d.prevStatus ? `<span class="wf-step">${esc(d.prevStatus)}</span><span class="wf-arrow">&rarr;</span>` : ''}<span class="wf-step now">${esc(rec.status)}</span><span class="small muted wf-age" title="${since ? dmyt(since) : ''}">${age}</span></div>`;
+}
+// Tabs: sections with a "tab" are shown one tab at a time (e.g. change control: request, level 1, approval, closure)
+function setupTabs(form, m, rec) {
+  const tabs = [...new Set(m.fields.filter(f => f.type === 'section' && f.tab).map(f => f.tab))];
+  if (tabs.length < 2) return;
+  const grid = $('.grid', form); let cur = tabs[0];
+  for (const el of [...grid.children]) {
+    if (el.matches('h4.form-section')) { const s = m.fields.find(f => f.type === 'section' && f.label === el.textContent); if (s && s.tab) cur = s.tab; }
+    el.dataset.tab = cur;
+  }
+  const bar = document.createElement('div'); bar.className = 'tabs no-print'; bar.setAttribute('role', 'tablist');
+  bar.innerHTML = tabs.map(t => `<button type="button" class="tab" role="tab" data-t="${esc(t)}">${esc(t)}<span class="tab-count"></span></button>`).join('');
+  grid.before(bar);
+  const show = (t) => {
+    $$('.tab', bar).forEach(b => { b.classList.toggle('active', b.dataset.t === t); b.setAttribute('aria-selected', b.dataset.t === t); });
+    for (const el of grid.children) el.classList.toggle('tab-hidden', el.dataset.tab !== t);
+    try { sessionStorage.setItem('tab:' + rec.id, t); } catch { /* storage unavailable */ }
+  };
+  bar.addEventListener('click', (e) => { const b = e.target.closest('.tab'); if (b) show(b.dataset.t); });
+  // open the tab last used on this record, else the tab with the section that can be edited at the current stage
+  let start = null; try { start = sessionStorage.getItem('tab:' + rec.id); } catch { /* storage unavailable */ }
+  const editable = m.fields.find(f => f.type === 'section' && f.tab && f.edit && f.edit[rec.status]);
+  show(tabs.includes(start) ? start : editable ? editable.tab : tabs[0]);
+}

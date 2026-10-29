@@ -160,7 +160,20 @@ route('POST', '/api/records/:id/links', (ctx) => {
 route('POST', '/api/records/:id/dept-approve', (ctx) => {
   const rec = getRecord(ctx.params.id), cfg = MODULES[rec.type].deptApproval;
   if (!cfg || rec.status !== cfg.state) fail(409, cfg ? `${cfg.label} are recorded at stage "${cfg.state}".` : 'This record has no departmental approvals.');
-  const dept = String(ctx.body.dept || ''), list = rec.data.deptApprovals || [];
+  const list = rec.data.deptApprovals || [];
+  if (ctx.body.person) { // a named optional approver signs for themself
+    const row = cfg.persons && (rec.data[cfg.persons] || []).find(a => a.user === ctx.user.username);
+    if (!row) fail(403, `You are not named as an optional approver of ${rec.number}.`);
+    if (list.some(a => a.person === ctx.user.username)) fail(409, `You have already approved ${rec.number}.`);
+    verifySignature(ctx.user, ctx.body);
+    const comment = String(ctx.body.comment || '').slice(0, 2000), meaning = `Approved – optional approver (${row.type || 'approver'})`;
+    list.push({ person: ctx.user.username, type: row.type || '', by: ctx.user.username, name: ctx.user.fullname, ts: now(), comment });
+    rec.data.deptApprovals = list; saveRecord(rec);
+    audit(ctx.user, `${cfg.label} (e-signed: ${meaning})`, rec, 'deptApprovals', null, ctx.user.fullname + (comment ? ': ' + comment : ''), null, ctx.ip);
+    sign(ctx.user, rec, meaning, rec.status, rec.status);
+    return { ok: true };
+  }
+  const dept = String(ctx.body.dept || '');
   if (!allAccess(ctx.user) && !ctx.user.deptsUnder.includes(dept)) fail(403, `Only the Head of ${DEPTS[dept] || dept} (organogram) can give this approval.`);
   if (!(rec.data[cfg.field] || []).includes(dept)) fail(400, `${dept || 'This department'} is not named for ${cfg.label.toLowerCase()} on ${rec.number}.`);
   if (list.some(a => a.dept === dept)) fail(409, `${dept} has already approved ${rec.number}.`);
@@ -256,7 +269,7 @@ function coSign(ctx, rec, mod, t) {
   const done = group.meanings.every(m => given().some(s => s.meaning === m));
   if (done) {
     const next = group.next(rec);
-    rec.status = next; rec.data.stateEnteredAt = now();
+    rec.status = next; rec.data.stateEnteredAt = now(); rec.data.prevStatus = from;
     onTransition(ctx.user, rec, next, ctx.ip);
     audit(ctx.user, 'Status changed (all sign-offs given)', rec, 'status', from, next, null, ctx.ip);
   }
@@ -290,7 +303,9 @@ route('POST', '/api/records/:id/transition', (ctx) => {
   if (t.cosign) return coSign(ctx, rec, mod, t);
   if (t.sign) verifySignature(ctx.user, ctx.body);
   const from = rec.status; rec.status = t.to;
-  if (from !== t.to) rec.data.stateEnteredAt = now();
+  if (from !== t.to) { rec.data.stateEnteredAt = now(); rec.data.prevStatus = from; }
+  // cancellation / rejection: reason, who and when are kept on the record
+  if (['Cancelled', 'Rejected'].includes(t.to) && ctx.body.reason) Object.assign(rec.data, { cancelReason: String(ctx.body.reason).slice(0, 2000), cancelledBy: ctx.user.username, cancelledOn: today() });
   onTransition(ctx.user, rec, t.to, ctx.ip);
   saveRecord(rec);
   audit(ctx.user, t.sign ? 'Status changed (e-signed: ' + t.sign + ')' : 'Status changed', rec, 'status', from, t.to, ctx.body.reason, ctx.ip);

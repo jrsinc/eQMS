@@ -14,6 +14,7 @@
     'quality-events/investigations.js',
     'quality-events/capa.js',
     'quality-events/changes.js',
+    'quality-events/actionitems.js',
     'quality-events/extensions.js',
     'compliance/selfinspections.js',
     'compliance/sischedule.js',

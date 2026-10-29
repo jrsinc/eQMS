@@ -54,6 +54,7 @@ function markMissing(root, keys = []) {
   if (!root) return;
   $$('.field-missing', root).forEach(el => el.classList.remove('field-missing'));
   for (const k of keys) { const el = $(`[name="${k}"], [data-table="${k}"], [data-computed="${k}"]`, root); const box = el && el.closest('.grid > div'); if (box) box.classList.add('field-missing'); }
+  const first = $('.field-missing.tab-hidden', root); if (first && !$('.field-missing:not(.tab-hidden)', root)) $(`.tab[data-t="${first.dataset.tab}"]`, root)?.click();
   $('.field-missing', root)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 function readForm(root, m) {

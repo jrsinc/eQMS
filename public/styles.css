@@ -238,3 +238,15 @@ tr.unread td { background: var(--accent-soft); }
 .small-btn { padding: .2rem .6rem; font-size: .82rem; }
 .kv th { width: 30%; text-align: left; }
 .role-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: .2rem .8rem; }
+
+/* record tabs and workflow bar */
+.tabs { display: flex; flex-wrap: wrap; gap: .25rem; border-bottom: 2px solid var(--line, #d0d7de); margin: .2rem 0 1rem; }
+.tab { border: 1px solid var(--line, #d0d7de); border-bottom: none; background: var(--surface-2, #f3f6f9); padding: .45rem .9rem; border-radius: 6px 6px 0 0; cursor: pointer; font: inherit; font-size: .9rem; color: inherit; }
+.tab.active { background: var(--surface, #fff); font-weight: 600; box-shadow: 0 2px 0 var(--surface, #fff); position: relative; top: 2px; }
+.tab-hidden { display: none !important; }
+@media print { .tab-hidden { display: revert !important; } }
+.workflow-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; background: var(--surface-2, #f3f6f9); border: 1px solid var(--line, #d0d7de); border-radius: 6px; padding: .45rem .7rem; margin: .4rem 0 1rem; }
+.wf-label { font-weight: 600; font-size: .85rem; margin-right: .3rem; }
+.wf-step { font-size: .85rem; padding: .15rem .55rem; border-radius: 4px; background: var(--surface, #fff); border: 1px solid var(--line, #d0d7de); }
+.wf-step.now { background: #fff6d6; border-color: #d4a72c; font-weight: 600; }
+.wf-age { margin-left: auto; }

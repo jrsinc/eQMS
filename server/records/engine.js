@@ -187,7 +187,18 @@ const DERIVE = {
   // JRS/SOP/QAS/022: investigation complete within 30 calendar days of opening; Critical events within 10 working days
   // suppliers: requalification date suggested from the effective date and the risk level frequency
   vendors: (r) => { const d = r.data; if (d.effectiveDate && !d.requalDate && supRisk(d).months) d.requalDate = addMonths(d.effectiveDate, supRisk(d).months); },
-  changes: (r) => { r.data.respDept = r.data.respPerson ? userDept(r.data.respPerson) : ''; },
+  changes: (r) => {
+    const d = r.data; d.respDept = d.respPerson ? userDept(d.respPerson) : '';
+    if (!d.assignedTo && d.respPerson) d.assignedTo = d.respPerson; // change owner: the responsible person unless named
+    if (d.dueDate && !d.originalDue) d.originalDue = d.dueDate;      // the first target date is kept
+    // change level from impact and complexity: L0 minor / low; L2 critical, or major / high; otherwise L1
+    d.changeLevel = !d.classification || !d.complexity ? '' : d.classification === 'Critical' || (d.classification === 'Major' && d.complexity === 'High') ? 'L2'
+      : d.classification === 'Minor' && d.complexity === 'Low' ? 'L0' : 'L1';
+    // all change control activities complete: every plan activity closed and every action item of this change closed or cancelled
+    const items = r.number ? db.prepare("SELECT status FROM records WHERE type='actionitems' AND deleted=0 AND json_extract(data, '$.parentRef')=?").all(r.number) : [];
+    d.allActivitiesComplete = (d.plan || []).length || items.length ? ((d.plan || []).every(p => p.closed) && items.every(i => ['Closed', 'Cancelled'].includes(i.status)) ? 'Yes' : 'No') : '';
+  },
+  actionitems: (r) => { r.data.respDept = r.data.respPerson ? userDept(r.data.respPerson) : ''; },
   investigations: (r) => { const d = r.data; d.respDept = d.respPerson ? userDept(d.respPerson) : ''; d.dueDate = !d.criticality ? '' : d.criticality === 'Critical' ? addWorkingDays(d.dateOpened, 10) : addDays(d.dateOpened, 30); },
   // JRS/SOP/QAS/021: titles in capitals, "[GLB]" when the document applies to more than one site
   documents: (r) => { const d = r.data, base = String(d.title || '').replace(/^\[GLB\]\s*/i, '').toUpperCase(); d.title = ((d.sites || []).length > 1 ? '[GLB] ' : '') + base; }

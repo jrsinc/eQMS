@@ -248,8 +248,11 @@ const check=(n)=>Object.fromEntries(ROWS.slice(0,n).map(r=>[r,{v:r==='Cold chain
 // Part A (initiator, drafts) → Part B (QA: approve with number / reject) → responsible person → Head of the responsible department
 // → QA approval (effectiveness check, other departments) → other department approvals → implementation → change control report
 // (department) → QA review report → closed, or effectiveness check after the assigned period
-const partA={nature:'Permanent',respPerson:'operator1',dueDate:addD(T,60),changeType:['Equipment / instrument'],impactedAreas:['Storage (+2 to +8 °C)'],description:'Install a second calibrated logger',justification:'Monitoring redundancy'};
-let cc=await au.call('POST','/api/records',{type:'changes',data:{title:'Add a second data logger to cold room 2',nature:'Permanent',respPerson:'operator1',description:'Install a second calibrated logger',classification:'Minor'}});
+// standard risk questions all answered, change level fields of Part B
+const RQ=Object.fromEntries(createRequire(import.meta.url)('../public/modules.js').MODULES.changes.fields.find(f=>f.k==='riskQuestions').rows.map(r=>[r,{v:'No',r:''}]));
+const LVL={complexity:'Moderate',productImpact:'No',regLocal:'No',regSmf:'No',regClient:'No',riskQuestions:RQ};
+const partA={site:'JRS INC',nature:'Permanent',respPerson:'operator1',dueDate:addD(T,60),changeType:['Equipment / instrument'],impactedAreas:['Storage (+2 to +8 °C)'],description:'Install a second calibrated logger',justification:'Monitoring redundancy'};
+let cc=await au.call('POST','/api/records',{type:'changes',data:{title:'Add a second data logger to cold room 2',site:'JRS INC',nature:'Permanent',respPerson:'operator1',description:'Install a second calibrated logger',classification:'Minor'}});
 ok(/^REQ-CC-\d{4}-0001$/.test(cc.number)&&cc.status==='Draft'&&!cc.data.classification,'Part A saved as a draft with a request number '+cc.number+' (QA fields not taken)');
 ok(cc.data.respDept==='OPS','responsible department follows the responsible person (operator1 → OPS)');
 ok((await tr.get(cc.id)).record,'every department can view change controls');
@@ -268,7 +271,7 @@ ok((await tr.put(cc.id,{current:'x'},'Draft')).s===403,'other departments cannot
 ok((await au.sig(cc.id,'QA Review')).ok,'initiator updates and resubmits Part A');
 // Part B – QA
 const plan=[{activity:'Install logger',dept:'OPS',person:'operator1',due:addD(T,20)},{activity:'Update SOP',dept:'QAS',person:'qa.reviewer',due:addD(T,30)}];
-await qa.put(cc.id,{impactCheck:check(5),impactSummary:'Cold chain monitoring only',classification:'Major',classRationale:'Affects GDP storage monitoring',riskRequired:'Not required',plan,clientPre:'Not required',clientPost:'Required'});
+await qa.put(cc.id,{...LVL,impactCheck:check(5),impactSummary:'Cold chain monitoring only',classification:'Major',classRationale:'Affects GDP storage monitoring',riskRequired:'Not required',plan,clientPre:'Not required',clientPost:'Required'});
 // the browser sends every field of the form: untouched, empty fields of other parts are not changes
 const M=createRequire(import.meta.url)('../public/modules.js').MODULES;
 const blankForm=(type)=>Object.fromEntries(M[type].fields.filter(x=>x.k&&!['computed','readonly'].includes(x.type)).map(x=>[x.k,x.type==='multicheck'||x.type==='table'?[]:x.type==='checkbox'?false:x.type==='checklist'?Object.fromEntries(x.rows.map(r=>[r,{v:'',r:''}])):'']));
@@ -309,6 +312,8 @@ await qa.put(cc.id,{ecRequired:'Required'});
 ok((await qa.sig(cc.id,'Implementation')).s===400,'effectiveness check period must be assigned');
 ok((await qa.put(cc.id,{optionalDepts:['QAS','ITS','OPS','HRM','PKG']})).s===400,'at most 4 other departments');
 await qa.put(cc.id,{ecDue:'6 months',optionalDepts:['QAS','PKG']});
+ok((await qa.sig(cc.id,'Optional Approvals')).s===400,'a required effectiveness check needs its owner and evaluation plan');
+await qa.put(cc.id,{ecAssignee:'qa.reviewer',ecPlan:'Review three months of logger data'});
 ok((await qa.sig(cc.id,'Implementation')).s===400,'other departments named: their approval comes first');
 ok((await qa.sig(cc.id,'Optional Approvals')).ok,'QA approves and sends to the other departments');
 ok((await au.put(cc.id,{title:'changed'})).s===409,'pre-approved change cannot be edited');
@@ -330,31 +335,35 @@ await op.put(cc.id,{plan:closedPlan.map(p=>({...p,closed:T}))});
 ok((await tr.sig(cc.id,'QA Closure Review')).s===403,'only the responsible person / department submits the report');
 ok((await op.sig(cc.id,'QA Closure Review')).ok,'responsible department signs the change control report');
 // QA review report and closure
-ok((await qa.sig(cc.id,'Closed – EC Pending')).s===400,'QA review report required');
+ok((await qa.sig(cc.id,'Pending Client Post-Approval')).s===400,'QA review report required');
 await qa.put(cc.id,{qaReport:'Implementation verified against the plan; records reviewed'});
+ok((await qa.sig(cc.id,'Closed – EC Pending')).s===400,'client post-approval required: the change cannot close without it');
+ok((await qa.sig(cc.id,'Pending Client Post-Approval')).ok,'QA signs the review report – client post-approval pending');
+ok((await qa.sig(cc.id,'Closed – EC Pending')).s===400,'closing needs the date the client approved');
+await pm.put(cc.id,{clientApprovalDate:T,clientApprovalRef:'E-mail from the sponsor'});
 ok((await qa.sig(cc.id,'Closed')).s===400,'effectiveness check required: cannot close fully yet');
-ok((await qa.sig(cc.id,'Closed – EC Pending')).ok,'QA signs the review report – effectiveness check pending');
+ok((await qa.sig(cc.id,'Closed – EC Pending')).ok,'client approved – closed, effectiveness check pending');
 g=await qa.get(cc.id);ok(g.record.data.ecDueDate===addM(addD(T,-200),6),'effectiveness check due 6 months after implementation: '+g.record.data.ecDueDate);
 ok(g.signatures.filter(s=>s.meaning.startsWith('Approved – optional approval')).length===2,'other department approvals recorded as e-signatures');
 await op.put(cc.id,{ecRespComment:'Second logger reporting since go-live'});
 await qa.put(cc.id,{effective:'Yes',ecQaComment:'Both loggers reporting'});
 ok((await qa.sig(cc.id,'Closed')).ok,'change control closed after the effectiveness check');
 g=await qa.get(cc.id);
-const wantCC=['Part A submitted – initiator / responsible department','Part B approved – QA (number assigned)','Reviewed and approved – responsible person','Rejected – Head of Department','Approved – Head of Department','Pre-approved – QA','Change control report – responsible department','Closed – QA review report (effectiveness check pending)','Effectiveness verified – QA'];
+const wantCC=['Part A submitted – initiator / responsible department','Part B approved – QA (number assigned)','Reviewed and approved – responsible person','Rejected – Head of Department','Approved – Head of Department','Pre-approved – QA','Change control report – responsible department','QA review report – client post-approval pending','Closed – client post-approval received (effectiveness check pending)','Effectiveness verified – QA'];
 ok(wantCC.every(m=>g.signatures.some(s=>s.meaning===m)),'every stage signed and dated: '+g.signatures.map(s=>s.fullname.split(' (')[0]+' – '+s.meaning.split(' – ')[0]).join('; '));
 // effectiveness check cannot be recorded before its period has passed
 let cc3=await au.call('POST','/api/records',{type:'changes',data:{...partA,title:'Relabel freezer shelves'}});
 await au.sig(cc3.id,'QA Review');
-await qa.put(cc3.id,{impactCheck:check(11),impactSummary:'Labels only',classification:'Minor',classRationale:'No product impact',riskRequired:'Not required',plan:[{activity:'Relabel',dept:'OPS',person:'operator1',due:addD(T,5)}],clientPre:'Not required',clientPost:'Not required'});
+await qa.put(cc3.id,{...LVL,impactCheck:check(11),impactSummary:'Labels only',classification:'Minor',classRationale:'No product impact',riskRequired:'Not required',plan:[{activity:'Relabel',dept:'OPS',person:'operator1',due:addD(T,5)}],clientPre:'Not required',clientPost:'Not required'});
 await qa.sig(cc3.id,'RP Review'); await op.sig(cc3.id,'HOD Approval'); await hod.sig(cc3.id,'QA Approval');
-await qa.put(cc3.id,{ecRequired:'Required',ecDue:'3 months'});
+await qa.put(cc3.id,{ecRequired:'Required',ecDue:'3 months',ecAssignee:'qa.reviewer',ecPlan:'Check labels at the next stock count'});
 ok((await qa.sig(cc3.id,'Implementation')).ok,'no other departments: QA approval completes the pre-approval');
 await op.put(cc3.id,{finalImplDate:T,finalSummary:'Shelves relabelled',plan:[{activity:'Relabel',dept:'OPS',person:'operator1',due:addD(T,5),closed:T}]});
 await op.sig(cc3.id,'QA Closure Review'); await qa.put(cc3.id,{qaReport:'Verified'}); await qa.sig(cc3.id,'Closed – EC Pending');
 await qa.put(cc3.id,{effective:'Yes',ecQaComment:'Too early'});
 ok((await qa.sig(cc3.id,'Closed')).s===400,'effectiveness check waits until the assigned period has passed');
 // temporary change
-let cc2=await au.call('POST','/api/records',{type:'changes',data:{title:'Temporary storage in backup fridge',nature:'Temporary'}});
+let cc2=await au.call('POST','/api/records',{type:'changes',data:{title:'Temporary storage in backup fridge',site:'JRS INC',nature:'Temporary'}});
 await au.put(cc2.id,{...partA,nature:'Temporary'});
 ok((await au.sig(cc2.id,'QA Review')).s===400,'temporary change needs start and end dates');
 ok((await er(cc2.number,addD(T,70),{scope:'Correction (CAPA)'})).s===400,'action-level extensions apply to CAPA only');

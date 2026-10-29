@@ -26,6 +26,13 @@ function nextActors(rec) {
       else if (r !== 'any') usersWithRole(r).forEach(u => add(u, t.label));
     }
   }
+  if (rec.type === 'changes') {
+    // a named QA pre-assessor is notified instead of every QA user
+    if (rec.status === 'QA Review' && d.qaAssessor) { const qa = new Set(usersWithRole('qa')); for (const u of [...out.keys()]) if (qa.has(u)) out.delete(u); add(d.qaAssessor, 'QA pre-assessment / approval'); }
+    if (rec.status === 'Optional Approvals') for (const a of d.approvers || []) if (a.user && !(d.deptApprovals || []).some(x => x.person === a.user)) add(a.user, `Optional approval (${a.type || 'approver'})`);
+    if (rec.status === 'Closed – EC Pending') add(d.ecAssignee, 'Effectiveness check');
+  }
+  if (rec.type === 'actionitems' && rec.status === 'Open') add(d.respPerson, 'Complete action');
   const da = mod.deptApproval;
   if (da && rec.status === da.state) for (const code of d[da.field] || []) if (!(d.deptApprovals || []).some(a => a.dept === code)) add(hodFor(code), `${da.label} (${code})`);
   return out;
