@@ -31,6 +31,8 @@
     tempNumbering: (d, y) => ({ pre: `REQ-CC-${y}-`, pad: 4 }),
     createHelp: 'Fill in the change request and save it as a draft; submit it to QA when it is complete. The change control number is assigned when QA approves Part B. The responsible department is the department of the responsible person.',
     createLabel: 'Save Part A draft',
+    // a draft can be saved with only the short description; the other required fields are checked when Part A is submitted to QA
+    draftSave: true,
     list: ['number', 'title', 'site', 'nature', 'respDept', 'changeLevel', 'dueDate', 'status'],
     fields: [
       // ===== tab: Change request =====
@@ -143,7 +145,7 @@
     ],
     states: ['Draft', 'QA Review', 'RP Review', 'HOD Approval', 'QA Approval', 'Optional Approvals', 'Implementation', 'QA Closure Review', 'Pending Client Post-Approval', 'Closed – EC Pending', 'Closed', 'Rejected', 'Cancelled'],
     transitions: [
-      t('Draft', 'QA Review', 'Submit Part A to QA', ['any'], { part: 'A', sign: 'Part A submitted – initiator / responsible department', needs: ['site', 'respPerson', 'dueDate', 'changeType', 'description', 'justification'], checks: ['isCcDept', 'ccDue90', 'ccTemp', 'ccTypeOther'] }),
+      t('Draft', 'QA Review', 'Submit Part A to QA', ['any'], { part: 'A', sign: 'Part A submitted – initiator / responsible department', needs: ['title', 'site', 'nature', 'respPerson', 'dueDate', 'changeType', 'description', 'justification'], checks: ['isCcDept', 'ccDue90', 'ccTemp', 'ccTypeOther'] }),
       t('Draft', 'Cancelled', 'Cancel draft', ['any'], { reason: true, checks: ['isCcDept'] }),
       t('QA Review', 'Draft', 'Need to update – return Part A', ['qa'], { reason: true }),
       t('QA Review', 'RP Review', 'Approve Part B – assign number', ['qa'], { part: 'B', sign: 'Part B approved – QA (number assigned)', sod: true, needs: ['impactCheck', 'impactSummary', 'classification', 'complexity', 'classRationale', 'productImpact', 'regLocal', 'regSmf', 'regClient', 'riskQuestions', 'riskRequired', 'plan', 'clientPre', 'clientPost'], checks: ['ccDue90', 'ccTemp', 'ccRiskClass', 'ccRiskRef', 'ccClientPm', 'ccRiskAnswers', 'ccApprovers'] }),

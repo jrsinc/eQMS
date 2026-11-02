@@ -64,7 +64,8 @@ route('POST', '/api/records', (ctx) => {
   const mod = MODULES[type], hasCreate = mod.fields.some(f => f.type === 'section' && f.create);
   const onCreateForm = (k) => !hasCreate || !!(sectionOf(mod, k) || {}).create;
   for (const k of Object.keys(clean)) if (!onCreateForm(k)) delete clean[k];
-  const missing = mod.fields.filter(f => f.req && onCreateForm(f.k) && (clean[f.k] === '' || clean[f.k] == null) && f.def === undefined);
+  // drafts (module draftSave) need only the title; the other required fields are checked when the draft is submitted
+  const missing = mod.fields.filter(f => f.req && onCreateForm(f.k) && (!mod.draftSave || f.k === 'title') && (clean[f.k] === '' || clean[f.k] == null) && f.def === undefined);
   if (missing.length) failMissing(missing, 'Required fields are empty');
   if (type === 'investigations') clean.qaNotified = today();
   if (type === 'documents') { clean.version = '1.0'; clean.revisionType = 'New document'; }

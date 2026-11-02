@@ -32,7 +32,17 @@ const qa=await login('qa.lead'), qr=await login('qa.reviewer'), au=await login('
 
 // ===== change request: site, owners, divisions, affected areas, original due date =====
 const partA={title:'Relocation of freezer room unit-01 for refrigerant pipe replacement',nature:'Permanent',respPerson:'operator1',dueDate:addD(T,60),changeType:['Facility / utilities (HVAC, cold room, freezer, power backup)','Other'],description:'New refrigerant pipeline with insulation; outdoor unit relocated',justification:'Pipeline installed in 2008, insulation torn',current:'Insulation torn at multiple locations',affectedArea1:'Facilities',affectedArea2:'Operations',division1:'Clinical Trial Division (CTD)',division2:'Clinical',division3:'Clinical',client:'',otherSites:['JRS IND'],owners:[{user:'cs.manager',role:'Warehouse impact'}]};
-ok((await au.call('POST','/api/records',{type:'changes',data:{...partA}})).s===400,'site is required in the change request');
+// a draft can be saved with only the short description; the rest is checked when Part A is submitted
+ok((await au.call('POST','/api/records',{type:'changes',data:{nature:'Permanent'}})).s===400,'a draft needs at least the short description');
+let dr=await au.call('POST','/api/records',{type:'changes',data:{title:'Only a title so far'}});
+ok(dr.status==='Draft'&&/^REQ-CC-/.test(dr.number),'draft saved with only the short description: '+dr.number);
+ok((await au.put(dr.id,{current:'Partly written'},'Work in progress')).changes===1,'the draft can be saved again with partial data');
+let sb=await au.sig(dr.id,'QA Review');
+ok(sb.s===400&&['site','nature','respPerson','description'].every(k=>sb.missing.includes(k)),'submitting to QA lists the empty required fields: '+sb.missing.join(', '));
+await au.go(dr.id,'Cancelled',{reason:'Test draft'});
+let ns=await au.call('POST','/api/records',{type:'changes',data:{...partA}});
+ok(ns.status==='Draft'&&(await au.sig(ns.id,'QA Review')).s===400,'site is required when Part A is submitted (not when the draft is saved)');
+await au.go(ns.id,'Cancelled',{reason:'Test draft'});
 let cc=await au.call('POST','/api/records',{type:'changes',data:{...partA,site:'JRS INC'}});
 let d=cc.data;
 ok(cc.status==='Draft'&&d.site==='JRS INC'&&d.otherSites.join()==='JRS IND'&&d.division1==='Clinical Trial Division (CTD)'&&d.affectedArea1==='Facilities','site, other sites, divisions and affected areas recorded');
