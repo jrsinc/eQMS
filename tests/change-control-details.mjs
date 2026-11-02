@@ -28,6 +28,10 @@ const M=createRequire(import.meta.url)('../public/modules.js').MODULES;
 const check=(n)=>Object.fromEntries(M.changes.fields.find(f=>f.k==='impactCheck').rows.slice(0,n).map(r=>[r,{v:'No',r:''}]));
 const RQ=(n=14)=>Object.fromEntries(M.changes.fields.find(f=>f.k==='riskQuestions').rows.slice(0,n).map((r,i)=>[r,{v:i===4?'Yes':'No',r:i===4?'IQ / OQ / PQ will be performed':''}]));
 
+// the action items made from implementation plan steps: each owner completes, QA closes (the plan steps then close themselves)
+const closeActions=async(ccId)=>{const OWN={operator1:op};const nums=((await qa.get(ccId)).record.data.plan||[]).map(p=>p.action).filter(Boolean);const all=(await qa.call('GET','/api/records?type=actionitems'))._arr;
+ for(const n of nums){const r=all.find(x=>x.number===n);if(!r||['Closed','Cancelled'].includes(r.status))continue;const who=OWN[r.data.respPerson];await who.put(r.id,{completion:'Done as planned'},'Done');await who.sig(r.id,'Completed');await qa.sig(r.id,'Closed');}
+ await new Promise(r=>setTimeout(r,200));};
 const qa=await login('qa.lead'), qr=await login('qa.reviewer'), au=await login('author1'), op=await login('operator1'), hod=await login('hod.ops'), pm=await login('pm1'), cs=await login('cs.manager'), tr=await login('trainer1');
 
 // ===== change request: site, owners, divisions, affected areas, original due date =====
@@ -75,11 +79,13 @@ ok(r.s===400&&/must not be approvers/.test(r.error),'the change owner cannot be 
 await qr.put(cc.id,{approvers:[{user:'trainer1',type:'Subject matter expert'}]},'Approvers');
 ok((await qr.sig(cc.id,'RP Review')).ok,'QA approves Part B – number assigned');
 cc=(await qr.get(cc.id)).record;
+ok(cc.data.plan.length===2&&cc.data.plan.every(p=>/^AI-/.test(p.action)),'each implementation plan step became an action item automatically: '+cc.data.plan.map(p=>p.action).join(', '));
+ok((await op.call('GET','/api/notifications')).items.some(x=>/AI-/.test(x.record_number||'')&&x.action),'the step owner is asked to complete the action item');
 ok(cc.data.equipment[0].asset==='FR-01'&&cc.data.rooms[0].room==='R-12'&&cc.data.regDetails&&cc.data.productStrategy,'equipment / room grids, regulatory and product release details kept');
 
 // ===== action items raised from the change control =====
 let ai=await qr.call('POST','/api/records',{type:'actionitems',data:{parentRef:cc.number,title:'Perform IQ and OQ',actionType:'Qualification (IQ / OQ / PQ)',respPerson:'operator1',dueDate:addD(T,25),description:'IQ / OQ of the freezer room unit after the work'},linkFrom:cc.id});
-ok(/^AI-\d{4}-0001$/.test(ai.number)&&ai.status==='Open'&&ai.data.respDept==='OPS','action item '+ai.number+' raised with owner and due date');
+ok(/^AI-\d{4}-\d{4}$/.test(ai.number)&&ai.status==='Open'&&ai.data.respDept==='OPS','action item '+ai.number+' raised with owner and due date');
 ok((await qr.get(cc.id)).links.some(l=>l.id===ai.id),'the action item is linked to the change control');
 ok((await op.call('GET','/api/notifications')).items.some(x=>x.record_id===ai.id&&x.action),'the action owner is asked to complete it');
 let ai2=await qr.call('POST','/api/records',{type:'actionitems',data:{parentRef:cc.number,title:'Risk assessment',actionType:'Risk assessment',respPerson:'operator1',dueDate:addD(T,5),description:'Risk assessment of the work'}});
@@ -114,6 +120,7 @@ ok((await op.sig(ai.id,'Completed')).ok,'the owner completes the action item');
 ok((await op.get(ai.id)).record.data.completedOn===T,'completion date recorded');
 ok((await qa.sig(ai.id,'Closed')).ok,'QA verifies and closes it');
 await qa.go(ai2.id,'Cancelled',{reason:'Covered by the existing risk assessment'});
+await closeActions(cc.id);
 await new Promise(r=>setTimeout(r,200));
 ok((await op.get(cc.id)).record.data.allActivitiesComplete==='Yes','all activities complete once the plan and action items are closed');
 let up=await op.call('POST',`/api/records/${cc.id}/attachments`,{name:'final-summary.pdf',mime:'application/pdf',base64:Buffer.from('%PDF-1.4 final').toString('base64'),category:'final'});
@@ -129,6 +136,22 @@ ok((await qa.sig(cc.id,'Closed – EC Pending')).ok,'closed after the client app
 ok((await op.call('GET','/api/notifications')).items.some(x=>x.record_id===cc.id&&x.action==='Effectiveness check'),'the effectiveness check owner is notified');
 let g=await qa.get(cc.id);
 ok(g.signatures.some(s=>s.meaning==='Approved – optional approver (Subject matter expert)'),'named approval in the e-signatures');
+
+// ===== Save draft at any stage: first entries without a reason, changed entries with one =====
+let sd=await au.call('POST','/api/records',{type:'changes',data:{...partA,site:'JRS INC',title:'Draft save test',changeTypeOther:'x'}});
+await au.sig(sd.id,'QA Review');
+const draft=(who,data,reason)=>who.call('PUT',`/api/records/${sd.id}`,{data,draft:true,...(reason?{reason}:{})});
+let ds=await draft(qr,{impactSummary:'Partly assessed',complexity:'Low'});
+ok(ds.changes===2,'QA saves a partial Part B as a draft – no reason needed for first entries');
+let au2=(await qa.call('GET','/api/audit?record='+encodeURIComponent(sd.number)))._arr.filter(a=>a.record_id===sd.id&&a.action==='Field changed'&&a.field==='impactSummary');
+ok(au2.length===1&&/Draft saved – first entry \(stage QA Review\)/.test(au2[0].reason),'the draft save is in the audit trail as a first entry: '+(au2[0]||{}).reason);
+let dn=await draft(qr,{impactSummary:'Fully assessed'});
+ok(dn.s===400&&dn.needReason&&/Impact summary/.test(dn.error),'changing an earlier entry in a draft needs a reason: '+dn.error);
+ok((await draft(qr,{impactSummary:'Fully assessed'},'Assessment completed')).changes===1,'with a reason the change is saved');
+ok((await qr.put(sd.id,{qaReviewComment:'x'},'')).s===400,'Save changes still needs a reason');
+let inv=await op.call('POST','/api/records',{type:'helpdesk',data:{title:'Draft flag ignored',category:'Other',priority:'Low',description:'Test'}});
+ok(inv.id&&(await op.call('PUT',`/api/records/${inv.id}`,{data:{area:'x'},draft:true})).s===400,'other modules: draft saving is not available, a reason is still required');
+await qr.go(sd.id,'Rejected',{reason:'Test record',sigUsername:'qa.reviewer',password:'Demo-Pass-2026'});
 
 // ===== cancellation details =====
 let c2=await au.call('POST','/api/records',{type:'changes',data:{...partA,site:'JRS IND',title:'Not needed',changeTypeOther:'x'}});

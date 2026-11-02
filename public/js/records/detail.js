@@ -42,7 +42,7 @@ async function detailView(id) {
           if (s && s.showIf && !s.showIf(d, rec.status)) return '';
           return fieldHtml(f, d[f.k], !det.editable || !!f.lock || !canEditSection(s, rec));
         }).join(''); })()}</div>
-        ${det.editable ? '<div class="error" style="margin-top:.8rem"></div><button class="btn primary">Save changes</button>' : ''}</form>
+        ${det.editable ? `<div class="error" style="margin-top:.8rem"></div><div class="row">${m.draftSave ? '<button type="button" class="btn primary" id="saveDraft">Save draft</button><button class="btn">Save changes with reason</button><span class="small muted">Save draft keeps your work at any stage; required fields are checked only when you sign the next step. Changing an earlier entry asks for a reason.</span>' : '<button class="btn primary">Save changes</button>'}</div>` : ''}</form>
       <div id="special"></div>
       <div class="panel"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Linked records</h3>
         <form id="lk" class="row no-print"><input type="text" name="number" placeholder="Record number, e.g. CAPA/QAS/001/26" list="dl_links" style="max-width:260px" aria-label="Record number to link">
@@ -63,6 +63,16 @@ async function detailView(id) {
   $('#lk').addEventListener('submit', async (e) => {
     e.preventDefault();
     try { await api('POST', `/api/records/${id}/links`, { number: e.target.number.value }); toast('Record linked'); route(); } catch (x) { toast(x.message); }
+  });
+  // Save draft: partial work at any stage; first entries need no reason, changed earlier entries do
+  $('#saveDraft')?.addEventListener('click', async () => {
+    const data = readForm(form, m), err = $('.error', form); err.textContent = '';
+    try { const r = await api('PUT', '/api/records/' + id, { data, draft: true }); toast(r.changes ? `Draft saved – ${r.changes} field(s)` : 'Nothing new to save'); route(); }
+    catch (x) {
+      if (!x.needReason) { err.textContent = x.message; return; }
+      await stepDialog({ title: 'Save draft – reason for the change', reason: true, extra: `<p class="small muted">${esc(x.message)}</p>`,
+        perform: async (v) => { const r = await api('PUT', '/api/records/' + id, { data, reason: v.reason, draft: true }); toast(r.changes ? `Draft saved – ${r.changes} field(s)` : 'Nothing new to save'); } }) && route();
+    }
   });
   if (det.editable) form.addEventListener('submit', async (e) => {
     e.preventDefault();

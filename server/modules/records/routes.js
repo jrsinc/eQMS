@@ -9,7 +9,7 @@ const { fail, failMissing, route } = require('../../core/http.js');
 const { allAccess, hasRole, userLabel, verifySignature } = require('../../core/auth.js');
 const { hodFor } = require('../../org/departments.js');
 const { DERIVE, EDITABLE_ALWAYS, LOCKED, applyComputed, byNumber, canEditSection, canSee, canSeeAudit, contentHash, createRecord, fmt, getRecord, hiddenFor, isEmpty, link, linkRefs, linked, needAudit, rowToRecord, sanitize, saveRecord, sectionOf, sign, visibleRecord } = require('../../records/engine.js');
-const { CC_APPROVED, CHECKS, erCheck, onTransition } = require('../../records/rules.js');
+const { CC_APPROVED, CHECKS, ccPlanActions, erCheck, onTransition } = require('../../records/rules.js');
 const { notifyStatus } = require('../notifications/notify.js');
 // defined in modules loaded later: resolved when called
 const effectiveDoc = (...a) => require('../documents/issuance.js').effectiveDoc(...a);
@@ -129,7 +129,9 @@ route('PUT', '/api/records/:id', (ctx) => {
   const rec = visibleRecord(ctx.user, getRecord(ctx.params.id)), mod = MODULES[rec.type];
   if (!EDITABLE_ALWAYS.has(rec.type) && LOCKED.has(rec.status)) fail(409, `Record is ${rec.status} and cannot be edited. Raise a change or revision.`);
   if (rec.type === 'randomization' && !hasRole(ctx.user, ['unblinded'])) fail(403, 'Unblinded role required.');
-  const reason = String(ctx.body.reason || '').trim(); if (!reason) fail(400, 'Reason for change is required.');
+  // "Save draft" (modules with draftSave): first entries are saved without a reason; changing an earlier entry still needs one
+  const draft = ctx.body.draft === true && !!mod.draftSave;
+  let reason = String(ctx.body.reason || '').trim(); if (!reason && !draft) fail(400, 'Reason for change is required.');
   const clean = sanitize(rec.type, ctx.body.data || {});
   if (rec.type === 'issues' && rec.status !== 'Requested') { delete clean.docNumber; delete clean.copies; delete clean.issuedTo; }
   for (const f of mod.fields) if (f.lock && f.k in clean && !sameValue(clean[f.k], rec.data[f.k])) fail(400, `${f.label} cannot be changed after the record is created.`);
@@ -138,6 +140,11 @@ route('PUT', '/api/records/:id', (ctx) => {
     const s = sectionOf(mod, k);
     if (!canEditSection(s, rec, ctx.user)) fail(403, `"${s.label}" cannot be changed by you at stage "${rec.status}".`);
   }
+  if (draft && !reason) {
+    const edited = Object.entries(clean).filter(([k, v]) => !sameValue(rec.data[k], v) && !emptyValue(rec.data[k])).map(([k]) => (mod.fields.find(f => f.k === k) || { label: k }).label.split(' (')[0]);
+    if (edited.length) fail(400, `Changing an earlier entry needs a reason: ${edited.join('; ')}.`, { needReason: true, edited });
+    reason = `Draft saved – first entry (stage ${rec.status})`;
+  }
   let changes = 0;
   for (const [k, v] of Object.entries(clean)) {
     const old = rec.data[k];
@@ -145,6 +152,7 @@ route('PUT', '/api/records/:id', (ctx) => {
   }
   if (changes) {
     if (DERIVE[rec.type]) { const before = JSON.stringify(rec.data); DERIVE[rec.type](rec); if (JSON.stringify(rec.data) !== before) audit(ctx.user, 'Derived values recalculated', rec, null, null, rec.type === 'investigations' ? 'Due date ' + rec.data.dueDate : 'Title ' + rec.data.title, reason, ctx.ip); }
+    ccPlanActions(ctx.user, rec, ctx.ip); // new implementation plan rows → action items
     applyComputed(rec.type, rec.data); saveRecord(rec); linkRefs(ctx.user, rec, ctx.ip);
   }
   return { changes };

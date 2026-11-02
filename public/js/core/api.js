@@ -7,7 +7,7 @@ async function api(method, url, body) {
   if (r.status === 401 && url !== '/api/login') { ME = null; renderLogin('Your session ended. Sign in again.'); throw new Error('Session expired'); }
   const ct = r.headers.get('content-type') || '';
   const out = ct.includes('json') ? await r.json() : await r.blob();
-  if (!r.ok) { const e = new Error(out.error || 'Request failed (' + r.status + ')'); e.missing = out.missing || []; throw e; }
+  if (!r.ok) { const e = new Error(out.error || 'Request failed (' + r.status + ')'); e.missing = out.missing || []; e.needReason = !!out.needReason; throw e; }
   return out;
 }
 

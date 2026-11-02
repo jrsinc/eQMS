@@ -194,6 +194,8 @@ const DERIVE = {
     // change level from impact and complexity: L0 minor / low; L2 critical, or major / high; otherwise L1
     d.changeLevel = !d.classification || !d.complexity ? '' : d.classification === 'Critical' || (d.classification === 'Major' && d.complexity === 'High') ? 'L2'
       : d.classification === 'Minor' && d.complexity === 'Low' ? 'L0' : 'L1';
+    // plan rows follow their action item: closed (or cancelled) item → the row's closure date
+    for (const row of d.plan || []) if (row.action && !row.closed) { const it = byNumber(row.action, ['actionitems']); if (it && ['Closed', 'Cancelled'].includes(it.status)) row.closed = it.data.completedOn || today(); }
     // all change control activities complete: every plan activity closed and every action item of this change closed or cancelled
     const items = r.number ? db.prepare("SELECT status FROM records WHERE type='actionitems' AND deleted=0 AND json_extract(data, '$.parentRef')=?").all(r.number) : [];
     d.allActivitiesComplete = (d.plan || []).length || items.length ? ((d.plan || []).every(p => p.closed) && items.every(i => ['Closed', 'Cancelled'].includes(i.status)) ? 'Yes' : 'No') : '';

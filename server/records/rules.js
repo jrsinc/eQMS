@@ -11,6 +11,20 @@ const { DERIVE, LOCKED, applyComputed, byNumber, contentHash, createRecord, link
 
 // recalculates the parent change control (all activities complete) when one of its action items is closed or cancelled
 function refreshParentChange(item) { if (!item.data.parentRef) return; setImmediate(() => { const p = byNumber(item.data.parentRef, ['changes']); if (p) { DERIVE.changes(p); saveRecord(p); } }); } // after the item itself is saved
+// implementation plan: every complete row (activity, responsible person, target date) becomes an action item once the change
+// control has its number; the item's number goes into the row and the owner is notified
+function ccPlanActions(user, rec, ip) {
+  if (rec.type !== 'changes' || !rec.data.dateOpened) return 0;
+  let n = 0;
+  for (const row of rec.data.plan || []) {
+    if (row.action || !row.activity || !row.person || !row.due) continue;
+    const ai = createRecord(user, 'actionitems', { parentRef: rec.number, title: String(row.activity).slice(0, 200), actionType: 'Implementation', respPerson: row.person, dueDate: row.due,
+      description: `Implementation plan step of ${rec.number}: ${row.activity}` }, ip, `Created from the implementation plan of ${rec.number}`);
+    row.action = ai.number; link(user, rec, ai, ip); n++;
+    require('../modules/notifications/notify.js').notifyStatus(user, ai, '', ai.status);
+  }
+  return n;
+}
 // named optional approvers of a change control
 const ccPersons = (r) => [...new Set((r.data.approvers || []).map(a => a.user).filter(Boolean))];
 // change control states from pre-approval onwards (the change may be implemented)
@@ -359,7 +373,7 @@ const AFTER = {
   },
   'tni:Certified': (u, r) => { r.data.certificateDate = today(); },
   'atreviews:Under Review': (u, r) => { r.data.summary = auditSummary(r.data.periodFrom, r.data.periodTo, r.data.scope || []); },
-  'changes:RP Review': (u, r, ip) => assignNumber(u, r, ip),
+  'changes:RP Review': (u, r, ip) => { assignNumber(u, r, ip); ccPlanActions(u, r, ip); },
   'changes:HOD Approval': (u, r, ip) => assignHod(u, r, ip),
   'capa:Effectiveness Check': (u, r) => { r.data.ecDueDate = addMonths(today(), ecMonths(r.data.ecDue)); },
   'capa:Closed': (u, r, ip) => {
@@ -412,4 +426,4 @@ function makeEffective(user, rec, ip) {
   }
 }
 
-module.exports = { CC_APPROVED, need, blank, ecMonths, ER_FIELDS, erCheck, CHECKS, auditSummary, assignNumber, qualifiedAuditor, assignHod, AFTER, onTransition, assignDocTraining, makeEffective };
+module.exports = { ccPlanActions, CC_APPROVED, need, blank, ecMonths, ER_FIELDS, erCheck, CHECKS, auditSummary, assignNumber, qualifiedAuditor, assignHod, AFTER, onTransition, assignDocTraining, makeEffective };

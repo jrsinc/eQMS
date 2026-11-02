@@ -29,6 +29,11 @@ const addWD=(d,n)=>{const x=D(d);while(n>0){x.setUTCDate(x.getUTCDate()+1);if(x.
 
 const qa=await login('qa.lead'), qr=await login('qa.reviewer'), au=await login('author1'), op=await login('operator1'), hod=await login('hod.ops'), pm=await login('pm1'), rp=await login('rp1'), pk=await login('packer1'), cs=await login('cs.manager'), tr=await login('trainer1');
 const PW='Demo-Pass-2026';
+
+// the action items made from implementation plan steps: each owner completes, QA closes (the plan steps then close themselves)
+const closeActions=async(ccId)=>{const OWN={operator1:op,'qa.reviewer':qr};const nums=((await qa.get(ccId)).record.data.plan||[]).map(p=>p.action).filter(Boolean);const all=(await qa.call('GET','/api/records?type=actionitems'))._arr;
+ for(const n of nums){const r=all.find(x=>x.number===n);if(!r||['Closed','Cancelled'].includes(r.status))continue;const who=OWN[r.data.respPerson];await who.put(r.id,{completion:'Done as planned'},'Done');await who.sig(r.id,'Completed');await qa.sig(r.id,'Closed');}
+ await new Promise(r=>setTimeout(r,200));};
 let p;
 
 // ===== Deviations and complaints – JRS/SOP/QAS/022 with the JRS workflow =====
@@ -302,7 +307,7 @@ g=await qa.get(cc.id);ok(g.record.data.hodApprover==='hod.ops','approver from th
 ok((await cs.sig(cc.id,'QA Approval')).s===403,'only the Head named on the record approves');
 ok((await hod.sig(cc.id,'QA Review')).s===400,'Head of Department rejection needs a reason');
 ok((await hod.sig(cc.id,'QA Review',{reason:'Add validation of the new logger to the plan'})).ok,'Head of Department rejects – back to QA');
-await qa.put(cc.id,{plan:[...plan,{activity:'Qualify logger',dept:'QAS',person:'qa.reviewer',due:addD(T,25)}]});
+await qa.put(cc.id,{plan:[...(await qa.get(cc.id)).record.data.plan,{activity:'Qualify logger',dept:'QAS',person:'qa.reviewer',due:addD(T,25)}]}); // the page keeps the action item numbers of earlier steps
 await qa.sig(cc.id,'RP Review'); await op.sig(cc.id,'HOD Approval');
 ok((await qa.get(cc.id)).record.number===`CC-JRS-${Y}-001`,'number kept after the return');
 await hod.put(cc.id,{hodComment:'Approved'});
@@ -331,7 +336,9 @@ const closedPlan=[...plan,{activity:'Qualify logger',dept:'QAS',person:'qa.revie
 await op.put(cc.id,{finalImplDate:addD(T,-200),finalSummary:'Logger TL-200 installed, qualified and SOP updated'});
 await pm.put(cc.id,{clientCommunicated:'Yes'});
 ok((await op.sig(cc.id,'QA Closure Review')).s===400,'report blocked while implementation activities are open');
-await op.put(cc.id,{plan:closedPlan.map(p=>({...p,closed:T}))});
+ok((await op.get(cc.id)).record.data.plan.every(p=>/^AI-/.test(p.action)),'each implementation plan step became an action item when the number was assigned');
+await closeActions(cc.id);
+ok((await op.get(cc.id)).record.data.plan.every(p=>p.closed===T),'closing the action items closes the plan steps');
 ok((await tr.sig(cc.id,'QA Closure Review')).s===403,'only the responsible person / department submits the report');
 ok((await op.sig(cc.id,'QA Closure Review')).ok,'responsible department signs the change control report');
 // QA review report and closure
@@ -358,7 +365,8 @@ await qa.put(cc3.id,{...LVL,impactCheck:check(11),impactSummary:'Labels only',cl
 await qa.sig(cc3.id,'RP Review'); await op.sig(cc3.id,'HOD Approval'); await hod.sig(cc3.id,'QA Approval');
 await qa.put(cc3.id,{ecRequired:'Required',ecDue:'3 months',ecAssignee:'qa.reviewer',ecPlan:'Check labels at the next stock count'});
 ok((await qa.sig(cc3.id,'Implementation')).ok,'no other departments: QA approval completes the pre-approval');
-await op.put(cc3.id,{finalImplDate:T,finalSummary:'Shelves relabelled',plan:[{activity:'Relabel',dept:'OPS',person:'operator1',due:addD(T,5),closed:T}]});
+await closeActions(cc3.id);
+await op.put(cc3.id,{finalImplDate:T,finalSummary:'Shelves relabelled'});
 await op.sig(cc3.id,'QA Closure Review'); await qa.put(cc3.id,{qaReport:'Verified'}); await qa.sig(cc3.id,'Closed – EC Pending');
 await qa.put(cc3.id,{effective:'Yes',ecQaComment:'Too early'});
 ok((await qa.sig(cc3.id,'Closed')).s===400,'effectiveness check waits until the assigned period has passed');
