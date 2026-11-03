@@ -32,6 +32,12 @@ function nextActors(rec) {
     if (rec.status === 'Optional Approvals') for (const a of d.approvers || []) if (a.user && !(d.deptApprovals || []).some(x => x.person === a.user)) add(a.user, `Optional approval (${a.type || 'approver'})`);
     if (rec.status === 'Closed – EC Pending') add(d.ecAssignee, 'Effectiveness check');
   }
+  if (rec.type === 'investigations') {
+    // a named initial quality reviewer / quality approver is notified instead of every QA user
+    const named = ['Requested', 'QA Review'].includes(rec.status) ? d.qaReviewer : rec.status === 'QA Evaluation' ? d.qaApprover : '';
+    if (named) { const qa = new Set(usersWithRole('qa')); for (const u of [...out.keys()]) if (qa.has(u)) out.delete(u); add(named, rec.status === 'QA Evaluation' ? 'QA evaluation (quality approver)' : 'QA review (initial quality reviewer)'); }
+    if (rec.status === 'HOD Approval') for (const a of d.approvers || []) if (a.user && !(d.deptApprovals || []).some(x => x.person === a.user)) add(a.user, `Internal approval (${a.type || 'approver'})`);
+  }
   if (rec.type === 'actionitems' && rec.status === 'Open') add(d.respPerson, 'Complete action');
   const da = mod.deptApproval;
   if (da && rec.status === da.state) for (const code of d[da.field] || []) if (!(d.deptApprovals || []).some(a => a.dept === code)) add(hodFor(code), `${da.label} (${code})`);
@@ -39,7 +45,7 @@ function nextActors(rec) {
 }
 // every status change: the people who act next, plus the initiator, responsible person and approving Head, in the app and by e-mail
 function notifyStatus(actor, rec, from, to) {
-  const d = rec.data, mod = MODULES[rec.type], act = nextActors(rec), people = new Set([...act.keys(), rec.created_by, d.respPerson, d.hodApprover].filter(Boolean));
+  const d = rec.data, mod = MODULES[rec.type], act = nextActors(rec), people = new Set([...act.keys(), rec.created_by, d.respPerson, d.hodApprover, ...(d.internalNotify || []).map(x => x.user)].filter(Boolean)); // + internal notification list
   const link = CFG.appUrl ? `${CFG.appUrl}/#/r/${rec.id}` : '';
   for (const u of people) {
     if (u === actor.username) continue;

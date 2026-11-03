@@ -44,10 +44,10 @@ async function detailView(id) {
         }).join(''); })()}</div>
         ${det.editable ? `<div class="error" style="margin-top:.8rem"></div><div class="row">${m.draftSave ? '<button type="button" class="btn primary" id="saveDraft">Save draft</button><button class="btn">Save changes with reason</button><span class="small muted">Save draft keeps your work at any stage; required fields are checked only when you sign the next step. Changing an earlier entry asks for a reason.</span>' : '<button class="btn primary">Save changes</button>'}</div>` : ''}</form>
       <div id="special"></div>
-      <div class="panel"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Linked records</h3>
+      <div class="panel"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Record family and linked records</h3>
         <form id="lk" class="row no-print"><input type="text" name="number" placeholder="Record number, e.g. CAPA/QAS/001/26" list="dl_links" style="max-width:260px" aria-label="Record number to link">
         <datalist id="dl_links">${ALL.filter(r => r.id !== rec.id).slice(0, 300).map(r => `<option value="${esc(r.number)}">${esc(r.data.title || '')}</option>`).join('')}</datalist><button class="btn">Link</button></form></div>
-        ${det.links.length ? table(det.links.map(l => ALL.find(r => r.id === l.id) || { ...l, data: { title: l.title } }), ['number', 'module', 'title', 'status']) : '<p class="muted small">No linked records. CAPA, RCA, change controls and extension requests raised from this record are linked automatically.</p>'}</div>
+        ${det.links.length ? familyTable(rec, det.links) : '<p class="muted small">No linked records. CAPA, RCA, change controls and extension requests raised from this record are linked automatically.</p>'}</div>
       <div class="panel"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Attachments</h3>${canWrite && (open || hasRole(['qa'])) && (!m.attachOnRequestOnly || hasRole(['qa'])) ? `<label class="btn no-print">Add file (stage: ${esc(rec.status)})<input type="file" id="att" hidden></label>` : m.attachOnRequestOnly ? '<span class="small muted">Documents can be added by QA only.</span>' : ''}</div>
         ${attachmentsTable(m, det.attachments)}</div>
     </div><aside class="rail">
@@ -239,4 +239,13 @@ function setupTabs(form, m, rec) {
   let start = null; try { start = sessionStorage.getItem('tab:' + rec.id); } catch { /* storage unavailable */ }
   const editable = m.fields.find(f => f.type === 'section' && f.tab && f.edit && f.edit[rec.status]);
   show(tabs.includes(start) ? start : editable ? editable.tab : tabs[0]);
+}
+
+// Record family: the parent this record was raised from, its child records (action items, CAPA …) and other linked records
+function familyTable(rec, links) {
+  const up = ['parentRef', 'refRecord', 'sourceRecord', 'documentId', 'riskRef'].map(k => rec.data[k]).filter(Boolean);
+  const rel = (r) => up.includes(r.number) ? 'Parent' : ['parentRef', 'sourceRecord', 'refRecord', 'documentId'].some(k => r.data && r.data[k] === rec.number) ? 'Child' : 'Related';
+  const order = { Parent: 0, Child: 1, Related: 2 };
+  const rows = links.map(l => ALL.find(r => r.id === l.id) || { ...l, data: { title: l.title } }).sort((a, b) => order[rel(a)] - order[rel(b)]);
+  return `<div class="table-wrap"><table class="t"><thead><tr><th>Relation</th><th>Number</th><th>Module</th><th>Short description</th><th>Status</th><th>Date opened</th><th>Date due</th><th>Site</th></tr></thead><tbody>${rows.map(r => `<tr class="click" data-go="#/r/${r.id}"><td>${esc(rel(r))}</td><td class="mono">${esc(r.number)}</td><td>${esc((MODS[r.type] || {}).name || '')}</td><td>${esc(r.data.title || '')}</td><td>${r.status ? pill(r.status) : ''}</td><td class="small">${dmy(r.data.dateOpened || (r.created_at || '').slice(0, 10))}</td><td class="small">${dmy(r.status ? dueOf(r) : '')}</td><td class="small">${esc(r.data.site || '')}</td></tr>`).join('')}</tbody></table></div>`;
 }

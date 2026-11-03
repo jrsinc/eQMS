@@ -10,17 +10,22 @@ const { hodFor } = require('../org/departments.js');
 const { DERIVE, LOCKED, applyComputed, byNumber, contentHash, createRecord, link, linked, nextNumber, rowToRecord, saveRecord } = require('./engine.js');
 
 // recalculates the parent change control (all activities complete) when one of its action items is closed or cancelled
-function refreshParentChange(item) { if (!item.data.parentRef) return; setImmediate(() => { const p = byNumber(item.data.parentRef, ['changes']); if (p) { DERIVE.changes(p); saveRecord(p); } }); } // after the item itself is saved
-// implementation plan: every complete row (activity, responsible person, target date) becomes an action item once the change
-// control has its number; the item's number goes into the row and the owner is notified
+function refreshParentChange(item) { if (!item.data.parentRef) return; setImmediate(() => { const p = byNumber(item.data.parentRef, ['changes', 'investigations']); if (p && DERIVE[p.type]) { DERIVE[p.type](p); saveRecord(p); } }); } // after the item itself is saved
+// plan rows become action items once the record has its number: change control implementation plan, deviation / complaint
+// investigation plan. Every complete row (action, person, target date) gets one; its number goes into the row and the owner is notified
+const PLAN_ACTIONS = {
+  changes: { field: 'plan', text: 'activity', ref: 'action', type: 'Implementation', what: 'implementation plan' },
+  investigations: { field: 'invActions', text: 'action', ref: 'actionItem', type: 'Other', what: 'investigation plan' }
+};
 function ccPlanActions(user, rec, ip) {
-  if (rec.type !== 'changes' || !rec.data.dateOpened) return 0;
+  const p = PLAN_ACTIONS[rec.type];
+  if (!p || !rec.data.dateOpened) return 0;
   let n = 0;
-  for (const row of rec.data.plan || []) {
-    if (row.action || !row.activity || !row.person || !row.due) continue;
-    const ai = createRecord(user, 'actionitems', { parentRef: rec.number, title: String(row.activity).slice(0, 200), actionType: 'Implementation', respPerson: row.person, dueDate: row.due,
-      description: `Implementation plan step of ${rec.number}: ${row.activity}` }, ip, `Created from the implementation plan of ${rec.number}`);
-    row.action = ai.number; link(user, rec, ai, ip); n++;
+  for (const row of rec.data[p.field] || []) {
+    if (row[p.ref] || !row[p.text] || !row.person || !row.due) continue;
+    const ai = createRecord(user, 'actionitems', { parentRef: rec.number, title: String(row[p.text]).slice(0, 200), actionType: p.type, respPerson: row.person, dueDate: row.due,
+      description: `Step of the ${p.what} of ${rec.number}: ${row[p.text]}` }, ip, `Created from the ${p.what} of ${rec.number}`);
+    row[p.ref] = ai.number; link(user, rec, ai, ip); n++;
     require('../modules/notifications/notify.js').notifyStatus(user, ai, '', ai.status);
   }
   return n;
@@ -169,6 +174,30 @@ const CHECKS = {
     const open = [...(r.data.optionalDepts || []).filter(x => !done.includes(x)), ...ccPersons(r).filter(u => !given.some(a => a.person === u)).map(userLabel)];
     need(!open.length, 'Optional approvals outstanding: ' + open.join(', ') + '.');
   },
+  // deviations / complaints (template: Deviation Detail Report)
+  invLateReason: (r) => { const d = r.data; if (d.dateIdentified && d.qaNotified && d.qaNotified > addWorkingDays(d.dateIdentified, 1)) need(!blank(d.lateOpenReason), 'The event was reported to QA more than 1 business day after it was identified: give the reason in Part A.'); },
+  invEscalation: (r) => { const d = r.data, yes = [['significantEvent', 'significant event'], ['fieldAlert', 'field alert'], ['bioProductDr', 'bio product DR'], ['recall', 'product recall'], ['otherRegNotification', 'other regulatory notification']].filter(([k]) => /^Yes/.test(d[k] || '')).map(([, l]) => l);
+    if (yes.length) need(!blank(d.escalation), `Record the assessment / escalation (${yes.join(', ')}).`); },
+  invApproverList: (r) => {
+    const list = (r.data.approvers || []).map(a => a.user).filter(Boolean), own = [r.data.respPerson, r.data.assignedTo].filter(Boolean);
+    need(list.length <= 5, 'Name at most 5 internal approvers.');
+    need(new Set(list).size === list.length, 'Each internal approver can be named once.');
+    const clash = list.filter(u => own.includes(u)); need(!clash.length, `The responsible person and the deviation owner cannot be internal approvers: ${clash.map(userLabel).join(', ')}.`);
+  },
+  invApprovals: (r) => { const given = r.data.deptApprovals || [], open = [...new Set((r.data.approvers || []).map(a => a.user).filter(Boolean))].filter(u => !given.some(a => a.person === u)); need(!open.length, 'Internal approvals outstanding: ' + open.map(userLabel).join(', ') + '.'); },
+  invDetails: (r) => {
+    const d = r.data, rows = (k) => (d[k] || []).some(x => Object.values(x).some(Boolean));
+    if (d.invType === 'Complaint') {
+      if (d.sampleReceived === 'Yes') need(!blank(d.returnedInspection), 'A sample was received: record the returned sample inspection.');
+      need(!blank(d.retentionInspection) || !blank(d.retentionJustification), 'Record the retain sample inspection, or justify why it is not done.');
+    }
+    if (d.materialImpacted === 'Yes') need(rows('materials'), 'Material impacted: add the materials to the material grid.');
+    if (d.productImpacted === 'Yes') need(rows('products'), 'Product impacted: add the products to the product grid.');
+    if (d.equipmentInvolved === 'Yes') need(rows('equipment'), 'Equipment involved: add it to the equipment grid.');
+    if (d.healthHazardReq === 'Yes') need(!blank(d.healthHazardSummary), 'Health hazard assessment required: give the summary.');
+    if (d.repeatedIncident === 'Yes') need(!blank(d.repeatedRefs), 'Repeated incident: give the record numbers of the earlier incidents.');
+  },
+  invActionsClosed: (r) => CHECKS.ccActionsClosed(r),
   ccTypeOther: (r) => { if ((r.data.changeType || []).includes('Other')) need(!blank(r.data.changeTypeOther), 'Change type "Other": explain the change type.'); },
   ccRiskAnswers: (r) => { const q = MODULES.changes.fields.find(f => f.k === 'riskQuestions').rows, open = q.filter(x => !((r.data.riskQuestions || {})[x] || {}).v); need(!open.length, `Answer all risk questions (${open.length} open: ${open.map(x => x.split(' ')[0]).join(', ')}).`); },
   // named optional approvers: at most 5, each once, never the change owner or an additional change owner
@@ -336,7 +365,7 @@ function assignHod(u, r, ip) {
 // Side effects after a state change, keyed "module:new state"
 const AFTER = {
   // the designated number generator assigns the record number once QA has approved the request
-  'investigations:Initiation': (u, r, ip) => assignNumber(u, r, ip),
+  'investigations:Initiation': (u, r, ip) => { assignNumber(u, r, ip); ccPlanActions(u, r, ip); },
   // the approving Head of Department comes from the organogram when the investigation is submitted
   'investigations:HOD Approval': (u, r, ip) => assignHod(u, r, ip),
   // approved supplier list: approval date of this qualification cycle (effective and requalification dates are set by QA)

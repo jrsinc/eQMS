@@ -206,4 +206,14 @@ const DERIVE = {
   documents: (r) => { const d = r.data, base = String(d.title || '').replace(/^\[GLB\]\s*/i, '').toUpperCase(); d.title = ((d.sites || []).length > 1 ? '[GLB] ' : '') + base; }
 };
 
+// deviations / complaints: deviation owner, original due date, investigation plan rows follow their action items
+const deriveInvestigation = DERIVE.investigations;
+DERIVE.investigations = (r) => {
+  deriveInvestigation(r);
+  const d = r.data;
+  if (!d.assignedTo && d.respPerson) d.assignedTo = d.respPerson;
+  if (d.dueDate && !d.originalDue) d.originalDue = d.dueDate;
+  for (const row of d.invActions || []) if (row.actionItem && !row.closed) { const it = byNumber(row.actionItem, ['actionitems']); if (it && ['Closed', 'Cancelled'].includes(it.status)) row.closed = it.data.completedOn || today(); }
+};
+
 module.exports = { setActor, rowToRecord, getRecord, contentHash, nextNumber, applyComputed, sanitize, isEmpty, fmt, LOCKED, EDITABLE_ALWAYS, sign, saveRecord, ACTOR, snapshot, createdSummary, createRecord, byNumber, link, linked, linkRefs, sectionOf, canEditSection, hiddenFor, HIDEABLE, canSeeAudit, needAudit, canSee, visibleRecord, DERIVE };
