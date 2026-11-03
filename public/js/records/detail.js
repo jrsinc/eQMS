@@ -37,7 +37,7 @@ async function detailView(id) {
         ${trans.length ? trans.map((t, i) => `<button class="btn ${t.sign ? 'primary sign' : ''}" data-act="tr" data-i="${i}" ${t.allowed ? '' : 'disabled title="Your roles do not permit this step"'}>${esc(t.label)}</button>`).join('') : extraBtns.length ? '' : '<span class="muted">No workflow steps available from this status.</span>'}
         ${extraBtns.join('')}${m.issueForm && !m.issueForm.inSection && (!m.issueForm.roles || hasRole(m.issueForm.roles)) && (!m.issueForm.when || m.issueForm.when(d, rec.status)) ? `<a class="btn" href="/api/forms/${rec.type}?record=${rec.id}" download title="Controlled form with a numbered issue stamp">Issue ${esc(m.issueForm.label)}</a>` : ''}${rec.type === 'vendors' && d.auditDate && (d.agenda || []).length ? `<a class="btn" href="/api/records/${rec.id}/agenda.pdf" download>Audit agenda (JRS/FRM/QAS/021)</a>` : ''}<a class="btn" href="/api/records/${rec.id}/report.pdf" download title="One PDF: every part, signatures, all PDF and image attachments${det.auditAccess ? ', audit trail' : ''}">Download report (PDF)</a><a class="btn" href="/api/records/${rec.id}/report.pdf?inline=1" target="_blank" rel="noopener">Print report</a><a class="btn" href="/api/records/${rec.id}/report" download title="Original attachment files in a ZIP">Files (ZIP)</a></div></div>
       <form class="panel" id="rf"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Record details</h3>${det.editable ? '<span class="small muted">Changes need a reason and are recorded in the audit trail.</span>' : '<span class="pill grey">Read-only in this status</span>'}</div>
-        <div class="grid">${(() => { let s = null; return m.fields.map(f => {
+        <div class="grid${m.reviewView ? ' review' : ''}">${m.reviewView ? reviewFields(m, rec, det) : (() => { let s = null; return m.fields.map(f => {
           if (f.type === 'section') { s = f; if (f.showIf && !f.showIf(d, rec.status)) return ''; return fieldHtml(f) + sectionSignatures(m, f, det.signatures); }
           if (s && s.showIf && !s.showIf(d, rec.status)) return '';
           return fieldHtml(f, d[f.k], !det.editable || !!f.lock || !canEditSection(s, rec));
@@ -212,6 +212,27 @@ async function spawn(src, to) {
 
 
 // Workflow bar: previous and current state and how long the record has been in it
+// review view: a section the user can edit now shows its fields one below the other for entry; any other section shows only
+// the entries that are filled in, and is left out when nothing is filled in and nothing is signed
+function reviewFields(m, rec, det) {
+  const d = rec.data, out = []; let s = null, body = [], open = false, head = '';
+  const flush = () => { if (head && (open || body.some(Boolean) || head.sig)) out.push(head.html + (open || body.some(Boolean) ? '' : '<p class="full small muted">No entries.</p>'), ...body); };
+  for (const f of m.fields) {
+    if (f.type === 'section') {
+      flush(); s = f; body = []; head = '';
+      if (f.showIf && !f.showIf(d, rec.status)) continue;
+      open = det.editable && canEditSection(f, rec);
+      const sig = sectionSignatures(m, f, det.signatures);
+      head = { html: fieldHtml(f) + (open ? '<p class="full small muted entry-hint">Enter the fields below one by one; fields marked * are needed for the next step.</p>' : '') + sig, sig: !!sig };
+      continue;
+    }
+    if (s && !head) continue;
+    const editNow = det.editable && !f.lock && canEditSection(s, rec) && !['computed', 'readonly'].includes(f.type);
+    body.push(editNow ? fieldHtml(f, d[f.k], false) : reviewHtml(f, d[f.k]));
+  }
+  flush();
+  return out.join('');
+}
 function workflowBar(rec) {
   const d = rec.data, since = d.stateEnteredAt || rec.updated_at, days = since ? Math.floor((Date.now() - new Date(since)) / 864e5) : null;
   const age = days == null ? '' : days > 365 ? 'In state for longer than one year' : days < 1 ? 'In state since today' : `In state for ${days} day${days === 1 ? '' : 's'}`;
@@ -229,6 +250,7 @@ function setupTabs(form, m, rec) {
   const bar = document.createElement('div'); bar.className = 'tabs no-print'; bar.setAttribute('role', 'tablist');
   bar.innerHTML = tabs.map(t => `<button type="button" class="tab" role="tab" data-t="${esc(t)}">${esc(t)}<span class="tab-count"></span></button>`).join('');
   grid.before(bar);
+  for (const b of $$('.tab', bar)) if (![...grid.children].some(el => el.dataset.tab === b.dataset.t)) b.hidden = true;
   const show = (t) => {
     $$('.tab', bar).forEach(b => { b.classList.toggle('active', b.dataset.t === t); b.setAttribute('aria-selected', b.dataset.t === t); });
     for (const el of grid.children) el.classList.toggle('tab-hidden', el.dataset.tab !== t);
@@ -238,7 +260,8 @@ function setupTabs(form, m, rec) {
   // open the tab last used on this record, else the tab with the section that can be edited at the current stage
   let start = null; try { start = sessionStorage.getItem('tab:' + rec.id); } catch { /* storage unavailable */ }
   const editable = m.fields.find(f => f.type === 'section' && f.tab && f.edit && f.edit[rec.status]);
-  show(tabs.includes(start) ? start : editable ? editable.tab : tabs[0]);
+  const shown = tabs.filter(t => [...grid.children].some(el => el.dataset.tab === t));
+  show(shown.includes(start) ? start : editable && shown.includes(editable.tab) ? editable.tab : shown[0] || tabs[0]);
 }
 
 // Record family: the parent this record was raised from, its child records (action items, CAPA …) and other linked records

@@ -250,3 +250,11 @@ tr.unread td { background: var(--accent-soft); }
 .wf-step { font-size: .85rem; padding: .15rem .55rem; border-radius: 4px; background: var(--surface, #fff); border: 1px solid var(--line, #d0d7de); }
 .wf-step.now { background: #fff6d6; border-color: #d4a72c; font-weight: 600; }
 .wf-age { margin-left: auto; }
+
+/* review view (deviations): editable fields one below the other, filled entries as text */
+.grid.review { grid-template-columns: 1fr; gap: .7rem; }
+.grid.review > div:not(.full):not(.review-field) { max-width: 640px; }
+.review-field { padding: .35rem 0; border-bottom: 1px solid var(--line-2); }
+.review-field .f { display: block; font-size: .8rem; color: var(--ink-2); margin-bottom: .15rem; }
+.review-value { white-space: pre-wrap; overflow-wrap: anywhere; }
+.entry-hint { margin: 0; }

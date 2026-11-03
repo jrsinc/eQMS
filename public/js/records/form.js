@@ -36,6 +36,26 @@ function fieldHtml(f, v, disabled) {
   }
   return `<div class="${f.full || f.type === 'multicheck' ? 'full' : ''}">${lab}${input}</div>`;
 }
+// review view: a filled-in field as text (no input, so it is not sent on save and keeps its saved value)
+const hasValue = (f, v) => f.type === 'checkbox' ? !!v : Array.isArray(v) ? v.some(x => x && (typeof x !== 'object' || Object.values(x).some(Boolean)))
+  : v && typeof v === 'object' ? Object.values(v).some(x => x && (x.v || x.r)) : v !== undefined && v !== null && String(v).trim() !== '';
+function reviewHtml(f, v) {
+  if (['docs', 'issue'].includes(f.type)) return fieldHtml(f, v, true);
+  if (f.type === 'guide' || !hasValue(f, v)) return '';
+  const opt = (o) => (f.optionLabels || {})[o] || CFG.ROLES[o] || o;
+  const cell = (c, x) => !x ? '' : c.type === 'user' ? userName(x) : c.type === 'dept' ? (CFG.DEPTS[x] || x) : c.type === 'date' ? dmy(x) : x;
+  let out;
+  switch (f.type) {
+    case 'table': out = `<div class="table-wrap"><table class="t"><thead><tr>${f.cols.map(c => `<th>${esc(c.label)}</th>`).join('')}</tr></thead><tbody>${v.filter(r => Object.values(r).some(Boolean)).map(r => { const calc = f.rowCompute ? f.rowCompute(r) : {}; return `<tr>${f.cols.map(c => `<td>${esc(c.computed ? calc[c.k] || '' : cell(c, r[c.k]))}</td>`).join('')}</tr>`; }).join('')}</tbody></table></div>`; break;
+    case 'checklist': out = `<div class="table-wrap"><table class="t"><tbody>${f.rows.filter(row => v[row] && (v[row].v || v[row].r)).map(row => `<tr><td>${esc(row)}</td><td>${esc(v[row].v || '')}</td><td>${esc(v[row].r || '')}</td></tr>`).join('')}</tbody></table></div>`; break;
+    case 'multicheck': out = `<div class="review-value">${v.map(o => esc(opt(o))).join(', ')}</div>`; break;
+    case 'checkbox': out = '<div class="review-value">Yes</div>'; break;
+    case 'user': out = `<div class="review-value">${esc(userName(v))}</div>`; break;
+    case 'date': out = `<div class="review-value">${dmy(v)}</div>`; break;
+    default: out = `<div class="review-value">${esc(f.fmt === 'date' ? dmy(v) : f.fmt === 'user' ? userName(v) : opt(String(v)))}</div>`;
+  }
+  return `<div class="${f.full || ['table', 'checklist', 'textarea', 'multicheck'].includes(f.type) ? 'full' : ''} review-field"><span class="f">${esc(f.label)}</span>${out}</div>`;
+}
 function tableRow(f, r = {}, d = '') {
   const calc = f.rowCompute ? f.rowCompute(r) : {};
   const cell = (c) => {
@@ -93,7 +113,7 @@ function liveCompute(root, m, base = {}) {
 function newView(type) {
   const m = MODS[type]; if (!m || !canSeeModule(m)) return dashboard();
   shell(type, `<div class="spread"><div><h1>${esc(m.createTitle || 'New ' + singular(m))}</h1><p class="muted">${m.createHelp ? esc(m.createHelp) : m.tempNumbering ? 'Your request goes to QA with a request number. When QA approves it the record number is assigned automatically; QA may also ask you to update the request, or reject it.' + (m.deptScoped ? ' The responsible department is the department of the responsible person.' : '') : 'The record number is assigned when you save.'} ${m.draftSave ? 'Only the short description is needed to save the draft; fields marked * are needed before you submit it to QA.' : 'Fields marked * are required.'}</p></div></div>
-   <form id="nf" class="panel"><div class="grid">${createFields(m).filter(f => f.type !== 'readonly').map(f => fieldHtml(f, undefined, false)).join('')}</div>
+   <form id="nf" class="panel"><div class="grid${m.reviewView ? ' review' : ''}">${createFields(m).filter(f => f.type !== 'readonly').map(f => fieldHtml(f, undefined, false)).join('')}</div>
    ${m.tempNumbering || m.attachOnRequestOnly || m.attachOnCreate ? `<div style="margin-top:1rem"><label class="f" for="natt">Attachments${m.attachOnRequestOnly ? ' – ' + esc(m.attachHint || 'attach your documents now; after the request only QA can add documents') : ' (optional)'}</label><input type="file" id="natt" multiple></div>` : ''}
    <div class="error" style="margin-top:1rem"></div><div class="row"><button class="btn primary">${m.createLabel ? esc(m.createLabel) : m.tempNumbering ? 'Submit request to QA' : 'Save record'}</button><a class="btn" href="#/m/${type}">Cancel</a></div></form>`);
   const form = $('#nf');

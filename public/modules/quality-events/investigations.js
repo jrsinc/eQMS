@@ -211,6 +211,8 @@
       t('Customer Approval', 'Closed', 'Close – customer approved or deemed closed', ['qa', 'pm'], { part: 'E', sign: 'Closed – customer approval recorded', checks: ['customerClosure'] })
     ],
     // named internal approvers sign while the Head of Department approves
-    deptApproval: { state: 'HOD Approval', field: 'approvalDepts', label: 'Internal approvals', persons: 'approvers' }
+    deptApproval: { state: 'HOD Approval', field: 'approvalDepts', label: 'Internal approvals', persons: 'approvers' },
+    // record page: fields the user can edit now are entered one below the other; the rest show only what is filled in
+    reviewView: true
   };
 })(typeof module !== 'undefined' && module.exports ? require('../_shared.js') : window.QMS_SHARED);
