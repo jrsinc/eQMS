@@ -303,7 +303,9 @@ g=await qa.get(cc.id);
 ok(g.record.number===`CC-JRS-${Y}-001`&&g.record.data.requestNo===cc.number&&g.record.data.dateOpened===T,'number assigned on QA approval: '+g.record.number+' (request '+cc.number+')');
 ok((await qa.put(cc.id,{classification:'Minor'})).s===403,'Part B is locked once approved');
 // responsible person, then Head of the responsible department
-ok((await au.sig(cc.id,'HOD Approval')).s===403,'only the responsible person reviews');
+ok((await tr.sig(cc.id,'HOD Approval')).s===403,'only the responsible person or department reviews');
+ok((await tr.call('PUT',`/api/records/${cc.id}`,{data:{rpComment:'x'},draft:true})).s===403,'someone outside the responsible department cannot save Part C');
+ok((await hod.call('PUT',`/api/records/${cc.id}`,{data:{rpComment:'Draft from the department'},draft:true})).s===200,'a member of the responsible department saves a draft of the review');
 await op.put(cc.id,{rpComment:'Agreed; installation by OPS'});
 ok((await op.sig(cc.id,'HOD Approval')).ok,'responsible person reviews and approves Parts A and B');
 g=await qa.get(cc.id);ok(g.record.data.hodApprover==='hod.ops','approver from the organogram: Head of Operation');

@@ -231,6 +231,8 @@ const CHECKS = {
   custReviewDate: (r) => need(r.data.reviewDate > today(), 'Set the next review date (after today).'),
   custDocuments: (r) => need(db.prepare('SELECT 1 FROM attachments WHERE record_id=? LIMIT 1').get(r.id), 'Attach the completed customer form and the licence copies before qualification.'),
   isRespPerson: (r, u) => { if (r.data.respPerson !== u.username && !allAccess(u)) fail(403, `Only the responsible person (${userLabel(r.data.respPerson)}) can review this step.`); },
+  // the responsible person or any member of the responsible department
+  isRespDept: (r, u) => { if (r.data.respPerson !== u.username && !(u.department && u.department === r.data.respDept) && !allAccess(u)) fail(403, `Only the responsible person (${userLabel(r.data.respPerson)}) or a member of the responsible department can review this step.`); },
   isCcDept: (r, u) => { if (![r.created_by, r.data.respPerson].includes(u.username) && !(u.department && u.department === r.data.respDept) && !allAccess(u)) fail(403, 'Only the initiator, the responsible person or the responsible department can do this step.'); },
   ccHasOptional: (r) => need((r.data.optionalDepts || []).length || ccPersons(r).length, 'No other departments or approvers are named: use "Approve – QA (pre-approval complete)".'),
   ccNoOptional: (r) => need(!(r.data.optionalDepts || []).length && !ccPersons(r).length, 'Other departments or approvers are named: use "Approve – QA (send to other departments / approvers)".'),

@@ -14,7 +14,7 @@ function nextActors(rec) {
   for (const t of mod.transitions.filter(x => x.from === rec.status && !x.reason && !['Cancelled', 'Rejected'].includes(x.to))) {
     const c = t.checks || [];
     if (c.includes('isHodApprover')) add(d.hodApprover, t.label);
-    else if (c.includes('isRespPerson') || c.includes('isPartCOwner')) add(d.respPerson, t.label);
+    else if (c.includes('isRespPerson') || c.includes('isRespDept') || c.includes('isPartCOwner')) add(d.respPerson, t.label);
     else if (c.includes('isPartAOwner') || c.includes('isCcDept') || c.includes('isResponsible')) { add(rec.created_by, t.label); add(d.respPerson, t.label); }
     else if (c.includes('isInitiator')) add(rec.created_by, t.label);
     else if (c.includes('isReviewer')) add(d.reviewer, t.label);

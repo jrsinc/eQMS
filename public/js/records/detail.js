@@ -148,7 +148,7 @@ function qmrPanel(rec) {
 const canEditSection = (s, rec) => !s || !s.edit || (ME.allAccess && (s.edit[rec.status] || []).length > 0) || (s.edit[rec.status] || []).some(r =>
   r === 'initiator' ? rec.created_by === ME.username : r === 'responsible' ? rec.data.respPerson === ME.username
     : r === 'respdept' ? !!ME.department && ME.department === rec.data.respDept : r === 'depthead' ? rec.data.hodApprover === ME.username : ME.roles.includes(r));
-const WHO_BY_CHECK = { isRespPerson: 'Responsible person', isCcDept: 'Responsible person / department', isInitiator: 'Initiator', isResponsible: 'Initiator / responsible person', isPartAOwner: 'Initiator / responsible person / department', isPartCOwner: 'Responsible person / department', isHodApprover: 'Head of Department (organogram)' };
+const WHO_BY_CHECK = { isRespPerson: 'Responsible person', isRespDept: 'Responsible person / department', isCcDept: 'Responsible person / department', isInitiator: 'Initiator', isResponsible: 'Initiator / responsible person', isPartAOwner: 'Initiator / responsible person / department', isPartCOwner: 'Responsible person / department', isHodApprover: 'Head of Department (organogram)' };
 // Sign-offs expected for a section, taken from the workflow (transitions with the same "part"), each with the
 // latest signature: name and date, or pending. Changing the workflow in modules.js changes these blocks automatically.
 function expectedSignoffs(m, s) {
