@@ -258,3 +258,16 @@ tr.unread td { background: var(--accent-soft); }
 .review-field .f { display: block; font-size: .8rem; color: var(--ink-2); margin-bottom: .15rem; }
 .review-value { white-space: pre-wrap; overflow-wrap: anywhere; }
 .entry-hint { margin: 0; }
+
+/* process flow (deviations & complaints): parts in order, done / now / to come */
+.process-flow { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-s); padding: .6rem .8rem; margin: .6rem 0 1rem; }
+.process-flow ol { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: .35rem 0; }
+.process-flow li { display: flex; align-items: center; gap: .35rem; font-size: .85rem; color: var(--ink-3); padding-right: 1.4rem; position: relative; }
+.process-flow li:not(:last-child)::after { content: '→'; position: absolute; right: .4rem; color: var(--ink-3); }
+.pf-dot { display: inline-grid; place-items: center; width: 1.5rem; height: 1.5rem; border-radius: 50%; border: 2px solid var(--line); background: var(--surface); font-size: .75rem; font-weight: 600; flex: none; }
+.process-flow li.done { color: var(--ink-2); }
+.process-flow li.done .pf-dot { background: var(--accent); border-color: var(--accent); color: #fff; }
+.process-flow li.now { color: var(--ink); font-weight: 600; }
+.process-flow li.now .pf-dot { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.process-flow li.stopped .pf-dot { border-color: #b42318; color: #b42318; }
+.pf-note { margin: .45rem 0 0; color: var(--ink-2); }

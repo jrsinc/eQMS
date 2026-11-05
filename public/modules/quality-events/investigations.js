@@ -213,6 +213,10 @@
     // named internal approvers sign while the Head of Department approves
     deptApproval: { state: 'HOD Approval', field: 'approvalDepts', label: 'Internal approvals', persons: 'approvers' },
     // record page: fields the user can edit now are entered one below the other; the rest show only what is filled in
-    reviewView: true
+    reviewView: true,
+    // process flow on the record page; a part is shown once the record reaches the stage where it is filled in
+    flow: [['Requested', 'Request to QA'], ['Initiation', 'Part A – Initiation'], ['QA Review', 'Part B – QA review'], ['Investigation', 'Part C – Investigation'],
+      ['HOD Approval', 'Part D – HOD approval'], ['QA Evaluation', 'Part E – QA evaluation'], ['Customer Approval', 'Customer approval (if needed)'], ['Closed', 'Closed']],
+    flowSide: { 'Request Update': 'Requested', 'Part A Update': 'QA Review' }
   };
 })(typeof module !== 'undefined' && module.exports ? require('../_shared.js') : window.QMS_SHARED);

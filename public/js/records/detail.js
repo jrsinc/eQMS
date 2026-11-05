@@ -31,7 +31,7 @@ async function detailView(id) {
     <h1><span class="mono">${esc(rec.number)}</span>${rec.type === 'documents' ? ' <span class="muted">v' + esc(d.version) + '</span>' : ''}</h1>
     <p style="margin:0">${esc(d.title || '')}</p><p class="muted small">Created by ${esc(userName(rec.created_by))} on ${dmyt(rec.created_at)} · Last change ${dmyt(rec.updated_at)}</p></div>
     <div class="row no-print">${pill(rec.status)}${isOverdue(rec) ? '<span class="pill bad">Overdue</span>' : ''}${!det.editable && !open ? '<span class="pill grey" title="The record is closed: no editing">&#128274; Locked</span>' : ''}</div></div>
-    ${workflowBar(rec)}
+    ${m.flow ? processBar(m, rec) : workflowBar(rec)}
     <div class="record"><div>
       <div class="panel no-print"><h3>Next steps</h3><div class="row">
         ${trans.length ? trans.map((t, i) => `<button class="btn ${t.sign ? 'primary sign' : ''}" data-act="tr" data-i="${i}" ${t.allowed ? '' : 'disabled title="Your roles do not permit this step"'}>${esc(t.label)}</button>`).join('') : extraBtns.length ? '' : '<span class="muted">No workflow steps available from this status.</span>'}
@@ -221,6 +221,7 @@ function reviewFields(m, rec, det) {
     if (f.type === 'section') {
       flush(); s = f; body = []; head = '';
       if (f.showIf && !f.showIf(d, rec.status)) continue;
+      if (!partReached(m, f, rec)) continue; // later parts appear once the earlier part is submitted
       open = det.editable && canEditSection(f, rec);
       const sig = sectionSignatures(m, f, det.signatures);
       head = { html: fieldHtml(f) + (open ? '<p class="full small muted entry-hint">Enter the fields below one by one; fields marked * are needed for the next step.</p>' : '') + sig, sig: !!sig };
@@ -232,6 +233,29 @@ function reviewFields(m, rec, det) {
   }
   flush();
   return out.join('');
+}
+// the stage the record has reached: a stage it was returned to counts as the main stage it belongs to; a rejected or
+// cancelled record counts as the stage it left
+function stageIndex(m, rec) {
+  const st = ['Rejected', 'Cancelled'].includes(rec.status) ? rec.data.prevStatus || m.states[0] : rec.status;
+  return m.states.indexOf(st);
+}
+// a section opens at the first stage where it can be edited; sections without stages are always shown
+function partReached(m, s, rec) {
+  if (!s.edit || rec.status === 'Closed') return true;
+  const open = Math.min(...Object.keys(s.edit).map(k => m.states.indexOf(k)).filter(i => i >= 0));
+  return !isFinite(open) || open <= stageIndex(m, rec);
+}
+// process flow: every part in order, done / now / to come, with the step that is waiting
+function processBar(m, rec) {
+  const st = rec.status, main = (m.flowSide || {})[st] || (['Rejected', 'Cancelled'].includes(st) ? rec.data.prevStatus : st);
+  const at = m.flow.findIndex(([k]) => k === main), closed = st === 'Closed';
+  const next = m.transitions.filter(t => t.from === st).map(t => t.label);
+  return `<div class="process-flow no-print" aria-label="Process flow"><ol>${m.flow.map(([k, label], i) => {
+    const cls = closed || i < at ? 'done' : i === at ? (['Rejected', 'Cancelled'].includes(st) ? 'stopped' : 'now') : 'todo';
+    return `<li class="${cls}"><span class="pf-dot">${cls === 'done' ? '&#10003;' : i + 1}</span><span class="pf-label">${esc(label)}</span></li>`;
+  }).join('')}</ol>
+  <p class="small pf-note">${closed ? 'Closed – all parts complete.' : ['Rejected', 'Cancelled'].includes(st) ? `${esc(st)} at ${esc(main || '')}.` : `Now: <b>${esc(st)}</b>${(m.flowSide || {})[st] ? ' (returned for update)' : ''}${next.length ? ' · Next step: ' + next.map(esc).join(' / ') : ''}. Later parts open when this part is submitted.`}</p></div>`;
 }
 function workflowBar(rec) {
   const d = rec.data, since = d.stateEnteredAt || rec.updated_at, days = since ? Math.floor((Date.now() - new Date(since)) / 864e5) : null;
