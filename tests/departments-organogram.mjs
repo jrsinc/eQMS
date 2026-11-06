@@ -119,7 +119,7 @@ ok((await tr.raw(`/api/records/${d.id}/report`)).s===404,'users outside the depa
 // finish and check closed-record attachments
 await pk.put(d.id,{investigation:'Forklift damage',rootCause:'Forklift tine',riskAssessment:'Low',conclusion:'No impact',capaRequired:'No',capaJustification:'Isolated'});
 await pk.sig(d.id,'HOD Approval'); await cs.sig(d.id,'QA Evaluation');
-await qa.put(d.id,{finalDisposition:'Release / use as is',customerApproval:'Not applicable (no customer impact)',qaEvalComment:'Accepted'});
+await qa.put(d.id,{finalDisposition:'Release / use as is',qaEvalComment:'Accepted'});
 ok((await qa.sig(d.id,'Closed')).ok,'deviation closed');
 ok((await pk.attach(d.id,'late.txt','late')).s===409,'after closure only QA adds attachments');
 ok((await qa.attach(d.id,'closure-memo.txt','memo')).sha256,'QA adds a closure attachment');

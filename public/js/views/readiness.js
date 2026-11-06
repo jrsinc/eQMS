@@ -17,11 +17,9 @@ function readiness() {
   const compliance = trn.length ? Math.round(100 * trn.filter(r => r.status === 'Completed').length / trn.length) : 100;
   const licences = ALL.filter(r => (r.type === 'vendors' || r.type === 'customers') && !['Disqualified', 'Blocked'].includes(r.status) && r.data.licenceExpiry && r.data.licenceExpiry <= in90);
   const inv = ALL.filter(r => r.type === 'investigations' && !DONE.has(r.status)), ic = MODS.investigations.compute;
-  const followUpDue = (r) => { const d = r.data; if (d.customerApproval !== 'Pending' || !d.reportSent) return false; const n = [d.followUp1, d.followUp2, d.followUp3].filter(Boolean).length; return n < 3 && addDaysIso(d.reportSent, 15 * (n + 1)) <= t; };
   const items = [
     ['Deviations and complaints past due date', inv.filter(isOverdue)],
     ['Customer / sponsor not notified within 3 days', inv.filter(r => /^(Overdue|Late)/.test(ic.notifyStatus(r.data)))],
-    ['Customer follow-ups due', inv.filter(r => r.status === 'Customer Approval' && followUpDue(r))],
     ['Overdue CAPA (incl. effectiveness checks)', ALL.filter(r => r.type === 'capa' && isOverdue(r))],
     ['Change controls past due date (incl. effectiveness checks)', ALL.filter(r => r.type === 'changes' && isOverdue(r))],
     ['Temporary changes past their end date', ALL.filter(r => r.type === 'changes' && r.data.nature === 'Temporary' && r.data.tempEnd && r.data.tempEnd < t && !DONE.has(r.status) && !r.status.startsWith('Closed'))],

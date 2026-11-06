@@ -137,17 +137,6 @@ const CHECKS = {
   isResponsible: (r, u) => { if (![r.created_by, r.data.respPerson].includes(u.username) && !u.roles.includes('qa')) fail(403, 'Only the initiator, the responsible person or QA can submit this step.'); },
   capaDecision: (r) => need(r.data.capaRequired !== 'No' || !blank(r.data.capaJustification), 'Justify why no CAPA is required (JRS/SOP/QAS/022).'),
   capaLinked: (r) => need(r.data.capaRequired !== 'Yes' || linked(r.id).some(x => x.type === 'capa'), 'CAPA is marked as required: raise or link the CAPA before QA approval.'),
-  customerInvolved: (r) => need(!String(r.data.customerApproval).startsWith('Not applicable'), 'Customer approval is "Not applicable": use "QA approve and close".'),
-  customerNotInvolved: (r) => need(String(r.data.customerApproval).startsWith('Not applicable'), 'This event needs customer approval. Use "QA approve – send report to customer", or set customer approval to "Not applicable" if there is no customer impact.'),
-  customerClosure: (r) => {
-    const d = r.data;
-    if (d.customerApproval === 'Approved by customer') return;
-    need(String(d.customerApproval).startsWith('Deemed closed'), 'Record the customer approval, or deemed closure after 3 follow-ups within 45 days.');
-    need(d.reportSent, 'Enter the date the QA-approved report was shared with the customer.');
-    const f = [d.followUp1, d.followUp2, d.followUp3].filter(Boolean);
-    need(f.length === 3 && f.every(x => x >= d.reportSent), 'Deemed closure needs 3 customer follow-ups after the report was shared.');
-    need(daysBetween(d.reportSent, today()) >= 45, `Deemed closure is possible 45 days after the report was shared (from ${addDays(d.reportSent, 45)}).`);
-  },
   capaPlan: (r) => {
     const d = r.data, acts = [['correction', 'corrDue', 'Correction'], ['corrective', 'caDue', 'Corrective action'], ['preventive', 'paDue', 'Preventive action']].filter(([k]) => !blank(d[k]));
     need(acts.length, 'Propose at least one correction, corrective action or preventive action.');

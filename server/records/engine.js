@@ -169,7 +169,6 @@ const canSeeAudit = (user) => user.roles.includes('qa') || allAccess(user);
 const needAudit = (user) => { if (!canSeeAudit(user)) fail(403, 'The audit trail and version history are visible to QA, administrators and management only.'); };
 // Department-scoped modules (modules.js "deptScoped"): only the initiator, the responsible person, members of the responsible
 // department, the Heads above it and the approving Head see the record – plus QA, admin, management and read-only inspectors.
-// Project managers see events that go to the customer.
 function canSee(user, rec) {
   if (!MODULES[rec.type] || hiddenFor(user, rec.type)) return false;
   if (MODULES[rec.type].ownOnly) return rec.created_by === user.username || user.roles.includes('admin') || allAccess(user); // help desk: own tickets
@@ -177,7 +176,7 @@ function canSee(user, rec) {
   const d = rec.data, me = user.username;
   if (rec.created_by === me || d.respPerson === me || d.hodApprover === me) return true;
   if (d.respDept && (user.department === d.respDept || (user.deptsUnder || []).includes(d.respDept))) return true;
-  return user.roles.includes('pm') && (rec.status === 'Customer Approval' || (rec.status === 'Closed' && d.customerApproval && !String(d.customerApproval).startsWith('Not applicable')));
+  return false;
 }
 function visibleRecord(user, rec) { if (!canSee(user, rec)) fail(404, 'Record not found'); return rec; }
 

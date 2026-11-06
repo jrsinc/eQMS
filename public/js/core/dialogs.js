@@ -12,7 +12,7 @@ function modal({ title, html, ok = 'OK', okClass = 'primary', wide = false, canc
     $('[data-x]', root)?.addEventListener('click', () => close(null));
     root.querySelector('.backdrop').addEventListener('keydown', (e) => { if (e.key === 'Escape') close(null); });
     form.addEventListener('submit', async (e) => {
-      e.preventDefault(); err.textContent = ''; const btn = form.querySelector('.actions .btn:last-child'); btn.disabled = true;
+      e.preventDefault(); err.textContent = ''; const btn = form.querySelector('.actions .btn:last-child'); btn.dataset.busy = '1'; btn.disabled = true;
       try { const v = onOk ? await onOk(form) : true; close(v === undefined ? true : v); } catch (x) { err.textContent = x.message; btn.disabled = false; }
     });
     onMount && onMount(form);

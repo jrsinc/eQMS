@@ -124,12 +124,11 @@ await cs.put(d1.id,{hodComment:'Investigation adequate'});
 ok((await cs.sig(d1.id,'QA Evaluation')).ok,'Head of Department approves');
 // Part E – QA evaluation and closure
 ok((await qa.sig(d1.id,'Investigation')).s===400,'QA rejection needs a comment');
-await qa.put(d1.id,{finalDisposition:'Release / use as is',customerApproval:'Not applicable (no customer impact)',qaEvalComment:'Root cause confirmed'});
+await qa.put(d1.id,{finalDisposition:'Release / use as is',qaEvalComment:'Root cause confirmed'});
 ok((await qa.sig(d1.id,'Closed')).s===400,'closure blocked: CAPA required but none linked');
 let k1=await op.call('POST','/api/records',{type:'capa',linkFrom:d1.id,data:{title:'Door alarm for cold room 2',respDept:'OPS',respPerson:'operator1',dueDate:addD(T,60),source:'Deviation',sourceRecord:d1.number,nonconformance:'Door left ajar',corrective:'Install a door-open alarm',caDue:addD(T,30)}});
 ok(k1.number===`CAPA/OPS/001/${YY}`,'CAPA numbered by department and year: '+k1.number);
 g=await qa.get(d1.id);ok(g.links.some(l=>l.id===k1.id),'CAPA linked to the deviation');
-ok((await qa.sig(d1.id,'Customer Approval')).s===400,'no customer impact: the report does not go to the customer');
 ok((await qa.sig(d1.id,'Closed')).ok,'QA approves and closes (final report)');
 g=await qa.get(d1.id);
 const want=['Request approved – QA (number assigned)','Part A submitted – initiator / responsible person','Part A updated – initiator / responsible person','Part B approved – QA','Investigation completed – responsible person','Rejected – Head of Department','Approved – Head of Department','Approved and closed – QA'];
@@ -147,17 +146,9 @@ await op.put(c1.id,{retentionJustification:'Damage in transit only; the retained
 await op.sig(c1.id,'HOD Approval');
 g=await qa.get(c1.id);ok(g.record.data.hodApprover==='hod.ops','Head of Operations approves for Operations');
 await hod.sig(c1.id,'QA Evaluation');
-await qa.put(c1.id,{finalDisposition:'Destroy',customerApproval:'Pending',qaEvalComment:'Report to sponsor'});
-ok((await qa.sig(c1.id,'Closed')).s===400,'customer impacted: use "send report to customer"');
-p=await qa.sig(c1.id,'Customer Approval');
-ok(p.status==='Customer Approval','customer impacted: QA approval sends the report to the customer');
-ok((await pm.get(c1.id)).record,'Project Manager sees the complaint at customer approval');
-await qa.put(c1.id,{reportSent:T});
-g=await qa.get(c1.id);ok(g.record.data.nextFollowUp===`Follow-up 1 due ${addD(T,15)}`,'follow-up reminder: '+g.record.data.nextFollowUp);
-await qa.put(c1.id,{customerApproval:'Deemed closed – no response after 3 follow-ups',reportSent:addD(T,-20),followUp1:addD(T,-15),followUp2:addD(T,-10),followUp3:addD(T,-5)});
-ok((await pm.sig(c1.id,'Closed')).s===400,'deemed closure blocked before 45 days');
-await qa.put(c1.id,{reportSent:addD(T,-50),followUp1:addD(T,-35),followUp2:addD(T,-20),followUp3:addD(T,-5)});
-ok((await pm.sig(c1.id,'Closed')).ok,'deemed closure after 3 follow-ups and 45 days (Project Manager)');
+await qa.put(c1.id,{finalDisposition:'Destroy',qaEvalComment:'Report to sponsor'});
+ok((await qa.sig(c1.id,'Customer Approval')).s>=400,'no customer approval stage');
+ok((await qa.sig(c1.id,'Closed')).ok,'QA approves and closes the complaint');
 // a Head of Department never approves their own investigation: the Head of the parent department does
 let d4=await open(await req('Deviation','Carton print smudged',{respPerson:'cs.manager'},pk));
 await cs.put(d4.id,{eventOrigin:'Packaging line 1',description:'Smudged print on 20 cartons',immediate:'Cartons segregated'}); await cs.sig(d4.id,'QA Review');

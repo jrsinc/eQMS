@@ -34,7 +34,7 @@ async function detailView(id) {
     ${m.flow ? processBar(m, rec) : workflowBar(rec)}
     <div class="record"><div>
       <div class="panel no-print"><h3>Next steps</h3><div class="row">
-        ${trans.length ? trans.map((t, i) => `<button class="btn ${t.sign ? 'primary sign' : ''}" data-act="tr" data-i="${i}" ${t.allowed ? '' : 'disabled title="Your roles do not permit this step"'}>${esc(t.label)}</button>`).join('') : extraBtns.length ? '' : '<span class="muted">No workflow steps available from this status.</span>'}
+        ${trans.some(t => t.allowed) ? trans.map((t, i) => t.allowed ? `<button class="btn ${t.sign ? 'primary sign' : ''}" data-act="tr" data-i="${i}">${esc(t.label)}</button>` : '').join('') : extraBtns.length ? '' : `<span class="muted">${trans.length ? 'No step for you at this status – read only.' : 'No workflow steps available from this status.'}</span>`}
         ${extraBtns.join('')}${m.issueForm && !m.issueForm.inSection && (!m.issueForm.roles || hasRole(m.issueForm.roles)) && (!m.issueForm.when || m.issueForm.when(d, rec.status)) ? `<a class="btn" href="/api/forms/${rec.type}?record=${rec.id}" download title="Controlled form with a numbered issue stamp">Issue ${esc(m.issueForm.label)}</a>` : ''}${rec.type === 'vendors' && d.auditDate && (d.agenda || []).length ? `<a class="btn" href="/api/records/${rec.id}/agenda.pdf" download>Audit agenda (JRS/FRM/QAS/021)</a>` : ''}<a class="btn" href="/api/records/${rec.id}/report.pdf" download title="One PDF: every part, signatures, all PDF and image attachments${det.auditAccess ? ', audit trail' : ''}">Download report (PDF)</a><a class="btn" href="/api/records/${rec.id}/report.pdf?inline=1" target="_blank" rel="noopener">Print report</a><a class="btn" href="/api/records/${rec.id}/report" download title="Original attachment files in a ZIP">Files (ZIP)</a></div></div>
       <form class="panel" id="rf"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Record details</h3>${det.editable ? '<span class="small muted">Changes need a reason and are recorded in the audit trail.</span>' : '<span class="pill grey">Read-only in this status</span>'}</div>
         <div class="grid${m.reviewView ? ' review' : ''}">${m.reviewView ? reviewFields(m, rec, det) : (() => { let s = null; return m.fields.map(f => {
@@ -42,7 +42,7 @@ async function detailView(id) {
           if (s && s.showIf && !s.showIf(d, rec.status)) return '';
           return fieldHtml(f, d[f.k], !det.editable || !!f.lock || !canEditSection(s, rec));
         }).join(''); })()}</div>
-        ${det.editable ? `<div class="error" style="margin-top:.8rem"></div><div class="row">${m.draftSave ? '<button type="button" class="btn primary" id="saveDraft">Save draft</button><button class="btn">Save changes with reason</button><span class="small muted">Save draft keeps your work at any stage; required fields are checked only when you sign the next step. Changing an earlier entry asks for a reason.</span>' : '<button class="btn primary">Save changes</button>'}</div>` : ''}</form>
+        ${det.editable ? `<div class="save-row"><div class="error" style="margin-top:.8rem"></div><div class="row">${m.draftSave ? '<button type="button" class="btn primary" id="saveDraft">Save draft</button><button class="btn">Save changes with reason</button><span class="small muted">Save draft keeps your work at any stage; required fields are checked only when you sign the next step. Changing an earlier entry asks for a reason.</span>' : '<button class="btn primary">Save changes</button>'}</div></div>` : ''}</form>
       <div id="special"></div>
       <div class="panel"><div class="spread" style="margin-bottom:.5rem"><h3 style="margin:0">Record family and linked records</h3>
         <form id="lk" class="row no-print"><input type="text" name="number" placeholder="Record number, e.g. CAPA/QAS/001/26" list="dl_links" style="max-width:260px" aria-label="Record number to link">
@@ -58,7 +58,7 @@ async function detailView(id) {
         ${a.old_value != null || a.new_value != null ? `<div class="diff">${a.old_value != null ? `<del>${esc(String(auditValue(rec.type, a.field, a.old_value)).slice(0, 160))}</del> ` : ''}<ins>${esc(String(auditValue(rec.type, a.field, a.new_value ?? '')).slice(0, 160))}</ins></div>` : ''}${a.reason ? `<div class="muted">Reason: ${esc(a.reason)}</div>` : ''}</div>`).join('')}</div></div>` : ''}
     </aside></div>`);
 
-  const form = $('#rf'); liveCompute(form, m, d); setupTabs(form, m, rec);
+  const form = $('#rf'); liveCompute(form, m, d); setupTabs(form, m, rec); saveRowState(form);
   bindRows();
   $('#lk').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -262,6 +262,11 @@ function workflowBar(rec) {
   const age = days == null ? '' : days > 365 ? 'In state for longer than one year' : days < 1 ? 'In state since today' : `In state for ${days} day${days === 1 ? '' : 's'}`;
   return `<div class="workflow-bar"><span class="wf-label">Workflow</span>${d.prevStatus ? `<span class="wf-step">${esc(d.prevStatus)}</span><span class="wf-arrow">&rarr;</span>` : ''}<span class="wf-step now">${esc(rec.status)}</span><span class="small muted wf-age" title="${since ? dmyt(since) : ''}">${age}</span></div>`;
 }
+// Save buttons only where something can be entered now: once a part is submitted its tab shows no save button
+function saveRowState(form) {
+  const row = $('.save-row', form); if (!row) return;
+  row.hidden = ![...$$('.grid input, .grid select, .grid textarea', form)].some(el => !el.disabled && !el.readOnly && el.type !== 'hidden' && !el.closest('.tab-hidden'));
+}
 // Tabs: sections with a "tab" are shown one tab at a time (e.g. change control: request, level 1, approval, closure)
 function setupTabs(form, m, rec) {
   const tabs = [...new Set(m.fields.filter(f => f.type === 'section' && f.tab).map(f => f.tab))];
@@ -278,12 +283,14 @@ function setupTabs(form, m, rec) {
   const show = (t) => {
     $$('.tab', bar).forEach(b => { b.classList.toggle('active', b.dataset.t === t); b.setAttribute('aria-selected', b.dataset.t === t); });
     for (const el of grid.children) el.classList.toggle('tab-hidden', el.dataset.tab !== t);
+    saveRowState(form);
     try { sessionStorage.setItem('tab:' + rec.id, t); } catch { /* storage unavailable */ }
   };
   bar.addEventListener('click', (e) => { const b = e.target.closest('.tab'); if (b) show(b.dataset.t); });
   // open the tab last used on this record, else the tab with the section that can be edited at the current stage
   let start = null; try { start = sessionStorage.getItem('tab:' + rec.id); } catch { /* storage unavailable */ }
-  const editable = m.fields.find(f => f.type === 'section' && f.tab && f.edit && f.edit[rec.status]);
+  const canNow = (f) => f.type === 'section' && f.tab && f.edit && f.edit[rec.status];
+  const editable = m.fields.find(f => canNow(f) && f.part) || m.fields.find(canNow);
   const shown = tabs.filter(t => [...grid.children].some(el => el.dataset.tab === t));
   show(shown.includes(start) ? start : editable && shown.includes(editable.tab) ? editable.tab : shown[0] || tabs[0]);
 }

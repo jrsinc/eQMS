@@ -33,7 +33,6 @@ const EC_STATES = new Set(['Effectiveness Check', 'Closed – EC Pending']);
 function dueOf(r) {
   const d = r.data;
   if (EC_STATES.has(r.status)) return d.ecDueDate;
-  if (r.type === 'investigations' && r.status === 'Customer Approval') return '';
   if (['investigations', 'capa', 'changes'].includes(r.type)) return d.extendedDue || d.dueDate;
   if (r.type === 'selfinspections') return ['Planned', 'Notified'].includes(r.status) ? d.plannedDate : r.status === 'Report Issued' ? d.extendedDue || d.dueDate : '';
   if (r.type === 'extaudits') return ['Report Received', 'Response Prepared'].includes(r.status) ? d.responseDue : '';

@@ -98,7 +98,7 @@
       { k: 'productDetails', label: 'Product / material details (name, lot, kit nos.)', type: 'text', full: true },
       { k: 'tempRange', label: 'Temperature range', type: 'select', options: ['Not applicable', 'Controlled ambient (+15 to +25 °C)', 'Cold chain / refrigerated (+2 to +8 °C)', 'Frozen (-25 to -15 °C)', 'Uncontrolled'] },
       { k: 'qaReviewComment', label: 'QA review comment', type: 'textarea', full: true },
-      sec('Product information – materials, products, equipment, rooms, systems', { tab: 'Initial quality review', edit: { Initiation: OWNERS, 'Part A Update': OWNERS, 'QA Review': ['qa'], Investigation: ['responsible', 'respdept'] } }),
+      sec('Product information – materials, products, equipment, rooms, systems', { tab: 'Event', edit: { Initiation: OWNERS, 'Part A Update': OWNERS, 'QA Review': ['qa'], Investigation: ['responsible', 'respdept'] } }),
       { k: 'materialImpacted', label: 'Is material impacted?', type: 'select', options: YES_NO },
       { k: 'materials', label: 'Material grid', type: 'table', full: true, cols: [site, { k: 'code', label: 'Material code' }, { k: 'desc', label: 'Material description' }, { k: 'lot', label: 'Local material lot' }] },
       { k: 'productImpacted', label: 'Is product impacted?', type: 'select', options: YES_NO },
@@ -116,7 +116,7 @@
       sec('Internal approvers and notification', { tab: 'Initial quality review', edit: { 'QA Review': ['qa'], Investigation: ['qa'] } }),
       { k: 'approvers', label: 'Internal approvers (up to 5) – they sign at the Head of Department approval; the responsible person and the deviation owner cannot be approvers', type: 'table', full: true, cols: [{ k: 'user', label: 'Approver', type: 'user' }, { k: 'type', label: 'Type of approver', options: ['Functional area approver', 'Subject matter expert', 'Engineering / facilities', 'IT / computerized systems', 'Regulatory', 'Other'] }] },
       { k: 'internalNotify', label: 'Internal notification – people informed of every status change', type: 'table', full: true, cols: [{ k: 'user', label: 'Person', type: 'user' }, { k: 'note', label: 'Reason' }] },
-      sec('Client communication', { tab: 'Initial quality review', edit: { Initiation: OWNERS, 'Part A Update': OWNERS, 'QA Review': ['qa'], Investigation: ['responsible', 'respdept', 'pm'] } }),
+      sec('Client communication', { tab: 'Event', edit: { Initiation: OWNERS, 'Part A Update': OWNERS, 'QA Review': ['qa'], Investigation: ['responsible', 'respdept', 'pm'] } }),
       { k: 'clientsImpacted', label: 'All clients impacted', type: 'table', full: true, cols: [{ k: 'client', label: 'Client' }, { k: 'study', label: 'Study / protocol' }, { k: 'note', label: 'Note' }] },
       { k: 'clientLiaison', label: 'Client contact liaison', type: 'text' },
       { k: 'emailClientLiaison', label: 'E-mail the client liaison?', type: 'select', options: YES_NO },
@@ -162,36 +162,24 @@
       sec('Part D – Head of Department approval', { part: 'D', tab: 'Approval and closure', edit: { 'HOD Approval': ['depthead'] } }),
       { k: 'hodApprover', label: 'Approving Head of Department (from the organogram)', type: 'readonly', fmt: 'user' },
       { k: 'hodComment', label: 'Head of Department comment', type: 'textarea', full: true },
-      sec('Part E – QA evaluation and closure (final report)', { part: 'E', tab: 'Approval and closure', edit: { 'QA Evaluation': ['qa'], 'Customer Approval': ['qa', 'pm'] } }),
+      sec('Part E – QA evaluation and closure (final report)', { part: 'E', tab: 'Approval and closure', edit: { 'QA Evaluation': ['qa'] } }),
       { k: 'finalDisposition', label: 'Final disposition', type: 'select', options: ['Not applicable', 'Release / use as is', 'Reject', 'Return to sponsor / supplier', 'Destroy', 'Hold pending customer decision'] },
-      { k: 'qaEvalComment', label: 'QA evaluation comment (brief; no new information)', type: 'textarea', full: true },
-      { k: 'customerApproval', label: 'Customer approval (per QTA)', type: 'select', options: ['Pending', 'Approved by customer', 'Deemed closed – no response after 3 follow-ups', 'Not applicable (no customer impact)'] },
-      { k: 'reportSent', label: 'QA-approved report shared with customer on', type: 'date' },
-      { k: 'followUp1', label: 'Customer follow-up 1', type: 'date' },
-      { k: 'followUp2', label: 'Customer follow-up 2', type: 'date' },
-      { k: 'followUp3', label: 'Customer follow-up 3', type: 'date' },
-      { k: 'nextFollowUp', label: 'Customer follow-up reminder', type: 'computed' }
+      { k: 'qaEvalComment', label: 'QA evaluation comment (brief; no new information)', type: 'textarea', full: true }
     ],
     compute: {
       reporting: (d) => !d.dateIdentified || !d.qaNotified ? '' : dayDiff(d.dateIdentified, d.qaNotified) <= 1 ? 'Met (within 24 hours)' : 'Late (more than 24 hours) – give the reason in Part A',
       notifyStatus: (d) => {
-        if (String(d.customerApproval || '').startsWith('Not applicable')) return 'Not applicable';
         if (!d.dateIdentified) return '';
         const by = plusDays(d.dateIdentified, 3);
         if (d.customerNotified) return d.customerNotified <= by ? 'Met (within 3 days)' : 'Late (more than 3 days)';
         return todayIso() > by ? 'Overdue – notify the customer / sponsor' : 'Due by ' + by;
-      },
-      nextFollowUp: (d) => {
-        if (d.customerApproval !== 'Pending' || !d.reportSent) return '';
-        const n = [d.followUp1, d.followUp2, d.followUp3].filter(Boolean).length;
-        return n < 3 ? `Follow-up ${n + 1} due ${plusDays(d.reportSent, 15 * (n + 1))}` : `Deemed closure possible from ${plusDays(d.reportSent, 45)}`;
       }
     },
     // Request → QA (approve: number assigned automatically / need to update / reject) → Part A (initiator or responsible department)
     // → Part B (QA; may return Part A for update; A and B lock when QA submits) → Part C investigation → Head of Department (+ internal approvers)
     // → QA evaluation and closure
     tempNumbering: (d, y) => ({ pre: `REQ-${y}-`, pad: 4 }),
-    states: ['Requested', 'Request Update', 'Initiation', 'QA Review', 'Part A Update', 'Investigation', 'HOD Approval', 'QA Evaluation', 'Customer Approval', 'Closed', 'Rejected', 'Cancelled'],
+    states: ['Requested', 'Request Update', 'Initiation', 'QA Review', 'Part A Update', 'Investigation', 'HOD Approval', 'QA Evaluation', 'Closed', 'Rejected', 'Cancelled'],
     transitions: [
       t('Requested', 'Initiation', 'Approve request – assign number', ['qa'], { part: 'R', sign: 'Request approved – QA (number assigned)', sod: true, needs: ['respPerson'] }),
       t('Requested', 'Request Update', 'Need to update – return to initiator', ['qa'], { part: 'R', reason: true }),
@@ -205,10 +193,8 @@
       t('Investigation', 'HOD Approval', 'Submit investigation (Part C) to Head of Department', ['any'], { part: 'C', sign: 'Investigation completed – responsible person', needs: ['investigation', 'rootCause', 'riskAssessment', 'conclusion', 'capaRequired'], checks: ['isPartCOwner', 'capaDecision', 'invDetails', 'invActionsClosed', 'invApproverList', 'hodAvailable'] }),
       t('HOD Approval', 'QA Evaluation', 'Approve – Head of Department', ['any'], { part: 'D', sign: 'Approved – Head of Department', checks: ['isHodApprover', 'invApprovals'] }),
       t('HOD Approval', 'Investigation', 'Reject – return to responsible person', ['any'], { part: 'D', sign: 'Rejected – Head of Department', reason: true, checks: ['isHodApprover'] }),
-      t('QA Evaluation', 'Closed', 'Approve and close – QA', ['qa'], { part: 'E', sign: 'Approved and closed – QA', sod: true, needs: ['finalDisposition', 'customerApproval', 'qaEvalComment'], checks: ['capaDecision', 'capaLinked', 'customerNotInvolved'] }),
-      t('QA Evaluation', 'Customer Approval', 'Approve – send report to customer', ['qa'], { part: 'E', sign: 'Approved – QA (report to customer)', sod: true, needs: ['finalDisposition', 'customerApproval', 'qaEvalComment'], checks: ['capaDecision', 'capaLinked', 'customerInvolved'] }),
-      t('QA Evaluation', 'Investigation', 'Reject – return for further investigation', ['qa'], { part: 'E', sign: 'Rejected – QA evaluation', reason: true, needs: ['qaEvalComment'] }),
-      t('Customer Approval', 'Closed', 'Close – customer approved or deemed closed', ['qa', 'pm'], { part: 'E', sign: 'Closed – customer approval recorded', checks: ['customerClosure'] })
+      t('QA Evaluation', 'Closed', 'Approve and close – QA', ['qa'], { part: 'E', sign: 'Approved and closed – QA', sod: true, needs: ['finalDisposition', 'qaEvalComment'], checks: ['capaDecision', 'capaLinked'] }),
+      t('QA Evaluation', 'Investigation', 'Reject – return for further investigation', ['qa'], { part: 'E', sign: 'Rejected – QA evaluation', reason: true, needs: ['qaEvalComment'] })
     ],
     // named internal approvers sign while the Head of Department approves
     deptApproval: { state: 'HOD Approval', field: 'approvalDepts', label: 'Internal approvals', persons: 'approvers' },
@@ -216,7 +202,7 @@
     reviewView: true,
     // process flow on the record page; a part is shown once the record reaches the stage where it is filled in
     flow: [['Requested', 'Request to QA'], ['Initiation', 'Part A – Initiation'], ['QA Review', 'Part B – QA review'], ['Investigation', 'Part C – Investigation'],
-      ['HOD Approval', 'Part D – HOD approval'], ['QA Evaluation', 'Part E – QA evaluation'], ['Customer Approval', 'Customer approval (if needed)'], ['Closed', 'Closed']],
+      ['HOD Approval', 'Part D – HOD approval'], ['QA Evaluation', 'Part E – QA evaluation'], ['Closed', 'Closed']],
     flowSide: { 'Request Update': 'Requested', 'Part A Update': 'QA Review' }
   };
 })(typeof module !== 'undefined' && module.exports ? require('../_shared.js') : window.QMS_SHARED);
